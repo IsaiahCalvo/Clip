@@ -1,0 +1,386 @@
+<Window x:Class="Clip.Shell.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Clip"
+        Width="880"
+        Height="560"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="#1F1E1F"
+        AllowsTransparency="False"
+        Topmost="True"
+        Deactivated="OnDeactivated"
+        KeyDown="OnWindowKeyDown">
+    <Window.Resources>
+        <SolidColorBrush x:Key="Bg" Color="#1F1E1F"/>
+        <SolidColorBrush x:Key="Surface" Color="#242324"/>
+        <SolidColorBrush x:Key="Surface2" Color="#2A282A"/>
+        <SolidColorBrush x:Key="Surface3" Color="#343134"/>
+        <SolidColorBrush x:Key="Line" Color="#3A373A"/>
+        <SolidColorBrush x:Key="Line2" Color="#464246"/>
+        <SolidColorBrush x:Key="Text" Color="#F2F0F2"/>
+        <SolidColorBrush x:Key="Muted" Color="#8F898F"/>
+        <SolidColorBrush x:Key="Muted2" Color="#C7C1C7"/>
+        <SolidColorBrush x:Key="Muted3" Color="#6B656B"/>
+        <SolidColorBrush x:Key="Accent" Color="#8FC8D9"/>
+        <SolidColorBrush x:Key="AccentSoft" Color="#263941"/>
+        <SolidColorBrush x:Key="Selected" Color="#27363B"/>
+        <SolidColorBrush x:Key="SelectedBorder" Color="#56828E"/>
+        <SolidColorBrush x:Key="Danger" Color="#D56B5D"/>
+
+        <Style x:Key="ThinScrollBar" TargetType="ScrollBar">
+            <Setter Property="Width" Value="6"/>
+            <Setter Property="Height" Value="6"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#5F5A52"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent" SnapsToDevicePixels="True">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="{StaticResource Muted3}" CornerRadius="3" Margin="1"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineDownCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/>
+
+        <Style x:Key="CleanTextBox" TargetType="TextBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
+            <Setter Property="CaretBrush" Value="{StaticResource Accent}"/>
+            <Setter Property="SelectionBrush" Value="#507988"/>
+        </Style>
+
+        <Style x:Key="FilterButton" TargetType="Button">
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+            <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource Surface3}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MiniButton" TargetType="Button">
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Padding" Value="12,0"/>
+            <Setter Property="BorderBrush" Value="{StaticResource SelectedBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Background" Value="{StaticResource AccentSoft}"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="7">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#31484F"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource FilterButton}">
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Foreground" Value="{StaticResource Muted2}"/>
+        </Style>
+
+        <Style x:Key="HotkeyText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource Muted2}"/>
+            <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="Shell"
+            CornerRadius="14"
+            Background="{StaticResource Bg}"
+            SnapsToDevicePixels="True"
+            ClipToBounds="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="36"/>
+                <RowDefinition Height="53"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="34"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="{StaticResource Surface2}" MouseLeftButtonDown="OnChromeMouseDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Width="14" Height="14" CornerRadius="4" Background="#5F9CB0" Margin="14,0,8,0" VerticalAlignment="Center">
+                    <TextBlock Text="C" Foreground="White" FontSize="9" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Grid.Column="1" Text="Clip" Foreground="{StaticResource Muted2}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center"/>
+                <Button x:Name="SettingsButton" Grid.Column="2" Style="{StaticResource IconButton}" Click="OnSettingsClick" ToolTip="Settings" Margin="0,0,10,0">
+                    <Image x:Name="SettingsIcon" Width="16" Height="16" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                </Button>
+            </Grid>
+
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{StaticResource Line}"/>
+
+            <Grid Grid.Row="1" Background="{StaticResource Bg}" Margin="12,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0"
+                        Height="32"
+                        Background="{StaticResource Surface}"
+                        BorderBrush="{StaticResource Accent}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,0"
+                        VerticalAlignment="Center">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="20"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="⌕" Foreground="{StaticResource Muted}" FontSize="15" VerticalAlignment="Center"/>
+                        <Grid Grid.Column="1">
+                            <TextBlock x:Name="SearchPlaceholder"
+                                       Text="Search clipboard history..."
+                                       Foreground="{StaticResource Muted}"
+                                       FontSize="13"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"/>
+                            <TextBox x:Name="SearchBox"
+                                     Style="{StaticResource CleanTextBox}"
+                                     VerticalContentAlignment="Center"
+                                     FontSize="13"
+                                     TextChanged="OnSearchChanged"/>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center" Width="352" HorizontalAlignment="Right">
+                    <Border x:Name="AllFilterShell" CornerRadius="5" Background="{StaticResource Surface3}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="AllButton" Content="All" Style="{StaticResource FilterButton}" Click="OnAllFilterClick" Foreground="{StaticResource Text}" Background="{StaticResource Surface3}" Padding="0" Width="38"/>
+                            <Button x:Name="DateDropButton" Style="{StaticResource FilterButton}" Click="OnDateDropClick" Foreground="{StaticResource Text}" Background="{StaticResource Surface3}" Padding="0" Width="18">
+                                <Image x:Name="DateDropIcon" Width="11" Height="11" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                    <Button x:Name="TextButton" Content="Text" Style="{StaticResource FilterButton}" Click="OnTextFilterClick" Margin="4,0,0,0" Width="44"/>
+                    <Button x:Name="ImageButton" Content="Image" Style="{StaticResource FilterButton}" Click="OnImageFilterClick" Margin="4,0,0,0" Width="52"/>
+                    <Button x:Name="LinksButton" Content="Links" Style="{StaticResource FilterButton}" Click="OnLinksFilterClick" Margin="4,0,0,0" Width="50"/>
+                    <Button x:Name="ColorButton" Content="Color" Style="{StaticResource FilterButton}" Click="OnColorFilterClick" Margin="4,0,0,0" Width="52"/>
+                    <Border x:Name="FilesFilterShell" CornerRadius="5" Background="Transparent" Margin="4,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="FilesButton" Content="File" Style="{StaticResource FilterButton}" Click="OnFilesFilterClick" Width="38"/>
+                            <Button x:Name="FileDropButton" Style="{StaticResource FilterButton}" Click="OnFileDropClick" Padding="0" Width="18">
+                                <Image x:Name="FileDropIcon" Width="11" Height="11" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+            <Border Grid.Row="1" VerticalAlignment="Bottom" Height="1" Background="{StaticResource Line}"/>
+
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="320"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" ClipToBounds="True">
+                    <ScrollViewer x:Name="ListScroll"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  ClipToBounds="True"
+                                  Padding="0,0,0,8"
+                                  PreviewMouseWheel="OnListWheel">
+                        <StackPanel x:Name="ItemsHost" ClipToBounds="True"/>
+                    </ScrollViewer>
+                </Border>
+
+                <Grid Grid.Column="1" Background="{StaticResource Surface}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="180"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="24,20,24,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="28"/>
+                            <RowDefinition Height="14"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="28"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Image x:Name="HeaderIcon" Width="28" Height="28" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                <TextBlock x:Name="TitleText" Text="Clipboard" Foreground="{StaticResource Text}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock x:Name="SubTitleText" Text="Search, preview, and act on copied items" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,1,0,0" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <Button x:Name="OpenButton" Grid.Column="3" Content="Open" Style="{StaticResource MiniButton}" Click="OnOpenClick" MinWidth="74" Margin="16,0,0,0"/>
+                        </Grid>
+
+                        <Border Grid.Row="2"
+                                Background="{StaticResource Bg}"
+                                BorderBrush="{StaticResource Line}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="16,14"
+                                ClipToBounds="True">
+                            <Grid x:Name="PreviewHost">
+                                <TextBox x:Name="TextPreview" Style="{StaticResource CleanTextBox}" TextWrapping="Wrap" AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" FontSize="13" FontFamily="JetBrains Mono, Cascadia Mono, Consolas"/>
+                                <Image x:Name="ImagePreview" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                <wv2:WebView2 x:Name="HtmlPreview" Visibility="Collapsed"/>
+                                <StackPanel x:Name="PlaceholderPreview" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Image x:Name="PlaceholderIcon" Width="128" Height="128" Stretch="Uniform" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                    <TextBlock x:Name="PlaceholderText" Foreground="{StaticResource Muted}" FontSize="13" TextAlignment="Center" Margin="0,14,0,0" TextWrapping="Wrap" MaxWidth="360"/>
+                                </StackPanel>
+                                <StackPanel x:Name="ColorPreview" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Ellipse x:Name="ColorPreviewSwatch" Width="118" Height="118" Stroke="{StaticResource Line2}" StrokeThickness="1"/>
+                                    <TextBlock x:Name="ColorPreviewText" Foreground="{StaticResource Text}" FontSize="18" FontWeight="SemiBold" TextAlignment="Center" Margin="0,14,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="1" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Background="{StaticResource Surface}">
+                        <Grid Margin="24,12,24,14">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid Margin="0,0,0,6">
+                                <TextBlock Text="INFORMATION" Foreground="{StaticResource Muted}" FontWeight="SemiBold" FontSize="11"/>
+                            </Grid>
+                            <ScrollViewer x:Name="InfoScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel x:Name="InfoHost"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+
+            <Border Grid.Row="3" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                <Grid Margin="12,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
+                            <TextBlock Text="Enter" Style="{StaticResource HotkeyText}"/>
+                        </Border>
+                        <TextBlock Text="Paste" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
+                            <TextBlock Text="Ctrl+C" Style="{StaticResource HotkeyText}"/>
+                        </Border>
+                        <TextBlock Text="Copy" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
+                            <TextBlock Text="Ctrl+P" Style="{StaticResource HotkeyText}"/>
+                        </Border>
+                        <TextBlock Text="Pin" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="4" Style="{StaticResource FilterButton}" Foreground="{StaticResource Muted}" Click="OnActionsClick">
+                        <StackPanel Orientation="Horizontal">
+                            <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
+                                <TextBlock Text="Ctrl+K" Style="{StaticResource HotkeyText}"/>
+                            </Border>
+                            <TextBlock Text="Actions" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <Popup x:Name="ActionMenuPopup" AllowsTransparency="True" Placement="MousePoint" StaysOpen="False">
+                <Border x:Name="ActionMenuBorder"
+                        Background="{StaticResource Surface}"
+                        CornerRadius="8"
+                        Padding="4"
+                        MinWidth="178"
+                        BorderBrush="{StaticResource Line2}"
+                        BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.28" Color="#000000"/>
+                    </Border.Effect>
+                    <StackPanel x:Name="ActionMenuHost"/>
+                </Border>
+            </Popup>
+
+            <Border x:Name="Toast"
+                    Grid.RowSpan="4"
+                    Visibility="Collapsed"
+                    Background="{StaticResource Text}"
+                    CornerRadius="8"
+                    Padding="14,9"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Bottom"
+                    Margin="0,0,0,46">
+                <TextBlock x:Name="ToastText" Foreground="{StaticResource Bg}" FontWeight="SemiBold" FontSize="12"/>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

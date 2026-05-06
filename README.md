@@ -1,0 +1,84 @@
+# Clip
+
+Clip is a free Windows clipboard history app inspired by Raycast's clipboard history.
+
+It runs locally, opens with `Alt+V`, and keeps clipboard history on your own device.
+
+## Features
+
+- Clipboard history for text, links, colors, images, files, and folders.
+- Searchable `Alt+V` clipboard window.
+- Pin, unpin, reorder, copy, paste, edit, delete, save, and open items.
+- Image thumbnails and previews.
+- File metadata and file previews where Windows or local renderers support it.
+- Searchable `Open With` picker.
+- Color swatches for copied hex colors.
+- Source app metadata and item information panel.
+- Local debug logs with `Ctrl+Shift+L`.
+
+## Requirements
+
+- Windows 11.
+- .NET 8 SDK to build from source.
+- Microsoft Edge WebView2 runtime for HTML previews.
+
+## Run From Source
+
+```powershell
+dotnet build .\Clip.sln
+.\Start-Clip.ps1
+```
+
+Then press `Alt+V`.
+
+## Publish a Release Build
+
+```powershell
+.\Publish-Clip.ps1
+```
+
+The release files are created under:
+
+```text
+artifacts\publish\Clip-win-x64
+```
+
+The zip file is created at:
+
+```text
+artifacts\publish\Clip-win-x64.zip
+```
+
+## Start With Windows
+
+After publishing or building, run:
+
+```powershell
+.\Install-ClipStartup.ps1
+```
+
+This installs Clip for your Windows user account only.
+
+## Privacy
+
+Clip stores clipboard history locally under:
+
+```text
+%LOCALAPPDATA%\Clip
+```
+
+That folder may contain copied text, image assets, file paths, logs, and metadata. Review `PRIVACY.md` before sharing logs or local app data.
+
+## Development
+
+```powershell
+dotnet build .\Clip.sln
+dotnet test .\Clip.sln
+```
+
+Main projects:
+
+- `src\Clip.Shell`: WPF shell and main UI.
+- `src\Clip.Core`: clipboard history model and local JSON store.
+- `src\Clip.Watcher`: older watcher/utilities still used by the shell for some Windows integrations.
+- `tests\Clip.Tests`: focused regression tests.

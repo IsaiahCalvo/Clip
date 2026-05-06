@@ -1,0 +1,35 @@
+# Build output
+bin/
+obj/
+artifacts/
+publish/
+TestResults/
+
+# User/local data
+history.json
+launcher.log
+shell.log
+*.log
+*.db
+*.sqlite
+
+# Debug captures and local screenshots
+debug-*.png
+debug-*.jpg
+debug-*.jpeg
+*.dmp
+
+# IDE/editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Design export scratch files
+design-extract/
