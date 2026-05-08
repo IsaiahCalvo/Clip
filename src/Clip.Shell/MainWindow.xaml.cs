@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private string _fileFilter = "all";
     private int _previewToken;
     private bool _suppressDeactivate;
+    private bool _itemsDirtySinceRender = true;
     private ClipboardHistoryItem? _menuItem;
     public bool KeepOpenForDebug { get; set; }
 
@@ -85,12 +86,12 @@ public partial class MainWindow : Window
             ShellLog.Info($"window initialized hwnd={hwnd} hotkey={hotkey} listener={listener} win32={Marshal.GetLastWin32Error()}");
         };
 
-        Loaded += async (_, _) =>
+        Loaded += (_, _) =>
         {
             Hide();
-            await WarmHtmlPreviewAsync();
-            OpenWithWindow.WarmCacheAsync();
             LoadItems(selectFirst: true, reason: "startup");
+            _ = WarmHtmlPreviewAsync();
+            OpenWithWindow.WarmCacheAsync();
         };
 
         Closing += (_, _) =>
@@ -108,11 +109,15 @@ public partial class MainWindow : Window
     {
         var watch = Stopwatch.StartNew();
         PositionOnMouseScreen();
-        LoadItems(selectFirst: _selected is null, reason: "show");
         Show();
         Activate();
         SearchBox.Focus();
-        ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"}");
+        ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender}");
+
+        if (_itemsDirtySinceRender || _rows.Count == 0)
+        {
+            Dispatcher.BeginInvoke(() => LoadItems(selectFirst: _selected is null, reason: "show-refresh"), System.Windows.Threading.DispatcherPriority.Background);
+        }
     }
 
     public void WriteDebugSnapshot(string reason = "hotkey")
@@ -228,6 +233,10 @@ public partial class MainWindow : Window
             {
                 RenderItems(reason: "clipboard-live");
             }
+            else
+            {
+                _itemsDirtySinceRender = true;
+            }
         }
         catch (Exception ex)
         {
@@ -242,6 +251,7 @@ public partial class MainWindow : Window
         {
             _allItems = _store.QueryItems(SearchBox.Text);
             RenderItems(reason);
+            _itemsDirtySinceRender = false;
             if (selectFirst && _selected is null)
             {
                 SelectItem(FilteredItems().FirstOrDefault(), reason: "initial");

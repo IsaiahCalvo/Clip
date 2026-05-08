@@ -14,6 +14,8 @@ public sealed class ClipboardHistoryStore
     {
         WriteIndented = true,
     };
+    private readonly object _sync = new();
+    private List<ClipboardHistoryItem>? _itemsCache;
 
     public ClipboardHistoryStore(string? rootPath = null)
     {
@@ -38,19 +40,29 @@ public sealed class ClipboardHistoryStore
 
     public IReadOnlyList<ClipboardHistoryItem> GetItems()
     {
-        if (!File.Exists(HistoryFilePath))
+        lock (_sync)
         {
-            return [];
-        }
+            if (_itemsCache is not null)
+            {
+                return _itemsCache;
+            }
 
-        var json = File.ReadAllText(HistoryFilePath);
-        var items = JsonSerializer.Deserialize<List<ClipboardHistoryItem>>(json, _jsonOptions) ?? [];
-        if (NormalizeLoadedItems(items))
-        {
-            Save(items);
-        }
+            if (!File.Exists(HistoryFilePath))
+            {
+                _itemsCache = [];
+                return _itemsCache;
+            }
 
-        return items;
+            var json = File.ReadAllText(HistoryFilePath);
+            var items = JsonSerializer.Deserialize<List<ClipboardHistoryItem>>(json, _jsonOptions) ?? [];
+            if (NormalizeLoadedItems(items))
+            {
+                SaveCore(items);
+            }
+
+            _itemsCache = items;
+            return _itemsCache;
+        }
     }
 
     public ClipboardHistoryItem? GetItem(string id)
@@ -199,6 +211,15 @@ public sealed class ClipboardHistoryStore
     }
 
     public void Save(IEnumerable<ClipboardHistoryItem> items)
+    {
+        lock (_sync)
+        {
+            SaveCore(items);
+            _itemsCache = items.ToList();
+        }
+    }
+
+    private void SaveCore(IEnumerable<ClipboardHistoryItem> items)
     {
         Directory.CreateDirectory(RootPath);
         File.WriteAllText(HistoryFilePath, JsonSerializer.Serialize(items, _jsonOptions));
