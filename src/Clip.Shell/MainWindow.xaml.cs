@@ -57,12 +57,14 @@ public partial class MainWindow : Window
     private int _previewToken;
     private bool _suppressDeactivate;
     private bool _itemsDirtySinceRender = true;
+    private bool _paletteRequested;
     private ClipboardHistoryItem? _menuItem;
     public bool KeepOpenForDebug { get; set; }
 
     public MainWindow()
     {
         InitializeComponent();
+        Opacity = 0;
         SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24);
         DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
         FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
@@ -86,10 +88,18 @@ public partial class MainWindow : Window
             ShellLog.Info($"window initialized hwnd={hwnd} hotkey={hotkey} listener={listener} win32={Marshal.GetLastWin32Error()}");
         };
 
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
-            Hide();
             LoadItems(selectFirst: true, reason: "startup");
+            UpdateLayout();
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            Opacity = 1;
+            if (!_paletteRequested && !KeepOpenForDebug)
+            {
+                Hide();
+            }
+
+            ShellLog.Info("window pre-rendered while hidden");
             _ = WarmHtmlPreviewAsync();
             OpenWithWindow.WarmCacheAsync();
         };
@@ -107,8 +117,10 @@ public partial class MainWindow : Window
 
     public void ShowPalette()
     {
+        _paletteRequested = true;
         var watch = Stopwatch.StartNew();
         PositionOnMouseScreen();
+        Opacity = 1;
         Show();
         Activate();
         SearchBox.Focus();
