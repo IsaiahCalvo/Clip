@@ -58,6 +58,7 @@ public partial class MainWindow : Window
     private bool _suppressDeactivate;
     private bool _itemsDirtySinceRender = true;
     private bool _paletteRequested;
+    private IntPtr _returnFocusHwnd;
     private ClipboardHistoryItem? _menuItem;
     public bool KeepOpenForDebug { get; set; }
 
@@ -91,12 +92,17 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             LoadItems(selectFirst: true, reason: "startup");
+            MoveOffscreen();
+            Opacity = 1;
             UpdateLayout();
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
-            Opacity = 1;
-            if (!_paletteRequested && !KeepOpenForDebug)
+            if (_paletteRequested || KeepOpenForDebug)
             {
-                Hide();
+                ShowPalette();
+            }
+            else
+            {
+                ConcealPalette("startup");
             }
 
             ShellLog.Info("window pre-rendered while hidden");
@@ -119,9 +125,24 @@ public partial class MainWindow : Window
     {
         _paletteRequested = true;
         var watch = Stopwatch.StartNew();
+        var ownHwnd = new WindowInteropHelper(this).Handle;
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && foreground != ownHwnd)
+        {
+            _returnFocusHwnd = foreground;
+        }
+
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        Opacity = 0;
+        IsHitTestVisible = false;
         PositionOnMouseScreen();
+        UpdateLayout();
         Opacity = 1;
-        Show();
+        IsHitTestVisible = true;
         Activate();
         SearchBox.Focus();
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender}");
@@ -130,6 +151,20 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(() => LoadItems(selectFirst: _selected is null, reason: "show-refresh"), System.Windows.Threading.DispatcherPriority.Background);
         }
+    }
+
+    private void ConcealPalette(string reason)
+    {
+        Opacity = 0;
+        IsHitTestVisible = false;
+        MoveOffscreen();
+        ShellLog.Info($"palette concealed reason={reason}");
+    }
+
+    private void MoveOffscreen()
+    {
+        Left = SystemParameters.VirtualScreenLeft - Math.Max(ActualWidth, Width) - 100;
+        Top = SystemParameters.VirtualScreenTop - Math.Max(ActualHeight, Height) - 100;
     }
 
     public void WriteDebugSnapshot(string reason = "hotkey")
@@ -912,7 +947,12 @@ public partial class MainWindow : Window
     {
         if (_selected is null) return;
         SetClipboard(_selected);
-        Hide();
+        ConcealPalette("paste");
+        if (_returnFocusHwnd != IntPtr.Zero)
+        {
+            SetForegroundWindow(_returnFocusHwnd);
+        }
+
         Forms.SendKeys.SendWait("^v");
         ShellLog.Info($"paste selected id={_selected.Id}");
     }
@@ -1161,8 +1201,8 @@ public partial class MainWindow : Window
     private void OnColorFilterClick(object sender, RoutedEventArgs e) => SetFilter("colors");
     private void OnFilesFilterClick(object sender, RoutedEventArgs e) => SetFilter("files");
     private void OnOpenClick(object sender, RoutedEventArgs e) { if (_selected is not null) OpenItem(_selected); }
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Hide();
-    private void OnMinimizeClick(object sender, RoutedEventArgs e) => Hide();
+    private void OnCloseClick(object sender, RoutedEventArgs e) => ConcealPalette("close");
+    private void OnMinimizeClick(object sender, RoutedEventArgs e) => ConcealPalette("minimize");
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
         try
@@ -1321,7 +1361,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            Hide();
+            ConcealPalette("escape");
             e.Handled = true;
         }
     }
@@ -1366,7 +1406,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Hide();
+        ConcealPalette("deactivate");
         ShellLog.Info("palette hidden on deactivate");
     }
 
@@ -1817,6 +1857,7 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool AddClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
