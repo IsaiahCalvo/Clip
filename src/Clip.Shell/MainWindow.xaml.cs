@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     private const int VkV = 0x56;
     private const int WmHotkey = 0x0312;
     private const int WmClipboardUpdate = 0x031D;
+    private const int WmMouseWheel = 0x020A;
+    private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
 
     private readonly ClipboardHistoryStore _store = new();
@@ -60,6 +62,16 @@ public partial class MainWindow : Window
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
     private ClipboardHistoryItem? _menuItem;
+    private bool _expandedImagePanning;
+    private System.Windows.Point _expandedImageLastPoint;
+    private System.Windows.Point _expandedImageDownPoint;
+    private bool _expandedImageMoved;
+    private double _expandedImageZoom = 1.0;
+    private Rect _expandedRestoreBounds;
+    private CornerRadius _expandedRestoreCornerRadius;
+    private bool _expandedWindowResized;
+    private string? _currentPreviewImagePath;
+    private string? _currentPreviewPdfPath;
     public bool KeepOpenForDebug { get; set; }
 
     public MainWindow()
@@ -69,6 +81,7 @@ public partial class MainWindow : Window
         SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24);
         DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
         FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
+        ExpandImageIcon.Source = RenderSvg("expand-alt-svgrepo-com.svg", 24);
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
@@ -185,7 +198,25 @@ public partial class MainWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && (msg == WmMouseWheel || msg == WmMouseHWheel))
+        {
+            var delta = WheelDelta(wParam);
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                ZoomExpandedImage(Math.Pow(1.0018, delta), MousePointInExpandedViewport());
+            }
+            else if (msg == WmMouseHWheel)
+            {
+                PanExpandedImage(-delta, 0);
+            }
+            else
+            {
+                PanExpandedImage(0, delta);
+            }
+
+            handled = true;
+        }
+        else if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
         {
             ShellLog.Info("Alt+V received");
             ShowPalette();
@@ -639,7 +670,9 @@ public partial class MainWindow : Window
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
                 ImagePreview.Source = LoadBitmap(item.AssetPath);
+                _currentPreviewImagePath = item.AssetPath;
                 ImagePreview.Visibility = Visibility.Visible;
+                ExpandImageButton.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview image id={item.Id} path={item.AssetPath}");
                 return;
             }
@@ -686,7 +719,9 @@ public partial class MainWindow : Window
                     if (token != _previewToken) return;
                     HidePreviews();
                     ImagePreview.Source = LoadBitmap(path);
+                    _currentPreviewImagePath = path;
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                 });
                 ShellLog.Info($"preview file image path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
@@ -747,7 +782,13 @@ public partial class MainWindow : Window
 
                     HidePreviews();
                     ImagePreview.Source = BitmapFromDrawingImage(rendered);
+                    if (ext == ".pdf")
+                    {
+                        _currentPreviewPdfPath = path;
+                    }
+
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                     rendered.Dispose();
                 });
                 ShellLog.Info($"preview rendered file path={path} elapsedMs={watch.ElapsedMilliseconds}");
@@ -1151,13 +1192,327 @@ public partial class MainWindow : Window
 
     private void HidePreviews()
     {
+        CloseExpandedImage();
         TextPreview.Visibility = Visibility.Collapsed;
         ImagePreview.Visibility = Visibility.Collapsed;
+        ExpandImageButton.Visibility = Visibility.Collapsed;
         HtmlPreview.Visibility = Visibility.Collapsed;
         PlaceholderPreview.Visibility = Visibility.Collapsed;
         ColorPreview.Visibility = Visibility.Collapsed;
         TextPreview.Text = string.Empty;
         ImagePreview.Source = null;
+        _currentPreviewImagePath = null;
+        _currentPreviewPdfPath = null;
+    }
+
+    private void OnExpandImageClick(object sender, RoutedEventArgs e)
+    {
+        var source = BestExpandedImageSource();
+        if (source is null)
+        {
+            return;
+        }
+
+        ActionMenuPopup.IsOpen = false;
+        ExpandedImage.Source = source;
+        SetExpandedImageNaturalSize(source);
+        ExpandWindowForImage();
+        ExpandedBackdrop.Source = CaptureShellBackdrop();
+        ExpandedImageOverlay.Visibility = Visibility.Visible;
+        ExpandedImageOverlay.UpdateLayout();
+        ExpandedImageOverlay.Focus();
+        ResetExpandedImageView();
+        ShellLog.Info($"image expanded size={ExpandedImage.Width:0}x{ExpandedImage.Height:0}");
+        e.Handled = true;
+    }
+
+    private ImageSource? BestExpandedImageSource()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_currentPreviewImagePath) && File.Exists(_currentPreviewImagePath))
+            {
+                return LoadBitmap(_currentPreviewImagePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_currentPreviewPdfPath) && File.Exists(_currentPreviewPdfPath) &&
+                WatcherPdfPreviewRenderer.TryRenderFirstPage(_currentPreviewPdfPath, out var pdfImage, 300))
+            {
+                using (pdfImage)
+                {
+                    return BitmapFromDrawingImage(pdfImage);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "best expanded image load failed");
+        }
+
+        return ImagePreview.Source;
+    }
+
+    private void SetExpandedImageNaturalSize(ImageSource source)
+    {
+        if (source is BitmapSource bitmap)
+        {
+            var dpiX = bitmap.DpiX > 0 ? bitmap.DpiX : 96;
+            var dpiY = bitmap.DpiY > 0 ? bitmap.DpiY : 96;
+            ExpandedImage.Width = bitmap.PixelWidth * 96.0 / dpiX;
+            ExpandedImage.Height = bitmap.PixelHeight * 96.0 / dpiY;
+            return;
+        }
+
+        ExpandedImage.Width = double.IsNaN(source.Width) || source.Width <= 0 ? ActualWidth : source.Width;
+        ExpandedImage.Height = double.IsNaN(source.Height) || source.Height <= 0 ? ActualHeight : source.Height;
+    }
+
+    private void ExpandWindowForImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            _expandedRestoreBounds = new Rect(Left, Top, Width, Height);
+            _expandedRestoreCornerRadius = Shell.CornerRadius;
+            _expandedWindowResized = true;
+        }
+
+        var screen = Forms.Screen.FromPoint(Forms.Control.MousePosition).Bounds;
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var topLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
+        var bottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
+        Left = topLeft.X;
+        Top = topLeft.Y;
+        Width = bottomRight.X - topLeft.X;
+        Height = bottomRight.Y - topLeft.Y;
+        Shell.CornerRadius = new CornerRadius(0);
+        UpdateLayout();
+    }
+
+    private void RestoreWindowAfterImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            return;
+        }
+
+        Left = _expandedRestoreBounds.Left;
+        Top = _expandedRestoreBounds.Top;
+        Width = _expandedRestoreBounds.Width;
+        Height = _expandedRestoreBounds.Height;
+        Shell.CornerRadius = _expandedRestoreCornerRadius;
+        _expandedWindowResized = false;
+        UpdateLayout();
+    }
+
+    private ImageSource? CaptureShellBackdrop()
+    {
+        try
+        {
+            var width = Math.Max(1, (int)Math.Round(ActualWidth));
+            var height = Math.Max(1, (int)Math.Round(ActualHeight));
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(Shell);
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "expanded backdrop capture failed");
+            return null;
+        }
+    }
+
+    private void ResetExpandedImageView()
+    {
+        ExpandedImageViewport.UpdateLayout();
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var fitWidth = Math.Max(1, viewportWidth - 48);
+        var fitHeight = Math.Max(1, viewportHeight - 48);
+        var imageWidth = Math.Max(1, ExpandedImage.Width);
+        var imageHeight = Math.Max(1, ExpandedImage.Height);
+        var fitScale = Math.Min(fitWidth / imageWidth, fitHeight / imageHeight);
+        _expandedImageZoom = Math.Clamp(fitScale < 1 ? fitScale : 1.0, 0.05, 32.0);
+        ExpandedImageScale.ScaleX = _expandedImageZoom;
+        ExpandedImageScale.ScaleY = _expandedImageZoom;
+        ExpandedImageTranslate.X = (viewportWidth - imageWidth * _expandedImageZoom) / 2;
+        ExpandedImageTranslate.Y = (viewportHeight - imageHeight * _expandedImageZoom) / 2;
+    }
+
+    private void CloseExpandedImage()
+    {
+        if (ExpandedImageOverlay.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _expandedImagePanning = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Visibility = Visibility.Collapsed;
+        ExpandedImage.Source = null;
+        ExpandedBackdrop.Source = null;
+        RestoreWindowAfterImage();
+        ShellLog.Info("image expanded closed");
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _expandedImagePanning = true;
+        _expandedImageLastPoint = e.GetPosition(ExpandedImageOverlay);
+        _expandedImageDownPoint = _expandedImageLastPoint;
+        _expandedImageMoved = false;
+        ExpandedImageOverlay.CaptureMouse();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.SizeAll;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        var releasedOffImage = !IsPointOverExpandedImage(e.GetPosition(ExpandedImageViewport));
+        StopExpandedImagePan();
+        if (!_expandedImageMoved && releasedOffImage)
+        {
+            CloseExpandedImage();
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            StopExpandedImagePan();
+        }
+    }
+
+    private void OnExpandedOverlayMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_expandedImagePanning || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var point = e.GetPosition(ExpandedImageOverlay);
+        if (!_expandedImageMoved && Distance(point, _expandedImageDownPoint) > 2)
+        {
+            _expandedImageMoved = true;
+        }
+
+        PanExpandedImage(point.X - _expandedImageLastPoint.X, point.Y - _expandedImageLastPoint.Y);
+        _expandedImageLastPoint = point;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            ZoomExpandedImage(Math.Pow(1.0018, e.Delta), e.GetPosition(ExpandedImageViewport));
+        }
+        else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            PanExpandedImage(-e.Delta, 0);
+        }
+        else
+        {
+            PanExpandedImage(0, e.Delta);
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlaySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && ExpandedImage.Source is not null)
+        {
+            ClampExpandedImage();
+        }
+    }
+
+    private void StopExpandedImagePan()
+    {
+        _expandedImagePanning = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.Arrow;
+    }
+
+    private void PanExpandedImage(double deltaX, double deltaY)
+    {
+        ExpandedImageTranslate.X += deltaX;
+        ExpandedImageTranslate.Y += deltaY;
+        ClampExpandedImage();
+    }
+
+    private void ZoomExpandedImage(double factor, System.Windows.Point center)
+    {
+        var oldZoom = _expandedImageZoom;
+        var newZoom = Math.Clamp(oldZoom * factor, 0.02, 128.0);
+        if (Math.Abs(newZoom - oldZoom) < 0.0001)
+        {
+            return;
+        }
+
+        var imageX = (center.X - ExpandedImageTranslate.X) / oldZoom;
+        var imageY = (center.Y - ExpandedImageTranslate.Y) / oldZoom;
+        _expandedImageZoom = newZoom;
+        ExpandedImageScale.ScaleX = newZoom;
+        ExpandedImageScale.ScaleY = newZoom;
+        ExpandedImageTranslate.X = center.X - imageX * newZoom;
+        ExpandedImageTranslate.Y = center.Y - imageY * newZoom;
+        ClampExpandedImage();
+    }
+
+    private void ClampExpandedImage()
+    {
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var scaledWidth = ExpandedImage.Width * _expandedImageZoom;
+        var scaledHeight = ExpandedImage.Height * _expandedImageZoom;
+
+        if (scaledWidth <= viewportWidth)
+        {
+            ExpandedImageTranslate.X = (viewportWidth - scaledWidth) / 2;
+        }
+        else
+        {
+            ExpandedImageTranslate.X = Math.Clamp(ExpandedImageTranslate.X, viewportWidth - scaledWidth, 0);
+        }
+
+        if (scaledHeight <= viewportHeight)
+        {
+            ExpandedImageTranslate.Y = (viewportHeight - scaledHeight) / 2;
+        }
+        else
+        {
+            ExpandedImageTranslate.Y = Math.Clamp(ExpandedImageTranslate.Y, viewportHeight - scaledHeight, 0);
+        }
+    }
+
+    private bool IsPointOverExpandedImage(System.Windows.Point point)
+    {
+        var left = ExpandedImageTranslate.X;
+        var top = ExpandedImageTranslate.Y;
+        var right = left + ExpandedImage.Width * _expandedImageZoom;
+        var bottom = top + ExpandedImage.Height * _expandedImageZoom;
+        return point.X >= left && point.X <= right && point.Y >= top && point.Y <= bottom;
+    }
+
+    private System.Windows.Point MousePointInExpandedViewport()
+    {
+        return ExpandedImageViewport.PointFromScreen(new System.Windows.Point(Forms.Control.MousePosition.X, Forms.Control.MousePosition.Y));
+    }
+
+    private static short WheelDelta(IntPtr wParam)
+    {
+        return unchecked((short)(((long)wParam >> 16) & 0xffff));
+    }
+
+    private static double Distance(System.Windows.Point a, System.Windows.Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
     }
 
     private void PositionOnMouseScreen()
@@ -1354,6 +1709,13 @@ public partial class MainWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
+            if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+            {
+                CloseExpandedImage();
+                e.Handled = true;
+                return;
+            }
+
             if (ActionMenuPopup.IsOpen)
             {
                 ActionMenuPopup.IsOpen = false;
@@ -1400,6 +1762,14 @@ public partial class MainWindow : Window
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+        {
+            CloseExpandedImage();
+            Activate();
+            ShellLog.Info("image expanded closed on deactivate");
+            return;
+        }
+
         if (KeepOpenForDebug || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
         {
             ShellLog.Info($"deactivate suppressed debug={KeepOpenForDebug}");
