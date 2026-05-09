@@ -6049,7 +6049,7 @@ internal static class StaticDocumentPreviewRenderer
 
 internal static class PdfPreviewRenderer
 {
-    public static bool TryRenderFirstPage(string path, out Image image)
+    public static bool TryRenderFirstPage(string path, out Image image, int dpi = 120)
     {
         image = new Bitmap(1, 1);
         try
@@ -6064,7 +6064,8 @@ internal static class PdfPreviewRenderer
 
             var cacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip", "pdf-previews");
             Directory.CreateDirectory(cacheRoot);
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length)));
+            dpi = Math.Clamp(dpi, 72, 400);
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length + "|" + dpi)));
             var outputPrefix = Path.Combine(cacheRoot, fingerprint);
             var outputFile = outputPrefix + ".png";
             if (!File.Exists(outputFile))
@@ -6083,7 +6084,7 @@ internal static class PdfPreviewRenderer
                     args.Add("-singlefile");
                     args.Add("-png");
                     args.Add("-r");
-                    args.Add("120");
+                    args.Add(dpi.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     args.Add(path);
                     args.Add(outputPrefix);
                 }));
