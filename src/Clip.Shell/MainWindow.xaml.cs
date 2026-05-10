@@ -3645,6 +3645,11 @@ internal sealed class SettingsWindow : Window
             Margin = new Thickness(0, 0, 0, 18),
         });
 
+        if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(StartupRow());
+        }
+
         if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase) || string.Equals(page, "Appearance", StringComparison.OrdinalIgnoreCase))
         {
             panel.Children.Add(ThemeRow());
@@ -3690,6 +3695,61 @@ internal sealed class SettingsWindow : Window
                 ("Dismiss", "Click outside or Esc"),
             },
         };
+    }
+
+    private Border StartupRow()
+    {
+        var enabled = StartupRegistration.IsEnabled();
+        var toggle = StartupToggle(enabled);
+        return ControlRow(
+            "Run at startup",
+            "Start Clip when you log in to Windows.",
+            toggle);
+    }
+
+    private WpfButton StartupToggle(bool enabled)
+    {
+        var knob = new Border
+        {
+            Width = 18,
+            Height = 18,
+            CornerRadius = new CornerRadius(9),
+            Background = _text,
+            HorizontalAlignment = enabled ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left,
+            Margin = new Thickness(2),
+        };
+        var track = new Border
+        {
+            Width = 42,
+            Height = 22,
+            CornerRadius = new CornerRadius(11),
+            Background = enabled ? _selected : _surface2,
+            BorderBrush = enabled ? _selected : _line,
+            BorderThickness = new Thickness(1),
+            Child = knob,
+        };
+        var toggle = new WpfButton
+        {
+            Width = 46,
+            Height = 30,
+            Padding = new Thickness(0),
+            Background = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Content = track,
+            Tag = enabled,
+        };
+
+        toggle.Click += (_, _) =>
+        {
+            var next = toggle.Tag is not true;
+            toggle.Tag = next;
+            knob.HorizontalAlignment = next ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
+            track.Background = next ? _selected : _surface2;
+            track.BorderBrush = next ? _selected : _line;
+            _applyRunAtStartup(next);
+        };
+
+        return toggle;
     }
 
     private Border ThemeRow()
