@@ -100,6 +100,85 @@ internal sealed class ClipShellSettings
     }
 }
 
+internal static class StartupRegistration
+{
+    internal const string RunValueName = "Clip";
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    public static bool IsEnabled() => IsEnabled(RunValueName);
+
+    public static bool IsEnabled(string valueName)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return key?.GetValue(valueName) is string value && !string.IsNullOrWhiteSpace(value);
+    }
+
+    public static string? CurrentValue() => CurrentValue(RunValueName);
+
+    public static string? CurrentValue(string valueName)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return key?.GetValue(valueName) as string;
+    }
+
+    public static void SetEnabled(bool enabled) => SetEnabled(enabled, RunValueName, CurrentExecutablePath(), RemoveLegacyStartupShortcut);
+
+    public static void SetEnabled(bool enabled, string valueName, string executablePath, Action? afterDisable = null)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
+        if (key is null)
+        {
+            throw new InvalidOperationException("Could not open Windows startup registry key.");
+        }
+
+        if (enabled)
+        {
+            key.SetValue(valueName, Quote(executablePath), RegistryValueKind.String);
+            return;
+        }
+
+        key.DeleteValue(valueName, throwOnMissingValue: false);
+        afterDisable?.Invoke();
+    }
+
+    private static string CurrentExecutablePath()
+    {
+        var path = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            return path;
+        }
+
+        using var process = Process.GetCurrentProcess();
+        path = process.MainModule?.FileName;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            return path;
+        }
+
+        throw new InvalidOperationException("Could not find Clip executable path.");
+    }
+
+    private static string Quote(string path) => $"\"{path}\"";
+
+    private static void RemoveLegacyStartupShortcut()
+    {
+        try
+        {
+            var startupShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk");
+            if (File.Exists(startupShortcut))
+            {
+                File.Delete(startupShortcut);
+                ShellLog.Info($"legacy startup shortcut removed path={startupShortcut}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "legacy startup shortcut remove failed");
+        }
+    }
+}
+
 public partial class MainWindow : Window
 {
     private const int HotkeyId = 0x4350;
@@ -1949,7 +2028,7 @@ public partial class MainWindow : Window
         try
         {
             ShellLog.Info("settings opening");
-            var settings = new SettingsWindow(_settings, ApplyTheme, ApplyAppIcon, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("Surface2"), (WpfBrush)FindResource("Surface3"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Selected"))
+            var settings = new SettingsWindow(_settings, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("Surface2"), (WpfBrush)FindResource("Surface3"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Selected"))
             {
                 Owner = this,
             };
@@ -1986,6 +2065,22 @@ public partial class MainWindow : Window
         }
 
         ShellLog.Info($"app icon applied preference={preference} path={iconPath}");
+    }
+
+    private void ApplyRunAtStartup(bool enabled)
+    {
+        try
+        {
+            StartupRegistration.SetEnabled(enabled);
+            var value = StartupRegistration.CurrentValue() ?? "none";
+            ShellLog.Info($"startup preference changed enabled={enabled} value={value}");
+            ShowToast(enabled ? "Startup enabled" : "Startup disabled");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"startup preference failed enabled={enabled}");
+            ShowToast("Startup setting failed. Log saved.");
+        }
     }
 
     private void ApplyTheme(ClipThemePreference preference) => ApplyTheme(preference, save: true);
@@ -3395,6 +3490,7 @@ internal sealed class SettingsWindow : Window
     private readonly ClipShellSettings _settings;
     private readonly Action<ClipThemePreference> _applyTheme;
     private readonly Action<AppIconPreference> _applyAppIcon;
+    private readonly Action<bool> _applyRunAtStartup;
     private readonly ImageSource _dropdownIcon;
     private readonly WpfBrush _bg;
     private readonly WpfBrush _surface;
@@ -3405,11 +3501,12 @@ internal sealed class SettingsWindow : Window
     private readonly WpfBrush _line;
     private readonly WpfBrush _selected;
 
-    public SettingsWindow(ClipShellSettings settings, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, ImageSource dropdownIcon, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public SettingsWindow(ClipShellSettings settings, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, ImageSource dropdownIcon, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
     {
         _settings = settings;
         _applyTheme = applyTheme;
         _applyAppIcon = applyAppIcon;
+        _applyRunAtStartup = applyRunAtStartup;
         _dropdownIcon = dropdownIcon;
         _bg = bg;
         _surface = surface;
