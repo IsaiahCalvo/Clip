@@ -4,7 +4,10 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using Windows.Storage;
+using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -20,11 +23,15 @@ using Forms = System.Windows.Forms;
 using WpfBrush = System.Windows.Media.Brush;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
+using WpfWebView2 = Microsoft.Web.WebView2.Wpf.WebView2;
 using WpfImage = System.Windows.Controls.Image;
 using WpfListBox = System.Windows.Controls.ListBox;
 using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfOrientation = System.Windows.Controls.Orientation;
 using WpfTextBox = System.Windows.Controls.TextBox;
+using WinDataPackageOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation;
+using WinDataRequestedEventArgs = Windows.ApplicationModel.DataTransfer.DataRequestedEventArgs;
+using WinDataTransferManager = Windows.ApplicationModel.DataTransfer.DataTransferManager;
 using WatcherAppChoice = Clip.Watcher.AppChoice;
 using WatcherAppDiscovery = Clip.Watcher.AppDiscovery;
 using WatcherAppLauncher = Clip.Watcher.AppLauncher;
@@ -36,6 +43,63 @@ using WatcherStaticDocumentPreviewRenderer = Clip.Watcher.StaticDocumentPreviewR
 
 namespace Clip.Shell;
 
+internal enum ClipThemePreference
+{
+    System,
+    Light,
+    Dark,
+}
+
+internal enum AppIconPreference
+{
+    Light,
+    Dark,
+}
+
+internal sealed class ClipShellSettings
+{
+    public ClipThemePreference Theme { get; set; } = ClipThemePreference.System;
+    public AppIconPreference AppIcon { get; set; } = AppIconPreference.Light;
+
+    public static string SettingsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Clip",
+        "settings.json");
+
+    public static ClipShellSettings Load()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath))
+            {
+                return new ClipShellSettings();
+            }
+
+            return JsonSerializer.Deserialize<ClipShellSettings>(File.ReadAllText(SettingsPath)) ?? new ClipShellSettings();
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "settings load failed");
+            return new ClipShellSettings();
+        }
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(SettingsPath, json);
+            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "settings save failed");
+        }
+    }
+}
+
 public partial class MainWindow : Window
 {
     private const int HotkeyId = 0x4350;
@@ -43,14 +107,18 @@ public partial class MainWindow : Window
     private const int VkV = 0x56;
     private const int WmHotkey = 0x0312;
     private const int WmClipboardUpdate = 0x031D;
+    private const int WmMouseWheel = 0x020A;
+    private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
 
     private readonly ClipboardHistoryStore _store = new();
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
+    private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
     private HwndSource? _source;
+    private bool _hotkeyRegistered;
     private string _kindFilter = "all";
     private string _dateFilter = "all";
     private string _fileFilter = "all";
@@ -60,20 +128,40 @@ public partial class MainWindow : Window
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
     private ClipboardHistoryItem? _menuItem;
+    private bool _expandedImagePanning;
+    private System.Windows.Point _expandedImageLastPoint;
+    private System.Windows.Point _expandedImageDownPoint;
+    private bool _expandedImageMoved;
+    private bool _expandedImageDownOnImage;
+    private double _expandedImageZoom = 1.0;
+    private double _expandedImageNaturalWidth = 1.0;
+    private double _expandedImageNaturalHeight = 1.0;
+    private Rect _expandedRestoreBounds;
+    private CornerRadius _expandedRestoreCornerRadius;
+    private bool _expandedWindowResized;
+    private string? _currentPreviewImagePath;
+    private string? _currentPreviewPdfPath;
+    private readonly ClipShellSettings _settings = ClipShellSettings.Load();
     public bool KeepOpenForDebug { get; set; }
+    internal AppIconPreference AppIconPreference => _settings.AppIcon;
+    internal event Action<AppIconPreference>? AppIconChanged;
 
     public MainWindow()
     {
         InitializeComponent();
+        ApplyTheme(_settings.Theme, save: false);
+        ApplyAppIcon(_settings.AppIcon, save: false);
         Opacity = 0;
         SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24);
         DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
         FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
+        ExpandImageIcon.Source = RenderSvg("expand-alt-svgrepo-com.svg", 24);
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
             Toast.Visibility = Visibility.Collapsed;
         };
+        _hotkeyRetryTimer.Tick += (_, _) => EnsureHotkeyRegistered("retry");
     }
 
     public void InitializeShell()
@@ -84,7 +172,7 @@ public partial class MainWindow : Window
             _source?.AddHook(WndProc);
             var hwnd = new WindowInteropHelper(this).Handle;
             ApplyRoundedWindowCorners(hwnd);
-            var hotkey = RegisterHotKey(hwnd, HotkeyId, ModAlt, VkV);
+            var hotkey = EnsureHotkeyRegistered("startup");
             var listener = AddClipboardFormatListener(hwnd);
             ShellLog.Info($"window initialized hwnd={hwnd} hotkey={hotkey} listener={listener} win32={Marshal.GetLastWin32Error()}");
         };
@@ -108,12 +196,20 @@ public partial class MainWindow : Window
             ShellLog.Info("window pre-rendered while hidden");
             _ = WarmHtmlPreviewAsync();
             OpenWithWindow.WarmCacheAsync();
+            ClipboardSharePayload.CleanupStaleTemporaryFiles();
         };
 
         Closing += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
-            UnregisterHotKey(hwnd, HotkeyId);
+            _hotkeyRetryTimer.Stop();
+            if (_hotkeyRegistered)
+            {
+                var released = UnregisterHotKey(hwnd, HotkeyId);
+                ShellLog.Info($"Alt+V hotkey unregistered={released} hwnd={hwnd} win32={Marshal.GetLastWin32Error()}");
+                _hotkeyRegistered = false;
+            }
+
             RemoveClipboardFormatListener(hwnd);
             ShellLog.Info("window closing");
         };
@@ -185,7 +281,25 @@ public partial class MainWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && (msg == WmMouseWheel || msg == WmMouseHWheel))
+        {
+            var delta = WheelDelta(wParam);
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                ZoomExpandedImage(Math.Pow(1.0018, delta), MousePointInExpandedViewport());
+            }
+            else if (msg == WmMouseHWheel)
+            {
+                PanExpandedImage(-delta, 0);
+            }
+            else
+            {
+                PanExpandedImage(0, delta);
+            }
+
+            handled = true;
+        }
+        else if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
         {
             ShellLog.Info("Alt+V received");
             ShowPalette();
@@ -197,6 +311,37 @@ public partial class MainWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    private bool EnsureHotkeyRegistered(string reason)
+    {
+        if (_hotkeyRegistered)
+        {
+            _hotkeyRetryTimer.Stop();
+            return true;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            ShellLog.Info($"Alt+V hotkey skipped reason={reason} hwnd=0");
+            return false;
+        }
+
+        _hotkeyRegistered = RegisterHotKey(hwnd, HotkeyId, ModAlt, VkV);
+        var win32 = Marshal.GetLastWin32Error();
+        ShellLog.Info($"Alt+V hotkey register reason={reason} registered={_hotkeyRegistered} hwnd={hwnd} win32={win32}");
+
+        if (_hotkeyRegistered)
+        {
+            _hotkeyRetryTimer.Stop();
+        }
+        else if (!_hotkeyRetryTimer.IsEnabled)
+        {
+            _hotkeyRetryTimer.Start();
+        }
+
+        return _hotkeyRegistered;
     }
 
     private void CaptureClipboard()
@@ -242,7 +387,18 @@ public partial class MainWindow : Window
             else if (System.Windows.Clipboard.ContainsText())
             {
                 var text = System.Windows.Clipboard.GetText();
-                if (TryNormalizeColorText(text, source.Name, out var colorHex))
+                if (ClipboardPathText.TryParseExistingFilePaths(text, out var paths))
+                {
+                    item = new ClipboardHistoryItem
+                    {
+                        Kind = ClipboardItemKind.Files,
+                        FilePaths = paths,
+                        Preview = paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files",
+                        SourceApplication = source.Name,
+                        SourceApplicationPath = source.Path,
+                    };
+                }
+                else if (TryNormalizeColorText(text, source.Name, out var colorHex))
                 {
                     item = new ClipboardHistoryItem
                     {
@@ -494,7 +650,15 @@ public partial class MainWindow : Window
             actions.Add(new MenuAction("Copy path", () => CopyPath(item)));
         }
 
+        var shareActions = new List<MenuAction>();
+        if (BlipShareLaunchPlan.IsInstalled())
+        {
+            shareActions.Add(new MenuAction("Blip", () => ShareWithBlip(item)));
+        }
+
+        shareActions.Add(new MenuAction("Windows Share...", () => ShareItem(item)));
         actions.Add(MenuAction.Separator);
+        actions.Add(MenuAction.Submenu("Share", shareActions));
         actions.Add(new MenuAction("Save as File...", () => SaveItem(item)));
         actions.Add(new MenuAction("Delete", () => DeleteItem(item), true, danger: true, shortcut: "Del"));
         ShowStyledMenu(actions, null);
@@ -503,6 +667,7 @@ public partial class MainWindow : Window
     private void ShowStyledMenu(IEnumerable<MenuAction> actions, UIElement? target)
     {
         ActionMenuHost.Children.Clear();
+        ShareSubmenuPopup.IsOpen = false;
         foreach (var action in actions)
         {
             if (action.IsSeparator)
@@ -543,17 +708,50 @@ public partial class MainWindow : Window
                 Grid.SetColumn(shortcut, 1);
                 grid.Children.Add(shortcut);
             }
+            else if (action.Children.Count > 0)
+            {
+                var arrow = new TextBlock
+                {
+                    Text = ">",
+                    Foreground = (WpfBrush)FindResource("Muted"),
+                    FontSize = 12,
+                    Margin = new Thickness(20, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                Grid.SetColumn(arrow, 1);
+                grid.Children.Add(arrow);
+            }
 
             row.Child = grid;
             if (action.Enabled)
             {
-                row.MouseEnter += (_, _) => row.Background = (WpfBrush)FindResource("Surface3");
+                row.MouseEnter += (_, _) =>
+                {
+                    row.Background = (WpfBrush)FindResource("Surface3");
+                    if (action.Children.Count > 0)
+                    {
+                        ShowShareSubmenu(action.Children, row);
+                    }
+                    else
+                    {
+                        ShareSubmenuPopup.IsOpen = false;
+                        ActionMenuPopup.StaysOpen = false;
+                    }
+                };
                 row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
                 row.MouseLeftButtonDown += (_, e) =>
                 {
-                    ActionMenuPopup.IsOpen = false;
-                    action.Invoke();
-                    ShellLog.Info($"menu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    if (action.Children.Count > 0)
+                    {
+                        ShowShareSubmenu(action.Children, row);
+                    }
+                    else
+                    {
+                        CloseActionMenus();
+                        action.Invoke();
+                        ShellLog.Info($"menu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    }
+
                     e.Handled = true;
                 };
             }
@@ -573,8 +771,65 @@ public partial class MainWindow : Window
         ShellLog.Info($"menu opened target={(target is null ? "mouse" : target.GetType().Name)} count={ActionMenuHost.Children.Count}");
     }
 
+    private void ShowShareSubmenu(IReadOnlyList<MenuAction> actions, UIElement owner)
+    {
+        ShareSubmenuHost.Children.Clear();
+        foreach (var action in actions)
+        {
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 7, 10, 7),
+                Background = WpfBrushes.Transparent,
+                Opacity = action.Enabled ? 1.0 : 0.45,
+                MinWidth = 170,
+            };
+            row.Child = new TextBlock
+            {
+                Text = action.Label,
+                Foreground = action.Danger ? (WpfBrush)FindResource("Danger") : (WpfBrush)FindResource("Text"),
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            if (action.Enabled)
+            {
+                row.MouseEnter += (_, _) => row.Background = (WpfBrush)FindResource("Surface3");
+                row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
+                row.MouseLeftButtonDown += (_, e) =>
+                {
+                    CloseActionMenus();
+                    action.Invoke();
+                    ShellLog.Info($"submenu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    e.Handled = true;
+                };
+            }
+
+            ShareSubmenuHost.Children.Add(row);
+        }
+
+        ShareSubmenuPopup.PlacementTarget = owner;
+        ShareSubmenuPopup.HorizontalOffset = 4;
+        ShareSubmenuPopup.VerticalOffset = -4;
+        ActionMenuPopup.StaysOpen = true;
+        ShareSubmenuPopup.StaysOpen = true;
+        ShareSubmenuPopup.IsOpen = true;
+    }
+
+    private void CloseActionMenus()
+    {
+        ShareSubmenuPopup.IsOpen = false;
+        ActionMenuPopup.IsOpen = false;
+        ShareSubmenuPopup.StaysOpen = false;
+        ActionMenuPopup.StaysOpen = false;
+    }
+
     private void OnActionMenuClosed(object? sender, EventArgs e)
     {
+        ShareSubmenuPopup.IsOpen = false;
+        ShareSubmenuPopup.StaysOpen = false;
+        ActionMenuPopup.StaysOpen = false;
         _suppressDeactivate = false;
         _menuItem = null;
         ShellLog.Info("menu closed");
@@ -639,7 +894,9 @@ public partial class MainWindow : Window
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
                 ImagePreview.Source = LoadBitmap(item.AssetPath);
+                _currentPreviewImagePath = item.AssetPath;
                 ImagePreview.Visibility = Visibility.Visible;
+                ExpandImageButton.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview image id={item.Id} path={item.AssetPath}");
                 return;
             }
@@ -686,7 +943,9 @@ public partial class MainWindow : Window
                     if (token != _previewToken) return;
                     HidePreviews();
                     ImagePreview.Source = LoadBitmap(path);
+                    _currentPreviewImagePath = path;
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                 });
                 ShellLog.Info($"preview file image path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
@@ -747,7 +1006,13 @@ public partial class MainWindow : Window
 
                     HidePreviews();
                     ImagePreview.Source = BitmapFromDrawingImage(rendered);
+                    if (ext == ".pdf")
+                    {
+                        _currentPreviewPdfPath = path;
+                    }
+
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                     rendered.Dispose();
                 });
                 ShellLog.Info($"preview rendered file path={path} elapsedMs={watch.ElapsedMilliseconds}");
@@ -1096,6 +1361,131 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ShareItem(ClipboardHistoryItem item)
+    {
+        ClipboardSharePayload? payload = null;
+        try
+        {
+            if (!WinDataTransferManager.IsSupported())
+            {
+                ShowToast("Sharing is not available on this PC.");
+                return;
+            }
+
+            payload = ClipboardSharePayload.Create(item);
+            var hwnd = new WindowInteropHelper(this).Handle;
+            var interop = WinDataTransferManager.As<IDataTransferManagerInterop>();
+            var result = interop.GetForWindow(hwnd, DataTransferManagerId);
+            var manager = WinRT.MarshalInterface<WinDataTransferManager>.FromAbi(result);
+
+            Windows.Foundation.TypedEventHandler<WinDataTransferManager, WinDataRequestedEventArgs>? handler = null;
+            handler = async (_, args) =>
+            {
+                if (handler is not null)
+                {
+                    manager.DataRequested -= handler;
+                }
+
+                var deferral = args.Request.GetDeferral();
+                try
+                {
+                    var data = args.Request.Data;
+                    data.Properties.Title = ShareTitle(item);
+                    data.Properties.Description = ShareDescription(item);
+                    data.RequestedOperation = WinDataPackageOperation.Copy;
+                    if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
+                    {
+                        data.SetText(TextPayload(item));
+                    }
+
+                    var files = new List<StorageFile>();
+                    foreach (var path in payload.FilePaths)
+                    {
+                        files.Add(await StorageFile.GetFileFromPathAsync(path));
+                    }
+
+                    data.SetStorageItems(files);
+                    data.ShareCompleted += (_, _) => payload.Cleanup();
+                    data.ShareCanceled += (_, _) => payload.Cleanup();
+                }
+                catch (Exception ex)
+                {
+                    payload.Cleanup();
+                    ShellLog.Error(ex, $"share data failed id={item.Id}");
+                    args.Request.FailWithDisplayText("Clip could not prepare this item for sharing.");
+                }
+                finally
+                {
+                    deferral.Complete();
+                }
+            };
+
+            manager.DataRequested += handler;
+            interop.ShowShareUIForWindow(hwnd);
+            ShellLog.Info($"share opened id={item.Id} files={payload.FilePaths.Count} temp={payload.HasTemporaryFiles}");
+        }
+        catch (Exception ex)
+        {
+            payload?.Cleanup();
+            ShellLog.Error(ex, $"share failed id={item.Id}");
+            ShowToast("Share failed. Log saved.");
+        }
+    }
+
+    private void ShareWithBlip(ClipboardHistoryItem item)
+    {
+        try
+        {
+            var payload = ClipboardSharePayload.Create(item);
+            var plan = BlipShareLaunchPlan.Create(payload);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = BlipShareLaunchPlan.ExecutableName,
+                UseShellExecute = true,
+                Arguments = string.Join(" ", plan.LaunchArguments.Select(QuoteProcessArgument)),
+            };
+
+            Process.Start(startInfo);
+            ShellLog.Info($"blip opened id={item.Id} files={plan.FilePaths.Count} temp={payload.HasTemporaryFiles}");
+            if (payload.HasTemporaryFiles)
+            {
+                ShowToast($"Blip opened. Temp file: {Path.GetDirectoryName(plan.FilePaths[0])}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"blip failed id={item.Id}");
+            ShowToast("Blip failed. Log saved.");
+        }
+    }
+
+    private static string QuoteProcessArgument(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    }
+
+    private static string ShareTitle(ClipboardHistoryItem item)
+    {
+        return item.Kind switch
+        {
+            ClipboardItemKind.Image => "Clip image",
+            ClipboardItemKind.Files => item.FilePaths.Count == 1 ? Path.GetFileName(item.FilePaths[0]) : "Clip files",
+            ClipboardItemKind.Link => "Clip link",
+            ClipboardItemKind.Color => "Clip color",
+            _ => "Clip text",
+        };
+    }
+
+    private static string ShareDescription(ClipboardHistoryItem item)
+    {
+        return item.Kind switch
+        {
+            ClipboardItemKind.Image => "Image from Clip",
+            ClipboardItemKind.Files => item.FilePaths.Count == 1 ? item.FilePaths[0] : $"{item.FilePaths.Count} files from Clip",
+            _ => "Text saved as a temporary file by Clip",
+        };
+    }
+
     private static void CopyPath(ClipboardHistoryItem item)
     {
         if (item.FilePaths.Count > 0)
@@ -1151,13 +1541,364 @@ public partial class MainWindow : Window
 
     private void HidePreviews()
     {
+        CloseExpandedImage();
         TextPreview.Visibility = Visibility.Collapsed;
         ImagePreview.Visibility = Visibility.Collapsed;
+        ExpandImageButton.Visibility = Visibility.Collapsed;
         HtmlPreview.Visibility = Visibility.Collapsed;
         PlaceholderPreview.Visibility = Visibility.Collapsed;
         ColorPreview.Visibility = Visibility.Collapsed;
         TextPreview.Text = string.Empty;
         ImagePreview.Source = null;
+        _currentPreviewImagePath = null;
+        _currentPreviewPdfPath = null;
+    }
+
+    private void OnExpandImageClick(object sender, RoutedEventArgs e)
+    {
+        var source = BestExpandedImageSource();
+        if (source is null)
+        {
+            return;
+        }
+
+        CloseActionMenus();
+        ExpandedImage.Source = source;
+        SetExpandedImageNaturalSize(source);
+        ExpandWindowForImage();
+        ExpandedBackdrop.Source = CaptureShellBackdrop();
+        ExpandedImageOverlay.Visibility = Visibility.Visible;
+        ExpandedImageOverlay.UpdateLayout();
+        ExpandedImageOverlay.Focus();
+        ResetExpandedImageView();
+        ShellLog.Info($"image expanded size={ExpandedImage.Width:0}x{ExpandedImage.Height:0}");
+        e.Handled = true;
+    }
+
+    private ImageSource? BestExpandedImageSource()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_currentPreviewImagePath) && File.Exists(_currentPreviewImagePath))
+            {
+                return LoadBitmap(_currentPreviewImagePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_currentPreviewPdfPath) && File.Exists(_currentPreviewPdfPath) &&
+                WatcherPdfPreviewRenderer.TryRenderFirstPage(_currentPreviewPdfPath, out var pdfImage, 300))
+            {
+                using (pdfImage)
+                {
+                    return BitmapFromDrawingImage(pdfImage);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "best expanded image load failed");
+        }
+
+        return ImagePreview.Source;
+    }
+
+    private void SetExpandedImageNaturalSize(ImageSource source)
+    {
+        if (source is BitmapSource bitmap)
+        {
+            var dpiX = bitmap.DpiX > 0 ? bitmap.DpiX : 96;
+            var dpiY = bitmap.DpiY > 0 ? bitmap.DpiY : 96;
+            _expandedImageNaturalWidth = Math.Max(1, bitmap.PixelWidth * 96.0 / dpiX);
+            _expandedImageNaturalHeight = Math.Max(1, bitmap.PixelHeight * 96.0 / dpiY);
+            ExpandedImage.Width = _expandedImageNaturalWidth;
+            ExpandedImage.Height = _expandedImageNaturalHeight;
+            return;
+        }
+
+        _expandedImageNaturalWidth = Math.Max(1, double.IsNaN(source.Width) || source.Width <= 0 ? ActualWidth : source.Width);
+        _expandedImageNaturalHeight = Math.Max(1, double.IsNaN(source.Height) || source.Height <= 0 ? ActualHeight : source.Height);
+        ExpandedImage.Width = _expandedImageNaturalWidth;
+        ExpandedImage.Height = _expandedImageNaturalHeight;
+    }
+
+    private void ExpandWindowForImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            _expandedRestoreBounds = new Rect(Left, Top, Width, Height);
+            _expandedRestoreCornerRadius = Shell.CornerRadius;
+            _expandedWindowResized = true;
+        }
+
+        var screen = Forms.Screen.FromPoint(Forms.Control.MousePosition).Bounds;
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var topLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
+        var bottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
+        Left = topLeft.X;
+        Top = topLeft.Y;
+        Width = bottomRight.X - topLeft.X;
+        Height = bottomRight.Y - topLeft.Y;
+        Shell.CornerRadius = new CornerRadius(0);
+        UpdateLayout();
+    }
+
+    private void RestoreWindowAfterImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            return;
+        }
+
+        Left = _expandedRestoreBounds.Left;
+        Top = _expandedRestoreBounds.Top;
+        Width = _expandedRestoreBounds.Width;
+        Height = _expandedRestoreBounds.Height;
+        Shell.CornerRadius = _expandedRestoreCornerRadius;
+        _expandedWindowResized = false;
+        UpdateLayout();
+    }
+
+    private ImageSource? CaptureShellBackdrop()
+    {
+        try
+        {
+            var width = Math.Max(1, (int)Math.Round(ActualWidth));
+            var height = Math.Max(1, (int)Math.Round(ActualHeight));
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(Shell);
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "expanded backdrop capture failed");
+            return null;
+        }
+    }
+
+    private void ResetExpandedImageView()
+    {
+        ExpandedImageViewport.UpdateLayout();
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var fitWidth = Math.Max(1, viewportWidth - 48);
+        var fitHeight = Math.Max(1, viewportHeight - 48);
+        var imageWidth = Math.Max(1, _expandedImageNaturalWidth);
+        var imageHeight = Math.Max(1, _expandedImageNaturalHeight);
+        var fitScale = Math.Min(fitWidth / imageWidth, fitHeight / imageHeight);
+        _expandedImageZoom = Math.Clamp(fitScale < 1 ? fitScale : 1.0, 0.05, 32.0);
+        var scaledWidth = imageWidth * _expandedImageZoom;
+        var scaledHeight = imageHeight * _expandedImageZoom;
+        SetExpandedImageBounds(
+            (viewportWidth - scaledWidth) / 2,
+            (viewportHeight - scaledHeight) / 2,
+            scaledWidth,
+            scaledHeight);
+    }
+
+    private void CloseExpandedImage()
+    {
+        if (ExpandedImageOverlay.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _expandedImagePanning = false;
+        _expandedImageDownOnImage = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Visibility = Visibility.Collapsed;
+        ExpandedImage.Source = null;
+        ExpandedBackdrop.Source = null;
+        RestoreWindowAfterImage();
+        ShellLog.Info("image expanded closed");
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _expandedImageDownOnImage = IsPointOverExpandedImage(e.GetPosition(ExpandedImageViewport));
+        if (!_expandedImageDownOnImage)
+        {
+            CloseExpandedImage();
+            e.Handled = true;
+            return;
+        }
+
+        _expandedImagePanning = true;
+        _expandedImageLastPoint = e.GetPosition(ExpandedImageOverlay);
+        _expandedImageDownPoint = _expandedImageLastPoint;
+        _expandedImageMoved = false;
+        ExpandedImageOverlay.CaptureMouse();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.SizeAll;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        var releasedOffImage = !IsPointOverExpandedImage(e.GetPosition(ExpandedImageViewport));
+        StopExpandedImagePan();
+        if (!_expandedImageMoved && !_expandedImageDownOnImage && releasedOffImage)
+        {
+            CloseExpandedImage();
+        }
+
+        _expandedImageDownOnImage = false;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            StopExpandedImagePan();
+        }
+    }
+
+    private void OnExpandedOverlayMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_expandedImagePanning || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var point = e.GetPosition(ExpandedImageOverlay);
+        if (!_expandedImageMoved && Distance(point, _expandedImageDownPoint) > 2)
+        {
+            _expandedImageMoved = true;
+        }
+
+        PanExpandedImage(point.X - _expandedImageLastPoint.X, point.Y - _expandedImageLastPoint.Y);
+        _expandedImageLastPoint = point;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            ZoomExpandedImage(Math.Pow(1.0018, e.Delta), e.GetPosition(ExpandedImageViewport));
+        }
+        else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            PanExpandedImage(-e.Delta, 0);
+        }
+        else
+        {
+            PanExpandedImage(0, e.Delta);
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlaySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && ExpandedImage.Source is not null)
+        {
+            ClampExpandedImage();
+        }
+    }
+
+    private void StopExpandedImagePan()
+    {
+        _expandedImagePanning = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.Arrow;
+    }
+
+    private void PanExpandedImage(double deltaX, double deltaY)
+    {
+        Canvas.SetLeft(ExpandedImage, ExpandedImageLeft() + deltaX);
+        Canvas.SetTop(ExpandedImage, ExpandedImageTop() + deltaY);
+        ClampExpandedImage();
+    }
+
+    private void ZoomExpandedImage(double factor, System.Windows.Point center)
+    {
+        var oldZoom = _expandedImageZoom;
+        var newZoom = Math.Clamp(oldZoom * factor, 0.02, 128.0);
+        if (Math.Abs(newZoom - oldZoom) < 0.0001)
+        {
+            return;
+        }
+
+        var imageX = (center.X - ExpandedImageLeft()) / oldZoom;
+        var imageY = (center.Y - ExpandedImageTop()) / oldZoom;
+        _expandedImageZoom = newZoom;
+        ExpandedImage.Width = _expandedImageNaturalWidth * newZoom;
+        ExpandedImage.Height = _expandedImageNaturalHeight * newZoom;
+        Canvas.SetLeft(ExpandedImage, center.X - imageX * newZoom);
+        Canvas.SetTop(ExpandedImage, center.Y - imageY * newZoom);
+        ClampExpandedImage();
+    }
+
+    private void ClampExpandedImage()
+    {
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var scaledWidth = Math.Max(1, ExpandedImage.Width);
+        var scaledHeight = Math.Max(1, ExpandedImage.Height);
+
+        if (scaledWidth <= viewportWidth)
+        {
+            Canvas.SetLeft(ExpandedImage, (viewportWidth - scaledWidth) / 2);
+        }
+        else
+        {
+            Canvas.SetLeft(ExpandedImage, Math.Clamp(ExpandedImageLeft(), viewportWidth - scaledWidth, 0));
+        }
+
+        if (scaledHeight <= viewportHeight)
+        {
+            Canvas.SetTop(ExpandedImage, (viewportHeight - scaledHeight) / 2);
+        }
+        else
+        {
+            Canvas.SetTop(ExpandedImage, Math.Clamp(ExpandedImageTop(), viewportHeight - scaledHeight, 0));
+        }
+    }
+
+    private bool IsPointOverExpandedImage(System.Windows.Point point)
+    {
+        var left = ExpandedImageLeft();
+        var top = ExpandedImageTop();
+        var right = left + Math.Max(1, ExpandedImage.Width);
+        var bottom = top + Math.Max(1, ExpandedImage.Height);
+        return point.X >= left && point.X <= right && point.Y >= top && point.Y <= bottom;
+    }
+
+    private void SetExpandedImageBounds(double left, double top, double width, double height)
+    {
+        ExpandedImage.Width = Math.Max(1, width);
+        ExpandedImage.Height = Math.Max(1, height);
+        Canvas.SetLeft(ExpandedImage, left);
+        Canvas.SetTop(ExpandedImage, top);
+    }
+
+    private double ExpandedImageLeft()
+    {
+        var left = Canvas.GetLeft(ExpandedImage);
+        return double.IsNaN(left) ? 0 : left;
+    }
+
+    private double ExpandedImageTop()
+    {
+        var top = Canvas.GetTop(ExpandedImage);
+        return double.IsNaN(top) ? 0 : top;
+    }
+
+    private System.Windows.Point MousePointInExpandedViewport()
+    {
+        return ExpandedImageViewport.PointFromScreen(new System.Windows.Point(Forms.Control.MousePosition.X, Forms.Control.MousePosition.Y));
+    }
+
+    private static short WheelDelta(IntPtr wParam)
+    {
+        return unchecked((short)(((long)wParam >> 16) & 0xffff));
+    }
+
+    private static double Distance(System.Windows.Point a, System.Windows.Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
     }
 
     private void PositionOnMouseScreen()
@@ -1208,7 +1949,7 @@ public partial class MainWindow : Window
         try
         {
             ShellLog.Info("settings opening");
-            var settings = new SettingsWindow((WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("Surface2"), (WpfBrush)FindResource("Surface3"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Selected"))
+            var settings = new SettingsWindow(_settings, ApplyTheme, ApplyAppIcon, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("Surface2"), (WpfBrush)FindResource("Surface3"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Selected"))
             {
                 Owner = this,
             };
@@ -1226,6 +1967,152 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, "settings failed");
             _suppressDeactivate = false;
             ShowToast("Settings failed. Log saved.");
+        }
+    }
+
+    private void ApplyAppIcon(AppIconPreference preference) => ApplyAppIcon(preference, save: true);
+
+    private void ApplyAppIcon(AppIconPreference preference, bool save)
+    {
+        _settings.AppIcon = preference;
+        var iconPath = AppIconPath(preference);
+
+        if (save)
+        {
+            _settings.Save();
+            AppIconChanged?.Invoke(preference);
+            UpdateInstalledShortcutIcons(iconPath);
+            ShowToast($"Icon set to {preference}");
+        }
+
+        ShellLog.Info($"app icon applied preference={preference} path={iconPath}");
+    }
+
+    private void ApplyTheme(ClipThemePreference preference) => ApplyTheme(preference, save: true);
+
+    private void ApplyTheme(ClipThemePreference preference, bool save)
+    {
+        _settings.Theme = preference;
+        var useDark = preference switch
+        {
+            ClipThemePreference.Light => false,
+            ClipThemePreference.Dark => true,
+            _ => IsWindowsDarkMode(),
+        };
+
+        ApplyWindowTitleIcon(useDark);
+        SetBrush("Bg", useDark ? "#1A1816" : "#FAFAF8");
+        SetBrush("Surface", useDark ? "#211F1C" : "#FFFFFF");
+        SetBrush("Surface2", useDark ? "#26231F" : "#F4F3EF");
+        SetBrush("Surface3", useDark ? "#2F2C27" : "#ECEBE6");
+        SetBrush("Line", useDark ? "#322E29" : "#E6E4DD");
+        SetBrush("Line2", useDark ? "#3D3934" : "#D8D5CC");
+        SetBrush("Text", useDark ? "#F2EFE9" : "#1A1816");
+        SetBrush("Muted", useDark ? "#8A8478" : "#7A756C");
+        SetBrush("Muted2", useDark ? "#BDB6AB" : "#4A4641");
+        SetBrush("Muted3", useDark ? "#5F5A52" : "#A8A299");
+        SetBrush("Accent", useDark ? "#8FC8D9" : "#2B9AAD");
+        SetBrush("AccentSoft", useDark ? "#263941" : "#E1F4F5");
+        SetBrush("Selected", useDark ? "#27363B" : "#D8F1EF");
+        SetBrush("SelectedBorder", useDark ? "#56828E" : "#7CCBD0");
+        SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
+        Background = (WpfBrush)FindResource("Bg");
+        HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
+        ShellLog.Info($"theme applied preference={preference} dark={useDark}");
+
+        if (save)
+        {
+            _settings.Save();
+            RenderItems("theme");
+            if (_selected is not null)
+            {
+                RenderInfo(_selected);
+                RenderPreview(_selected);
+            }
+
+            ShowToast($"Theme set to {ThemeLabel(preference)}");
+        }
+    }
+
+    private void ApplyWindowTitleIcon(bool useDark)
+    {
+        var titleIcon = useDark ? AppIconPreference.Light : AppIconPreference.Dark;
+        var iconPath = AppIconPath(titleIcon);
+        if (File.Exists(iconPath))
+        {
+            var icon = LoadBitmap(iconPath);
+            Icon = icon;
+            AppHeaderIcon.Source = icon;
+            ShellLog.Info($"window title icon applied themeDark={useDark} icon={titleIcon} path={iconPath}");
+        }
+    }
+
+    private void SetBrush(string key, string hex)
+    {
+        var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+        if (Resources[key] is SolidColorBrush brush)
+        {
+            if (brush.IsFrozen)
+            {
+                Resources[key] = new SolidColorBrush(color);
+                return;
+            }
+
+            brush.Color = color;
+        }
+    }
+
+    private static bool IsWindowsDarkMode()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int value && value == 0;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static System.Drawing.Color ToDrawingColor(SolidColorBrush brush) =>
+        System.Drawing.Color.FromArgb(brush.Color.A, brush.Color.R, brush.Color.G, brush.Color.B);
+
+    private static string ThemeLabel(ClipThemePreference preference) => preference switch
+    {
+        ClipThemePreference.Light => "Light",
+        ClipThemePreference.Dark => "Dark",
+        _ => "System",
+    };
+
+    private static void UpdateInstalledShortcutIcons(string iconPath)
+    {
+        try
+        {
+            var shortcuts = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Clip.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Clip", "Clip.lnk"),
+            };
+
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType is null)
+            {
+                return;
+            }
+
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            foreach (var shortcutPath in shortcuts.Where(File.Exists))
+            {
+                dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                shortcut.IconLocation = iconPath;
+                shortcut.Save();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "shortcut icon update failed");
         }
     }
 
@@ -1354,6 +2241,13 @@ public partial class MainWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
+            if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+            {
+                CloseExpandedImage();
+                e.Handled = true;
+                return;
+            }
+
             if (ActionMenuPopup.IsOpen)
             {
                 ActionMenuPopup.IsOpen = false;
@@ -1400,6 +2294,14 @@ public partial class MainWindow : Window
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+        {
+            CloseExpandedImage();
+            Activate();
+            ShellLog.Info("image expanded closed on deactivate");
+            return;
+        }
+
         if (KeepOpenForDebug || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
         {
             ShellLog.Info($"deactivate suppressed debug={KeepOpenForDebug}");
@@ -1560,6 +2462,7 @@ public partial class MainWindow : Window
 
         var sourceLooksLikeColorPicker = source?.Contains("ColorPicker", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Contains("PowerToys", StringComparison.OrdinalIgnoreCase) == true ||
+            source?.Equals("Clip", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Equals("Clip.Shell", StringComparison.OrdinalIgnoreCase) == true;
 
         if (!trimmed.StartsWith('#') && !sourceLooksLikeColorPicker)
@@ -1650,6 +2553,11 @@ public partial class MainWindow : Window
             {
                 var path = item.FilePaths[0];
                 if (Directory.Exists(path)) return RenderSvg("folder-svgrepo-com.svg", size);
+                if (File.Exists(path) && IsImageFile(Path.GetExtension(path).ToLowerInvariant()))
+                {
+                    return LoadBitmap(path);
+                }
+
                 return RenderFileSvg(path, size);
             }
 
@@ -1687,8 +2595,25 @@ public partial class MainWindow : Window
     private ImageSource RenderFileSvg(string path, int size)
     {
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        if (ShouldUseWindowsFileIcon(ext))
+        {
+            var windowsIcon = WatcherShellIconReader.TryGetIcon(path, large: size >= 48);
+            if (windowsIcon is not null)
+            {
+                using (windowsIcon)
+                {
+                    return BitmapFromDrawingImage(windowsIcon);
+                }
+            }
+        }
+
         var name = string.IsNullOrWhiteSpace(ext) ? "file-60.svg" : $"file-icon-{ext}.svg";
         return File.Exists(AssetIconPath(name)) ? RenderSvg(name, size) : RenderGeneratedFileIcon(ext, size);
+    }
+
+    private static bool ShouldUseWindowsFileIcon(string ext)
+    {
+        return ext is "doc" or "docx" or "xls" or "xlsx" or "xlsm" or "ppt" or "pptx" or "vsd" or "vsdx" or "pdf";
     }
 
     private ImageSource RenderSvg(string fileName, int size, double scaleX = 1.0)
@@ -1770,6 +2695,14 @@ public partial class MainWindow : Window
         var path = Path.Combine(AppContext.BaseDirectory, "assets", "icons", fileName);
         if (File.Exists(path)) return path;
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "icons", fileName));
+    }
+
+    internal static string AppIconPath(AppIconPreference preference)
+    {
+        var fileName = preference == AppIconPreference.Dark ? "clip-tile-dark.ico" : "clip-tile-light.ico";
+        var path = Path.Combine(AppContext.BaseDirectory, "assets", "app-icons", fileName);
+        if (File.Exists(path)) return path;
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "app-icons", fileName));
     }
 
     private static BitmapImage LoadBitmap(string path)
@@ -1861,6 +2794,17 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
+
+    private static readonly Guid DataTransferManagerId = new(0xa5caee9b, 0x8708, 0x49d1, 0x8d, 0x36, 0x67, 0xd2, 0x5a, 0x8d, 0xa0, 0x0c);
+
+    [ComImport]
+    [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDataTransferManagerInterop
+    {
+        IntPtr GetForWindow(IntPtr appWindow, [In] ref Guid riid);
+        void ShowShareUIForWindow(IntPtr appWindow);
+    }
 
     internal static void ApplyRoundedWindowCorners(IntPtr hwnd)
     {
@@ -2448,6 +3392,10 @@ internal sealed class SettingsWindow : Window
 {
     private readonly Grid _content = new();
     private readonly Dictionary<string, WpfButton> _nav = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ClipShellSettings _settings;
+    private readonly Action<ClipThemePreference> _applyTheme;
+    private readonly Action<AppIconPreference> _applyAppIcon;
+    private readonly ImageSource _dropdownIcon;
     private readonly WpfBrush _bg;
     private readonly WpfBrush _surface;
     private readonly WpfBrush _surface2;
@@ -2457,8 +3405,12 @@ internal sealed class SettingsWindow : Window
     private readonly WpfBrush _line;
     private readonly WpfBrush _selected;
 
-    public SettingsWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public SettingsWindow(ClipShellSettings settings, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, ImageSource dropdownIcon, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
     {
+        _settings = settings;
+        _applyTheme = applyTheme;
+        _applyAppIcon = applyAppIcon;
+        _dropdownIcon = dropdownIcon;
         _bg = bg;
         _surface = surface;
         _surface2 = surface2;
@@ -2596,6 +3548,12 @@ internal sealed class SettingsWindow : Window
             Margin = new Thickness(0, 0, 0, 18),
         });
 
+        if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase) || string.Equals(page, "Appearance", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(ThemeRow());
+            panel.Children.Add(AppIconRow());
+        }
+
         foreach (var row in RowsFor(page))
         {
             panel.Children.Add(Row(row.Label, row.Value));
@@ -2624,18 +3582,179 @@ internal sealed class SettingsWindow : Window
             },
             "Appearance" => new[]
             {
-                ("Theme", "System dark"),
                 ("Density", "Compact"),
                 ("Preview style", "Native when available"),
                 ("Accent", "Teal"),
             },
             _ => new[]
             {
-                ("Theme", "System"),
                 ("Hotkey", "Alt+V"),
                 ("Debug log", "Ctrl+Shift+L"),
                 ("Dismiss", "Click outside or Esc"),
             },
+        };
+    }
+
+    private Border ThemeRow()
+    {
+        return ControlRow(
+            "Theme",
+            "Choose System, Light, or Dark.",
+            StyledDropdown(_settings.Theme.ToString(), new[] { "System", "Light", "Dark" }, selected =>
+            {
+                if (!Enum.TryParse<ClipThemePreference>(selected, out var theme) || theme == _settings.Theme)
+                {
+                    return;
+                }
+
+                _applyTheme(theme);
+                ShellLog.Info($"settings theme changed theme={theme}");
+            }));
+    }
+
+    private Border AppIconRow()
+    {
+        return ControlRow(
+            "App icon",
+            "Choose Light or Dark.",
+            StyledDropdown(_settings.AppIcon.ToString(), new[] { "Light", "Dark" }, selected =>
+            {
+                if (!Enum.TryParse<AppIconPreference>(selected, out var icon) || icon == _settings.AppIcon)
+                {
+                    return;
+                }
+
+                _applyAppIcon(icon);
+                ShellLog.Info($"settings app icon changed icon={icon}");
+            }));
+    }
+
+    private WpfButton StyledDropdown(string selected, IReadOnlyList<string> items, Action<string> onSelected)
+    {
+        var label = new TextBlock
+        {
+            Text = selected,
+            Foreground = _text,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var content = new Grid();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.Children.Add(label);
+        var arrow = new WpfImage
+        {
+            Source = _dropdownIcon,
+            Width = 11,
+            Height = 11,
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(arrow, 1);
+        content.Children.Add(arrow);
+
+        var button = new WpfButton
+        {
+            Width = 170,
+            Height = 30,
+            Padding = new Thickness(10, 0, 10, 0),
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+            Background = _surface2,
+            Foreground = _text,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            Content = content,
+        };
+
+        var optionHost = new StackPanel();
+        var popup = new Popup
+        {
+            PlacementTarget = button,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = _surface,
+                BorderBrush = _line,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(4),
+                MinWidth = 170,
+                Child = optionHost,
+            },
+        };
+
+        foreach (var item in items)
+        {
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 7, 10, 7),
+                Background = string.Equals(item, selected, StringComparison.OrdinalIgnoreCase) ? _selected : WpfBrushes.Transparent,
+            };
+            row.Child = new TextBlock
+            {
+                Text = item,
+                Foreground = string.Equals(item, selected, StringComparison.OrdinalIgnoreCase) ? _text : _muted,
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+            };
+            row.MouseEnter += (_, _) => row.Background = _surface3;
+            row.MouseLeave += (_, _) => row.Background = string.Equals(item, label.Text, StringComparison.OrdinalIgnoreCase) ? _selected : WpfBrushes.Transparent;
+            row.MouseLeftButtonDown += (_, e) =>
+            {
+                popup.IsOpen = false;
+                label.Text = item;
+                onSelected(item);
+                foreach (Border optionRow in optionHost.Children)
+                {
+                    var isSelected = optionRow.Child is TextBlock text && string.Equals(text.Text, item, StringComparison.OrdinalIgnoreCase);
+                    optionRow.Background = isSelected ? _selected : WpfBrushes.Transparent;
+                    if (optionRow.Child is TextBlock optionText)
+                    {
+                        optionText.Foreground = isSelected ? _text : _muted;
+                    }
+                }
+
+                e.Handled = true;
+            };
+            optionHost.Children.Add(row);
+        }
+
+        button.Click += (_, _) => popup.IsOpen = true;
+        return button;
+    }
+
+    private Border ControlRow(string label, string hint, System.Windows.Controls.Control control)
+    {
+        var grid = new Grid { MinHeight = 58 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = _text,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+        });
+        textPanel.Children.Add(new TextBlock
+        {
+            Text = hint,
+            Foreground = _muted,
+            FontSize = 12,
+            Margin = new Thickness(0, 3, 0, 0),
+        });
+        grid.Children.Add(textPanel);
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(control);
+
+        return new Border
+        {
+            Child = grid,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
         };
     }
 
@@ -2678,7 +3797,7 @@ internal sealed class MenuAction
 {
     public static readonly MenuAction Separator = new("", static () => { }, isSeparator: true);
 
-    public MenuAction(string label, Action invoke, bool enabled = true, bool danger = false, bool isSeparator = false, string shortcut = "")
+    public MenuAction(string label, Action invoke, bool enabled = true, bool danger = false, bool isSeparator = false, string shortcut = "", IReadOnlyList<MenuAction>? children = null)
     {
         Label = label;
         Invoke = invoke;
@@ -2686,7 +3805,10 @@ internal sealed class MenuAction
         Danger = danger;
         IsSeparator = isSeparator;
         Shortcut = shortcut;
+        Children = children ?? [];
     }
+
+    public static MenuAction Submenu(string label, IReadOnlyList<MenuAction> children) => new(label, static () => { }, children: children);
 
     public string Label { get; }
     public Action Invoke { get; }
@@ -2694,6 +3816,7 @@ internal sealed class MenuAction
     public bool Danger { get; }
     public bool IsSeparator { get; }
     public string Shortcut { get; }
+    public IReadOnlyList<MenuAction> Children { get; }
 }
 
 internal static class ShellLog

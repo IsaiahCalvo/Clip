@@ -161,9 +161,7 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Border Width="14" Height="14" CornerRadius="4" Background="#5F9CB0" Margin="14,0,8,0" VerticalAlignment="Center">
-                    <TextBlock Text="C" Foreground="White" FontSize="9" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
+                <Image x:Name="AppHeaderIcon" Width="16" Height="16" Margin="14,0,8,0" VerticalAlignment="Center" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
                 <TextBlock Grid.Column="1" Text="Clip" Foreground="{StaticResource Muted2}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center"/>
                 <Button x:Name="SettingsButton" Grid.Column="2" Style="{StaticResource IconButton}" Click="OnSettingsClick" ToolTip="Settings" Margin="0,0,10,0">
                     <Image x:Name="SettingsIcon" Width="16" Height="16" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
@@ -287,6 +285,15 @@
                             <Grid x:Name="PreviewHost">
                                 <TextBox x:Name="TextPreview" Style="{StaticResource CleanTextBox}" TextWrapping="Wrap" AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" FontSize="13" FontFamily="JetBrains Mono, Cascadia Mono, Consolas"/>
                                 <Image x:Name="ImagePreview" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                <Button x:Name="ExpandImageButton"
+                                        Style="{StaticResource IconButton}"
+                                        Visibility="Collapsed"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Click="OnExpandImageClick"
+                                        ToolTip="Expand image">
+                                    <Image x:Name="ExpandImageIcon" Width="15" Height="15" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                </Button>
                                 <wv2:WebView2 x:Name="HtmlPreview" Visibility="Collapsed"/>
                                 <StackPanel x:Name="PlaceholderPreview" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <Image x:Name="PlaceholderIcon" Width="128" Height="128" Stretch="Uniform" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
@@ -370,6 +377,21 @@
                 </Border>
             </Popup>
 
+            <Popup x:Name="ShareSubmenuPopup" AllowsTransparency="True" Placement="Right" StaysOpen="False">
+                <Border x:Name="ShareSubmenuBorder"
+                        Background="{StaticResource Surface}"
+                        CornerRadius="8"
+                        Padding="4"
+                        MinWidth="178"
+                        BorderBrush="{StaticResource Line2}"
+                        BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="40" ShadowDepth="10" Opacity="0.28" Color="#000000"/>
+                    </Border.Effect>
+                    <StackPanel x:Name="ShareSubmenuHost"/>
+                </Border>
+            </Popup>
+
             <Border x:Name="Toast"
                     Grid.RowSpan="4"
                     Visibility="Collapsed"
@@ -380,6 +402,37 @@
                     VerticalAlignment="Bottom"
                     Margin="0,0,0,46">
                 <TextBlock x:Name="ToastText" Foreground="{StaticResource Bg}" FontWeight="SemiBold" FontSize="12"/>
+            </Border>
+
+            <Border x:Name="ExpandedImageOverlay"
+                    Grid.RowSpan="4"
+                    Visibility="Collapsed"
+                    Background="Transparent"
+                    ClipToBounds="True"
+                    Focusable="True"
+                    MouseLeftButtonDown="OnExpandedOverlayMouseLeftButtonDown"
+                    MouseLeftButtonUp="OnExpandedOverlayMouseLeftButtonUp"
+                    MouseMove="OnExpandedOverlayMouseMove"
+                    MouseLeave="OnExpandedOverlayMouseLeave"
+                    MouseWheel="OnExpandedOverlayMouseWheel"
+                    SizeChanged="OnExpandedOverlaySizeChanged">
+                <Grid x:Name="ExpandedImageViewport" Background="Transparent" ClipToBounds="True">
+                    <Image x:Name="ExpandedBackdrop"
+                           Stretch="Fill"
+                           IsHitTestVisible="False"
+                           RenderOptions.BitmapScalingMode="HighQuality">
+                        <Image.Effect>
+                            <BlurEffect Radius="22" KernelType="Gaussian"/>
+                        </Image.Effect>
+                    </Image>
+                    <Rectangle Fill="#22FFFFFF" IsHitTestVisible="False"/>
+                    <Canvas x:Name="ExpandedImageCanvas" Background="Transparent">
+                        <Image x:Name="ExpandedImage"
+                               Stretch="Fill"
+                               SnapsToDevicePixels="True"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Canvas>
+                </Grid>
             </Border>
         </Grid>
     </Border>

@@ -43,6 +43,12 @@ The release files are created under:
 artifacts\publish\Clip-win-x64
 ```
 
+Double-click this app file to start Clip:
+
+```text
+artifacts\publish\Clip-win-x64\Clip.exe
+```
+
 The zip file is created at:
 
 ```text
@@ -57,7 +63,7 @@ After publishing or building, run:
 .\Install-ClipStartup.ps1
 ```
 
-This installs Clip for your Windows user account only.
+This installs Clip under `%LOCALAPPDATA%\Programs\Clip`, creates Desktop and Start Menu shortcuts, and starts Clip automatically when your Windows user signs in.
 
 ## Privacy
 

@@ -1,39 +1,78 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$starter = Join-Path $root "Start-Clip.ps1"
-$taskName = "Clip Clipboard Watcher"
-$taskCommand = "powershell.exe"
-$taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$starter`" -Watchdog"
+$publishScript = Join-Path $root "Publish-Clip.ps1"
+$publishDir = Join-Path $root "artifacts\publish\Clip-win-x64"
 
-if (-not (Test-Path $starter)) {
-    throw "Start script not found: $starter"
+if (-not (Test-Path (Join-Path $root "Clip.exe")) -and -not (Test-Path (Join-Path $publishDir "Clip.exe"))) {
+    if (-not (Test-Path $publishScript)) {
+        throw "Clip.exe was not found, and the publish script was not found."
+    }
+
+    & $publishScript -NoZip
 }
 
-$runValue = "$taskCommand $taskArgs"
+$sourceDir = if (Test-Path (Join-Path $root "Clip.exe")) { $root } else { $publishDir }
+$sourceExe = Join-Path $sourceDir "Clip.exe"
+if (-not (Test-Path $sourceExe)) {
+    $sourceExe = Join-Path $sourceDir "Clip.Shell.exe"
+}
+$sourceIcon = Join-Path $sourceDir "assets\app-icons\clip-tile-light.ico"
+
+if (-not (Test-Path $sourceExe)) {
+    throw "Clip executable was not found."
+}
+
+$installDir = Join-Path $env:LOCALAPPDATA "Programs\Clip"
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+Get-Process Clip, Clip.Shell -ErrorAction SilentlyContinue | Stop-Process -Force
+Copy-Item (Join-Path $sourceDir "*") $installDir -Recurse -Force
+
+$exe = Join-Path $installDir (Split-Path $sourceExe -Leaf)
+$icon = Join-Path $installDir "assets\app-icons\clip-tile-light.ico"
+if (-not (Test-Path $icon)) {
+    $icon = $exe
+}
+$quotedExe = "`"$exe`""
+
 New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
-Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -Value $runValue
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -Value $quotedExe
 
-$action = New-ScheduledTaskAction -Execute $taskCommand -Argument $taskArgs
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-try {
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Starts Clip clipboard watcher at Windows sign-in." -Force | Out-Null
-    Write-Output "Scheduled task installed."
-}
-catch {
-    Write-Output "Scheduled task install skipped: $($_.Exception.Message)"
+$oldTaskName = "Clip Clipboard Watcher"
+if (Get-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false
 }
 
-$startup = [Environment]::GetFolderPath("Startup")
-$shortcutPath = Join-Path $startup "Clip.lnk"
 $shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $taskCommand
-$shortcut.Arguments = $taskArgs
-$shortcut.WorkingDirectory = $root
-$shortcut.WindowStyle = 7
-$shortcut.Description = "Start Clip clipboard watcher"
-$shortcut.Save()
 
-Write-Output "Clip startup installed."
+function New-ClipShortcut {
+    param(
+        [string]$Path,
+        [string]$Description
+    )
+
+    $shortcut = $shell.CreateShortcut($Path)
+    $shortcut.TargetPath = $exe
+    $shortcut.WorkingDirectory = $installDir
+    $shortcut.IconLocation = $icon
+    $shortcut.WindowStyle = 7
+    $shortcut.Description = $Description
+    $shortcut.Save()
+}
+
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Clip.lnk"
+$startupShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Clip.lnk"
+$startMenuDir = Join-Path ([Environment]::GetFolderPath("Programs")) "Clip"
+$startMenuShortcut = Join-Path $startMenuDir "Clip.lnk"
+
+New-Item -ItemType Directory -Force -Path $startMenuDir | Out-Null
+New-ClipShortcut -Path $desktopShortcut -Description "Start Clip"
+New-ClipShortcut -Path $startupShortcut -Description "Start Clip at sign-in"
+New-ClipShortcut -Path $startMenuShortcut -Description "Start Clip"
+
+Start-Process -FilePath $exe -WindowStyle Hidden
+
+Write-Output "Clip installed to $installDir"
+Write-Output "Desktop shortcut: $desktopShortcut"
+Write-Output "Startup enabled for this Windows user."

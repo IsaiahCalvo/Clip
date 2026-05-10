@@ -457,6 +457,7 @@ public sealed class ClipboardHistoryStore
 
         var sourceLooksLikeColorPicker = source?.Contains("ColorPicker", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Contains("PowerToys", StringComparison.OrdinalIgnoreCase) == true ||
+            source?.Equals("Clip", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Equals("Clip.Shell", StringComparison.OrdinalIgnoreCase) == true;
         if (!trimmed.StartsWith('#') && !sourceLooksLikeColorPicker)
         {

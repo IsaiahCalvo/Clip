@@ -24,6 +24,12 @@ dotnet publish (Join-Path $root "src\Clip.Shell\Clip.Shell.csproj") `
     -p:EnableCompressionInSingleFile=true `
     -o $publishDir
 
+$shellExe = Join-Path $publishDir "Clip.Shell.exe"
+$appExe = Join-Path $publishDir "Clip.exe"
+if (Test-Path $shellExe) {
+    Copy-Item $shellExe $appExe -Force
+}
+
 Copy-Item (Join-Path $root "README.md") $publishDir -Force
 Copy-Item (Join-Path $root "LICENSE") $publishDir -Force
 Copy-Item (Join-Path $root "PRIVACY.md") $publishDir -Force

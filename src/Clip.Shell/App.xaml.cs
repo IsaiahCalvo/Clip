@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 
 namespace Clip.Shell;
@@ -6,11 +7,22 @@ public partial class App : System.Windows.Application
 {
     private MainWindow? _window;
     private System.Windows.Forms.NotifyIcon? _tray;
+    private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         ShellLog.Info("app startup");
+
+        _singleInstanceMutex = new Mutex(true, @"Global\ClipShellSingleInstance", out _ownsSingleInstanceMutex);
+        if (!_ownsSingleInstanceMutex)
+        {
+            ShellLog.Info("another Clip shell instance is already running; exiting duplicate");
+            Shutdown();
+            return;
+        }
+
         DispatcherUnhandledException += (_, ex) =>
         {
             ShellLog.Error(ex.Exception, "dispatcher unhandled exception");
@@ -41,9 +53,10 @@ public partial class App : System.Windows.Application
         _tray = new System.Windows.Forms.NotifyIcon
         {
             Text = "Clip",
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = LoadTrayIcon(_window.AppIconPreference),
             Visible = true,
         };
+        _window.AppIconChanged += preference => _tray.Icon = LoadTrayIcon(preference);
         _tray.DoubleClick += (_, _) => _window.ShowPalette();
 
         var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -64,6 +77,30 @@ public partial class App : System.Windows.Application
     {
         ShellLog.Info("app exit");
         _tray?.Dispose();
+        if (_ownsSingleInstanceMutex)
+        {
+            _singleInstanceMutex?.ReleaseMutex();
+        }
+
+        _singleInstanceMutex?.Dispose();
         base.OnExit(e);
+    }
+
+    private static System.Drawing.Icon LoadTrayIcon(AppIconPreference preference)
+    {
+        try
+        {
+            var path = global::Clip.Shell.MainWindow.AppIconPath(preference);
+            if (File.Exists(path))
+            {
+                return new System.Drawing.Icon(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "tray icon load failed");
+        }
+
+        return System.Drawing.SystemIcons.Application;
     }
 }
