@@ -7,14 +7,24 @@ Clip is a local clipboard history app.
 Clip stores clipboard history on your own Windows device under:
 
 ```text
+%LOCALAPPDATA%\Clip\Clipboard History
+```
+
+That folder can contain copied text, image files, saved file copies, links, color swatches, file paths, and hidden metadata files used by Clip.
+
+Clip also stores settings, app cache data, and logs under:
+
+```text
 %LOCALAPPDATA%\Clip
 ```
 
-That folder can contain copied text, image files, file paths, metadata, app cache data, and logs.
+Clip can exclude selected apps from clipboard history. This is intended for sensitive apps such as password managers, banking apps, and private browsers.
 
 ## What Clip Sends
 
 Clip does not intentionally send clipboard history to a server.
+
+Clip checks GitHub Releases for app updates. That update check does not send clipboard history.
 
 ## Before Publishing or Sharing Logs
 

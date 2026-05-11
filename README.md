@@ -70,10 +70,10 @@ This installs Clip under `%LOCALAPPDATA%\Programs\Clip`, creates Desktop and Sta
 Clip stores clipboard history locally under:
 
 ```text
-%LOCALAPPDATA%\Clip
+%LOCALAPPDATA%\Clip\Clipboard History
 ```
 
-That folder may contain copied text, image assets, file paths, logs, and metadata. Review `PRIVACY.md` before sharing logs or local app data.
+App settings and logs are stored under `%LOCALAPPDATA%\Clip`. Review `PRIVACY.md` before sharing logs or local app data.
 
 ## Development
 

@@ -8,9 +8,15 @@ public sealed class ClipboardHistoryItem
 
     public string Preview { get; set; } = string.Empty;
 
+    public string? CustomTitle { get; set; }
+
     public string? ContentHash { get; set; }
 
     public string? Text { get; set; }
+
+    public string? HtmlText { get; set; }
+
+    public string? RtfText { get; set; }
 
     public string? AssetPath { get; set; }
 

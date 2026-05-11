@@ -4,6 +4,7 @@ obj/
 artifacts/
 publish/
 TestResults/
+/Clip.exe
 
 # User/local data
 history.json
@@ -33,3 +34,4 @@ Desktop.ini
 
 # Design export scratch files
 design-extract/
+Clip Redesign _standalone_.html

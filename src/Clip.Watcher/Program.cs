@@ -2055,6 +2055,11 @@ internal sealed class ClipboardPaletteForm : Form
 
     private static string PreviewHeaderTitle(ClipboardHistoryItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.CustomTitle))
+        {
+            return item.CustomTitle;
+        }
+
         return item.Kind switch
         {
             ClipboardItemKind.Link => "Link",
@@ -3157,6 +3162,11 @@ internal sealed class ClipboardPaletteForm : Form
 
     private static string TitleFor(ClipboardHistoryItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.CustomTitle))
+        {
+            return item.CustomTitle;
+        }
+
         return item.Kind switch
         {
             ClipboardItemKind.Image => item.Preview,

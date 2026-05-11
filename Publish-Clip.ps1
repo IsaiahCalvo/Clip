@@ -28,6 +28,7 @@ $shellExe = Join-Path $publishDir "Clip.Shell.exe"
 $appExe = Join-Path $publishDir "Clip.exe"
 if (Test-Path $shellExe) {
     Copy-Item $shellExe $appExe -Force
+    Remove-Item -LiteralPath $shellExe -Force
 }
 
 Copy-Item (Join-Path $root "README.md") $publishDir -Force
@@ -36,7 +37,7 @@ Copy-Item (Join-Path $root "PRIVACY.md") $publishDir -Force
 Copy-Item (Join-Path $root "Start-Clip.ps1") $publishDir -Force
 Copy-Item (Join-Path $root "Install-ClipStartup.ps1") $publishDir -Force
 
-Get-ChildItem -Path $publishDir -Recurse -Filter *.pdb | Remove-Item -Force
+Get-ChildItem -Path $publishDir -Recurse -Include *.pdb,*.xml | Remove-Item -Force
 
 if (-not $NoZip) {
     if (Test-Path $zipPath) {

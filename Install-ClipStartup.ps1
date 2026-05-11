@@ -12,7 +12,7 @@ if (-not (Test-Path (Join-Path $root "Clip.exe")) -and -not (Test-Path (Join-Pat
     & $publishScript -NoZip
 }
 
-$sourceDir = if (Test-Path (Join-Path $root "Clip.exe")) { $root } else { $publishDir }
+$sourceDir = if (Test-Path (Join-Path $publishDir "Clip.exe")) { $publishDir } else { $root }
 $sourceExe = Join-Path $sourceDir "Clip.exe"
 if (-not (Test-Path $sourceExe)) {
     $sourceExe = Join-Path $sourceDir "Clip.Shell.exe"
@@ -27,6 +27,7 @@ $installDir = Join-Path $env:LOCALAPPDATA "Programs\Clip"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
 Get-Process Clip, Clip.Shell -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-ChildItem -LiteralPath $installDir -Force | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $sourceDir "*") $installDir -Recurse -Force
 
 $exe = Join-Path $installDir (Split-Path $sourceExe -Leaf)
@@ -68,8 +69,10 @@ $startMenuShortcut = Join-Path $startMenuDir "Clip.lnk"
 
 New-Item -ItemType Directory -Force -Path $startMenuDir | Out-Null
 New-ClipShortcut -Path $desktopShortcut -Description "Start Clip"
-New-ClipShortcut -Path $startupShortcut -Description "Start Clip at sign-in"
 New-ClipShortcut -Path $startMenuShortcut -Description "Start Clip"
+if (Test-Path $startupShortcut) {
+    Remove-Item -LiteralPath $startupShortcut -Force
+}
 
 Start-Process -FilePath $exe -WindowStyle Hidden
 

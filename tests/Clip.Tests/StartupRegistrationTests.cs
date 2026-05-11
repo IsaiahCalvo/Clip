@@ -7,6 +7,12 @@ public sealed class StartupRegistrationTests : IDisposable
     private readonly string _valueName = "Clip.Tests." + Guid.NewGuid().ToString("N");
 
     [Fact]
+    public void DefaultStartupPreferenceIsEnabled()
+    {
+        Assert.True(StartupRegistration.DefaultEnabled);
+    }
+
+    [Fact]
     public void SetEnabledWritesAndRemovesStartupValue()
     {
         var fakeExe = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"), "Clip.Shell.exe");

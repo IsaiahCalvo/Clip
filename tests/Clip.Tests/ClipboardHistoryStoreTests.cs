@@ -53,6 +53,45 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void RenameStoresCustomTitleWithoutChangingPayload()
+    {
+        var item = _store.AddOrUpdate(TextItem("original copied text"));
+
+        Assert.True(_store.Rename(item.Id, "Invoice note"));
+
+        var updated = _store.GetItem(item.Id);
+        Assert.Equal("Invoice note", updated?.CustomTitle);
+        Assert.Equal("original copied text", updated?.Text);
+        Assert.Equal("original copied text", updated?.Preview);
+        Assert.Equal("Invoice note.txt", Path.GetFileName(updated?.AssetPath));
+        Assert.True(File.Exists(updated?.AssetPath));
+    }
+
+    [Fact]
+    public void RenameBlankTitleClearsCustomTitle()
+    {
+        var item = _store.AddOrUpdate(TextItem("original copied text"));
+        _store.Rename(item.Id, "Temporary title");
+
+        Assert.True(_store.Rename(item.Id, " "));
+
+        Assert.Null(_store.GetItem(item.Id)?.CustomTitle);
+    }
+
+    [Fact]
+    public void QueryItemsFiltersByCustomTitle()
+    {
+        var item = _store.AddOrUpdate(TextItem("alpha body"));
+        _store.Rename(item.Id, "job invoice");
+        _store.AddOrUpdate(TextItem("beta proposal"));
+
+        var items = _store.QueryItems("invoice").ToList();
+
+        Assert.Single(items);
+        Assert.Equal(item.Id, items[0].Id);
+    }
+
+    [Fact]
     public void AddOrUpdateUsesContentHashToAvoidImageDuplicates()
     {
         var first = _store.AddOrUpdate(ImageItem("same-hash"));
@@ -63,6 +102,325 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
         Assert.Single(items);
         Assert.Equal(first.Id, second.Id);
         Assert.Equal(2, items[0].CopyCount);
+    }
+
+    [Fact]
+    public void CreatesClipboardContentFolders()
+    {
+        Assert.Equal(Path.Combine(_root, "Clipboard History", "history.json"), _store.HistoryFilePath);
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "text")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "image")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "links")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "color")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "file")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "Clipboard History", "file", "pdf")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "Clipboard History", "file", "excel")));
+    }
+
+    [Fact]
+    public void StartupRenamesPreviousDefaultClipboardFolder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));
+        var previous = Path.Combine(root, "Clipboard");
+        Directory.CreateDirectory(previous);
+        File.WriteAllText(Path.Combine(previous, "history.json"), "[]");
+
+        var store = new ClipboardHistoryStore(root);
+
+        Assert.False(Directory.Exists(previous));
+        Assert.Equal(Path.Combine(root, "Clipboard History", "history.json"), store.HistoryFilePath);
+        Assert.True(File.Exists(store.HistoryFilePath));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void StoreStartupRemovesEmptyFileCategoryFolders()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));
+        var pdf = Path.Combine(root, "Clipboard History", "file", "pdf");
+        var excel = Path.Combine(root, "Clipboard History", "file", "excel");
+        Directory.CreateDirectory(pdf);
+        Directory.CreateDirectory(excel);
+        File.WriteAllText(Path.Combine(pdf, "invoice.pdf"), "pdf");
+
+        _ = new ClipboardHistoryStore(root);
+
+        Assert.True(Directory.Exists(pdf));
+        Assert.False(Directory.Exists(excel));
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void TextItemsAreSavedUnderTextFolder()
+    {
+        var saved = _store.AddOrUpdate(TextItem("saved text"));
+
+        Assert.NotNull(saved.AssetPath);
+        Assert.StartsWith(Path.Combine(_root, "Clipboard History", "text"), saved.AssetPath, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("saved text.txt", Path.GetFileName(saved.AssetPath));
+        Assert.Equal("saved text", File.ReadAllText(saved.AssetPath!));
+        Assert.True(File.Exists(saved.AssetPath! + ".clip.json"));
+        Assert.True(File.GetAttributes(saved.AssetPath! + ".clip.json").HasFlag(FileAttributes.Hidden));
+        Assert.Contains(saved.Id, File.ReadAllText(saved.AssetPath! + ".clip.json"));
+        Assert.True(File.Exists(Path.Combine(_root, "Clipboard History", "history.json")));
+    }
+
+    [Fact]
+    public void RenameMovesHiddenSidecarMetadata()
+    {
+        var item = _store.AddOrUpdate(TextItem("original copied text"));
+        var originalSidecar = item.AssetPath! + ".clip.json";
+
+        _store.Rename(item.Id, "Invoice note");
+        var updated = _store.GetItem(item.Id)!;
+
+        Assert.False(File.Exists(originalSidecar));
+        Assert.True(File.Exists(updated.AssetPath! + ".clip.json"));
+        Assert.Contains(item.Id, File.ReadAllText(updated.AssetPath! + ".clip.json"));
+    }
+
+    [Fact]
+    public void DeleteRemovesHiddenSidecarMetadata()
+    {
+        var item = _store.AddOrUpdate(TextItem("temporary text"));
+        var sidecar = item.AssetPath! + ".clip.json";
+
+        Assert.True(_store.Delete(item.Id));
+
+        Assert.False(File.Exists(item.AssetPath));
+        Assert.False(File.Exists(sidecar));
+    }
+
+    [Fact]
+    public void ExternalRenameWithSidecarUpdatesCustomTitleOnLoad()
+    {
+        var saved = _store.AddOrUpdate(TextItem("sidecar text"));
+        var renamed = Path.Combine(Path.GetDirectoryName(saved.AssetPath!)!, "Sidecar renamed.txt");
+        File.Move(saved.AssetPath!, renamed);
+        File.Move(saved.AssetPath! + ".clip.json", renamed + ".clip.json");
+
+        var loaded = new ClipboardHistoryStore(_root);
+        var item = loaded.GetItem(saved.Id);
+
+        Assert.Equal("Sidecar renamed", item?.CustomTitle);
+        Assert.Equal(renamed, item?.AssetPath);
+    }
+
+    [Fact]
+    public void DuplicateContentTouchesExistingFileInsteadOfCreatingAnother()
+    {
+        var saved = _store.AddOrUpdate(TextItem("saved text"));
+        var path = saved.AssetPath!;
+        File.SetLastWriteTime(path, DateTime.Now.AddMinutes(-10));
+        var oldWriteTime = File.GetLastWriteTime(path);
+
+        var duplicate = _store.AddOrUpdate(TextItem("saved text"));
+
+        Assert.Equal(saved.Id, duplicate.Id);
+        Assert.Equal(path, duplicate.AssetPath);
+        Assert.Single(Directory.GetFiles(Path.Combine(_root, "Clipboard History", "text")).Where(path => !path.EndsWith(".clip.json", StringComparison.OrdinalIgnoreCase)));
+        Assert.True(File.GetLastWriteTime(path) > oldWriteTime);
+    }
+
+    [Fact]
+    public void SameDisplayNameWithDifferentContentUsesNumberedFileName()
+    {
+        var first = _store.AddOrUpdate(new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Text,
+            Text = "first body",
+            Preview = "Note",
+        });
+        var second = _store.AddOrUpdate(new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Text,
+            Text = "second body",
+            Preview = "Note",
+        });
+
+        Assert.Equal("Note.txt", Path.GetFileName(first.AssetPath));
+        Assert.Equal("Note (2).txt", Path.GetFileName(second.AssetPath));
+    }
+
+    [Fact]
+    public void ExternalFileRenameUpdatesCustomTitleOnLoad()
+    {
+        var saved = _store.AddOrUpdate(TextItem("saved text"));
+        var renamed = Path.Combine(Path.GetDirectoryName(saved.AssetPath!)!, "Renamed note.txt");
+        File.Move(saved.AssetPath!, renamed);
+
+        var loaded = new ClipboardHistoryStore(_root);
+        var item = loaded.GetItem(saved.Id);
+
+        Assert.Equal("Renamed note", item?.CustomTitle);
+        Assert.Equal(renamed, item?.AssetPath);
+    }
+
+    [Fact]
+    public void LinksAreSavedAsUrlFiles()
+    {
+        var saved = _store.AddOrUpdate(TextItem("https://example.com"));
+
+        Assert.Equal(ClipboardItemKind.Link, saved.Kind);
+        Assert.Equal(".url", Path.GetExtension(saved.AssetPath));
+        Assert.Contains("URL=https://example.com", File.ReadAllText(saved.AssetPath!));
+    }
+
+    [Fact]
+    public void ColorsAreSavedAsPngSwatches()
+    {
+        var saved = _store.AddOrUpdate(TextItem("#5FBACA"));
+
+        Assert.Equal(ClipboardItemKind.Color, saved.Kind);
+        Assert.Equal("#5FBACA.png", Path.GetFileName(saved.AssetPath));
+        Assert.True(File.Exists(saved.AssetPath));
+        Assert.Equal([0x89, 0x50, 0x4E, 0x47], File.ReadAllBytes(saved.AssetPath!)[..4]);
+    }
+
+    [Fact]
+    public void ChangingClipboardFolderMovesHistoryIndexForFutureSaves()
+    {
+        _store.AddOrUpdate(TextItem("saved text"));
+        var newRoot = Path.Combine(_root, "Custom", "Clipboard History");
+
+        _store.SetContentRootPath(newRoot);
+        _store.AddOrUpdate(TextItem("second text"));
+
+        Assert.Equal(Path.Combine(newRoot, "history.json"), _store.HistoryFilePath);
+        Assert.True(File.Exists(Path.Combine(newRoot, "history.json")));
+        Assert.Contains(_store.QueryItems(), item => item.Text == "saved text");
+        Assert.Contains(_store.QueryItems(), item => item.Text == "second text");
+        Assert.All(_store.QueryItems(), item => Assert.StartsWith(newRoot, item.AssetPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void FileItemsCopyFileUnderMatchingFileCategory()
+    {
+        var source = Path.Combine(_root, "invoice.pdf");
+        File.WriteAllText(source, "pdf");
+
+        var saved = _store.AddOrUpdate(new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Files,
+            FilePaths = [source],
+            Preview = "invoice.pdf",
+        });
+
+        Assert.NotNull(saved.AssetPath);
+        Assert.StartsWith(Path.Combine(_root, "Clipboard History", "file", "pdf"), saved.AssetPath, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(saved.AssetPath));
+        Assert.Equal("pdf", File.ReadAllText(saved.AssetPath!));
+    }
+
+    [Fact]
+    public void LoadingExistingHistoryBackfillsContentFolders()
+    {
+        var source = Path.Combine(_root, "invoice.pdf");
+        File.WriteAllText(source, "pdf");
+        var existing = new[]
+        {
+            TextItem("old text"),
+            new ClipboardHistoryItem
+            {
+                Kind = ClipboardItemKind.Files,
+                FilePaths = [source],
+                Preview = "invoice.pdf",
+            },
+        };
+        Directory.CreateDirectory(Path.Combine(_root, "Clipboard History"));
+        File.WriteAllText(Path.Combine(_root, "Clipboard History", "history.json"), JsonSerializer.Serialize(existing));
+
+        var loaded = new ClipboardHistoryStore(_root);
+        var items = loaded.QueryItems();
+
+        Assert.Contains(items, item => item.Kind == ClipboardItemKind.Text && item.AssetPath?.StartsWith(Path.Combine(_root, "Clipboard History", "text"), StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(items, item => item.Kind == ClipboardItemKind.Files && item.AssetPath?.StartsWith(Path.Combine(_root, "Clipboard History", "file", "pdf"), StringComparison.OrdinalIgnoreCase) == true);
+        Assert.True(Directory.Exists(Path.Combine(_root, "Clipboard History", "file", "pdf")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "Clipboard History", "file", "excel")));
+    }
+
+    [Fact]
+    public void AddOrUpdateTrimsUnpinnedItemsToLimit()
+    {
+        _store.AddOrUpdate(TextItem("one"), maxItems: 2);
+        _store.AddOrUpdate(TextItem("two"), maxItems: 2);
+        _store.AddOrUpdate(TextItem("three"), maxItems: 2);
+
+        var items = _store.QueryItems().ToList();
+
+        Assert.Equal(2, items.Count);
+        Assert.DoesNotContain(items, item => item.Text == "one");
+    }
+
+    [Fact]
+    public void HistoryLimitKeepsPinnedItems()
+    {
+        var pinned = _store.AddOrUpdate(TextItem("pinned"), maxItems: 10);
+        _store.SetPinned(pinned.Id, true);
+
+        _store.AddOrUpdate(TextItem("one"), maxItems: 1);
+        _store.AddOrUpdate(TextItem("two"), maxItems: 1);
+
+        var items = _store.QueryItems().ToList();
+
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, item => item.Id == pinned.Id);
+        Assert.Contains(items, item => item.Text == "two");
+    }
+
+    [Fact]
+    public void ApplyHistoryLimitTrimsExistingItems()
+    {
+        _store.AddOrUpdate(TextItem("one"), maxItems: 10);
+        _store.AddOrUpdate(TextItem("two"), maxItems: 10);
+        _store.AddOrUpdate(TextItem("three"), maxItems: 10);
+
+        var removed = _store.ApplyHistoryLimit(1);
+
+        Assert.Equal(2, removed);
+        Assert.Single(_store.QueryItems());
+        Assert.Equal("three", _store.QueryItems()[0].Text);
+    }
+
+    [Fact]
+    public void ClearHistoryCanKeepPinnedItems()
+    {
+        var pinned = _store.AddOrUpdate(TextItem("pinned"), maxItems: 10);
+        _store.SetPinned(pinned.Id, true);
+        var pinnedPath = pinned.AssetPath!;
+        var first = _store.AddOrUpdate(TextItem("one"), maxItems: 10);
+        var second = _store.AddOrUpdate(TextItem("two"), maxItems: 10);
+
+        var removed = _store.ClearHistory(includePinned: false);
+
+        var remaining = _store.QueryItems();
+        Assert.Equal(2, removed);
+        Assert.Single(remaining);
+        Assert.Equal(pinned.Id, remaining[0].Id);
+        Assert.True(File.Exists(pinnedPath));
+        Assert.True(File.Exists(pinnedPath + ".clip.json"));
+        Assert.False(File.Exists(first.AssetPath));
+        Assert.False(File.Exists(first.AssetPath! + ".clip.json"));
+        Assert.False(File.Exists(second.AssetPath));
+        Assert.False(File.Exists(second.AssetPath! + ".clip.json"));
+    }
+
+    [Fact]
+    public void ClearHistoryCanRemovePinnedItems()
+    {
+        var pinned = _store.AddOrUpdate(TextItem("pinned"), maxItems: 10);
+        _store.SetPinned(pinned.Id, true);
+        var pinnedPath = pinned.AssetPath!;
+        var unpinned = _store.AddOrUpdate(TextItem("one"), maxItems: 10);
+
+        var removed = _store.ClearHistory(includePinned: true);
+
+        Assert.Equal(2, removed);
+        Assert.Empty(_store.QueryItems());
+        Assert.False(File.Exists(pinnedPath));
+        Assert.False(File.Exists(pinnedPath + ".clip.json"));
+        Assert.False(File.Exists(unpinned.AssetPath));
+        Assert.False(File.Exists(unpinned.AssetPath! + ".clip.json"));
     }
 
     [Fact]

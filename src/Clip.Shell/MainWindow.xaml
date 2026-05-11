@@ -425,7 +425,7 @@
                             <BlurEffect Radius="22" KernelType="Gaussian"/>
                         </Image.Effect>
                     </Image>
-                    <Rectangle Fill="#22FFFFFF" IsHitTestVisible="False"/>
+                    <Rectangle Fill="#CC000000" IsHitTestVisible="False"/>
                     <Canvas x:Name="ExpandedImageCanvas" Background="Transparent">
                         <Image x:Name="ExpandedImage"
                                Stretch="Fill"
