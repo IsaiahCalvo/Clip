@@ -142,7 +142,11 @@ Start-Process -FilePath (Join-Path $target 'Clip.exe')
             return true;
         }
 
-        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo(path)
+        {
+            Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /SUPPRESSMSGBOXES /NORESTART",
+            UseShellExecute = true,
+        });
         return false;
     }
 

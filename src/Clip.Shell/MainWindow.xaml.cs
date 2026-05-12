@@ -3199,7 +3199,7 @@ public partial class MainWindow : Window
         try
         {
             ShellLog.Info($"settings opening showPaletteOnClose={showPaletteOnClose}");
-            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
+            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
             {
                 Owner = this,
             };
@@ -5384,6 +5384,7 @@ internal sealed class SettingsWindow : Window
     private readonly Action<long?> _applyMaxItemSize;
     private readonly Action<bool, bool> _applyUpdateSettings;
     private readonly Action<Action<ClipUpdateStatus>> _checkForUpdates;
+    private readonly Func<ClipUpdateStatus, Task> _installUpdate;
     private readonly Action<bool> _clearHistory;
     private readonly Action _openDataFolder;
     private readonly Action _openDebugLog;
@@ -5417,7 +5418,7 @@ internal sealed class SettingsWindow : Window
     private WpfBrush _selectedBorder = WpfBrushes.Transparent;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
@@ -5428,6 +5429,7 @@ internal sealed class SettingsWindow : Window
         _applyMaxItemSize = applyMaxItemSize;
         _applyUpdateSettings = applyUpdateSettings;
         _checkForUpdates = checkForUpdates;
+        _installUpdate = installUpdate;
         _clearHistory = clearHistory;
         _openDataFolder = openDataFolder;
         _openDebugLog = openDebugLog;
@@ -6510,6 +6512,22 @@ internal sealed class SettingsWindow : Window
             Orientation = WpfOrientation.Horizontal,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
         };
+
+        if (_updateStatus.State == "Update available" && !string.IsNullOrWhiteSpace(_updateStatus.DownloadUrl))
+        {
+            var update = SecondaryButton($"Update to {_updateStatus.LatestVersion}");
+            update.MinWidth = 140;
+            update.Margin = new Thickness(0, 0, 8, 0);
+            var capturedStatus = _updateStatus;
+            update.Click += (_, _) =>
+            {
+                update.IsEnabled = false;
+                update.Content = "Installing...";
+                _ = _installUpdate(capturedStatus);
+            };
+            actions.Children.Add(update);
+        }
+
         actions.Children.Add(check);
         actions.Children.Add(data);
         actions.Children.Add(log);
