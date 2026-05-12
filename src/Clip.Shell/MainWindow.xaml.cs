@@ -62,13 +62,6 @@ internal enum PasteFormatPreference
     OriginalFormatting,
 }
 
-internal enum WisprFlowMode
-{
-    Off,
-    SaveAll,
-    Smart,
-}
-
 internal sealed class ClipShellSettings
 {
     private const string ClipboardFolderName = "Clipboard History";
@@ -81,7 +74,6 @@ internal sealed class ClipShellSettings
     public long? MaxItemSizeBytes { get; set; } = 50L * 1024 * 1024;
     public bool CheckForUpdatesOnStartup { get; set; } = true;
     public bool InstallUpdatesAutomatically { get; set; } = true;
-    public WisprFlowMode WisprFlow { get; set; } = WisprFlowMode.Off;
     public string? ClipboardFolderPath { get; set; }
     public ClipHotkeySettings Hotkeys { get; set; } = new();
     public ClipPrivacySettings Privacy { get; set; } = new();
@@ -112,7 +104,6 @@ internal sealed class ClipShellSettings
         MaxItemSizeBytes = 50L * 1024 * 1024;
         CheckForUpdatesOnStartup = true;
         InstallUpdatesAutomatically = true;
-        WisprFlow = WisprFlowMode.Off;
         ClipboardFolderPath = null;
         Hotkeys = new ClipHotkeySettings();
         Hotkeys.ResetToDefaults();
@@ -746,11 +737,6 @@ public partial class MainWindow : Window
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
     private ClipboardHistoryItem? _pendingTextClipboardItem;
-    private ClipboardHistoryItem? _pendingWisprItem;
-    private readonly System.Windows.Threading.DispatcherTimer _wisprSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
-    private readonly WisprPasteWatcher _wisprWatcher = new();
-    private DateTimeOffset _lastWisprEventAt = DateTimeOffset.MinValue;
-    private static readonly TimeSpan WisprEventCooldown = TimeSpan.FromMilliseconds(1500);
     private HwndSource? _source;
     private bool _openHotkeyRegistered;
     private bool _debugLogHotkeyRegistered;
@@ -822,11 +808,6 @@ public partial class MainWindow : Window
         {
             _clipboardSettleTimer.Stop();
             SavePendingTextClipboardItem();
-        };
-        _wisprSettleTimer.Tick += (_, _) =>
-        {
-            _wisprSettleTimer.Stop();
-            ResolvePendingWispr();
         };
     }
 
@@ -1242,94 +1223,12 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (WisprFlowIntegration.IsWisprClipboardOwner())
-            {
-                HandleWisprClipboardItem(item);
-                return;
-            }
-
             CaptureClipboardItem(item);
         }
         catch (Exception ex)
         {
             ShellLog.Error(ex, "clipboard capture failed");
         }
-    }
-
-    private void HandleWisprClipboardItem(ClipboardHistoryItem item)
-    {
-        if (item.Kind is not (ClipboardItemKind.Text or ClipboardItemKind.Link))
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var isFollowupEvent = now - _lastWisprEventAt < WisprEventCooldown;
-        _lastWisprEventAt = now;
-        if (isFollowupEvent)
-        {
-            ShellLog.Info($"wispr followup event ignored (likely clipboard restore) preview={item.Preview}");
-            return;
-        }
-
-        item.IntegrationSource = WisprFlowIntegration.SourceName;
-
-        switch (_settings.WisprFlow)
-        {
-            case WisprFlowMode.Off:
-                ShellLog.Info($"wispr clipboard ignored preview={item.Preview}");
-                DropPendingWisprItem("wispr-off");
-                return;
-            case WisprFlowMode.SaveAll:
-                DropPendingTextClipboardItem("wispr-saveall-replaces");
-                DropPendingWisprItem("wispr-saveall-replaces");
-                SaveClipboardItem(item, "wispr-saveall");
-                return;
-            case WisprFlowMode.Smart:
-                DropPendingTextClipboardItem("wispr-smart-replaces");
-                DropPendingWisprItem("wispr-smart-replaces");
-                _pendingWisprItem = item;
-                _wisprWatcher.Stop();
-                _wisprWatcher.Start();
-                _wisprSettleTimer.Stop();
-                _wisprSettleTimer.Start();
-                ShellLog.Info($"wispr smart pending preview={item.Preview}");
-                return;
-        }
-    }
-
-    private void ResolvePendingWispr()
-    {
-        var pending = _pendingWisprItem;
-        _pendingWisprItem = null;
-        var sawPaste = _wisprWatcher.SawInjectedPaste;
-        _wisprWatcher.Stop();
-        if (pending is null)
-        {
-            return;
-        }
-
-        if (sawPaste)
-        {
-            ShellLog.Info($"wispr smart pasted ok preview={pending.Preview}");
-            return;
-        }
-
-        ShellLog.Info($"wispr smart fallback saved preview={pending.Preview}");
-        SaveClipboardItem(pending, "wispr-smart");
-    }
-
-    private void DropPendingWisprItem(string reason)
-    {
-        if (_pendingWisprItem is null)
-        {
-            return;
-        }
-
-        ShellLog.Info($"wispr pending dropped reason={reason} preview={_pendingWisprItem.Preview}");
-        _pendingWisprItem = null;
-        _wisprSettleTimer.Stop();
-        _wisprWatcher.Stop();
     }
 
     private void CaptureClipboardItem(ClipboardHistoryItem item)
@@ -2084,10 +1983,6 @@ public partial class MainWindow : Window
     {
         InfoHost.Children.Clear();
         AddInfo("Source", SourceDisplayName(item), SourceIcon(item));
-        if (!string.IsNullOrWhiteSpace(item.IntegrationSource))
-        {
-            AddInfo("Via", item.IntegrationSource);
-        }
         AddInfo("Content type", ContentType(item));
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
         {
@@ -3304,7 +3199,7 @@ public partial class MainWindow : Window
         try
         {
             ShellLog.Info($"settings opening showPaletteOnClose={showPaletteOnClose}");
-            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, ApplyWisprFlowMode, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
+            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
             {
                 Owner = this,
             };
@@ -3410,22 +3305,6 @@ public partial class MainWindow : Window
         ShellLog.Info($"update settings changed checkOnStartup={checkOnStartup} autoInstall={autoInstall}");
         ShowToast("Update settings saved");
     }
-
-    private void ApplyWisprFlowMode(WisprFlowMode mode)
-    {
-        _settings.WisprFlow = mode;
-        _settings.Save();
-        ShellLog.Info($"wispr flow mode changed mode={mode}");
-        DropPendingWisprItem("mode-changed");
-        ShowToast($"Wispr Flow: {WisprFlowLabel(mode)}");
-    }
-
-    internal static string WisprFlowLabel(WisprFlowMode mode) => mode switch
-    {
-        WisprFlowMode.SaveAll => "Save every transcript",
-        WisprFlowMode.Smart => "Smart (save only when paste fails)",
-        _ => "Ignore",
-    };
 
     private void CheckForUpdatesFromSettings(Action<ClipUpdateStatus> updateStatus)
     {
@@ -4116,7 +3995,31 @@ public partial class MainWindow : Window
             return "Unknown";
         }
 
-        return source.Equals("olk", StringComparison.OrdinalIgnoreCase) ? "Outlook" : source;
+        return source.ToLowerInvariant() switch
+        {
+            "olk" or "outlook" => "Outlook",
+            "code" => "VS Code",
+            "chrome" => "Chrome",
+            "msedge" => "Edge",
+            "firefox" => "Firefox",
+            "explorer" => "File Explorer",
+            "windowsterminal" => "Windows Terminal",
+            "wt" => "Windows Terminal",
+            "powershell" => "PowerShell",
+            "pwsh" => "PowerShell",
+            "cmd" => "Command Prompt",
+            "winword" => "Word",
+            "excel" => "Excel",
+            "powerpnt" => "PowerPoint",
+            "onenote" => "OneNote",
+            "teams" => "Teams",
+            "slack" => "Slack",
+            "discord" => "Discord",
+            "spotify" => "Spotify",
+            "notion" => "Notion",
+            "obsidian" => "Obsidian",
+            _ => source,
+        };
     }
 
     private static string MetaFor(ClipboardHistoryItem item)
@@ -5504,7 +5407,6 @@ internal sealed class SettingsWindow : Window
     private readonly Action<int?> _applyHistoryLimit;
     private readonly Action<long?> _applyMaxItemSize;
     private readonly Action<bool, bool> _applyUpdateSettings;
-    private readonly Action<WisprFlowMode> _applyWisprFlow;
     private readonly Action<Action<ClipUpdateStatus>> _checkForUpdates;
     private readonly Func<ClipUpdateStatus, Task> _installUpdate;
     private readonly Action<bool> _clearHistory;
@@ -5540,7 +5442,7 @@ internal sealed class SettingsWindow : Window
     private WpfBrush _selectedBorder = WpfBrushes.Transparent;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<WisprFlowMode> applyWisprFlow, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
@@ -5550,7 +5452,6 @@ internal sealed class SettingsWindow : Window
         _applyHistoryLimit = applyHistoryLimit;
         _applyMaxItemSize = applyMaxItemSize;
         _applyUpdateSettings = applyUpdateSettings;
-        _applyWisprFlow = applyWisprFlow;
         _checkForUpdates = checkForUpdates;
         _installUpdate = installUpdate;
         _clearHistory = clearHistory;
@@ -5669,7 +5570,7 @@ internal sealed class SettingsWindow : Window
             Margin = new Thickness(12, 14, 12, 12),
         };
         _sidebar = sidebar;
-        foreach (var page in new[] { "General", "History", "Shortcuts", "Privacy", "App Overrides", "Appearance", "Developer", "About" })
+        foreach (var page in new[] { "General", "History", "Shortcuts", "Privacy", "App Overrides", "Appearance", "About" })
         {
             var button = NavButton(page);
             button.MouseEnter += (_, _) =>
@@ -5924,11 +5825,6 @@ internal sealed class SettingsWindow : Window
             }
         }
 
-        if (string.Equals(page, "Developer", StringComparison.OrdinalIgnoreCase))
-        {
-            panel.Children.Add(WisprFlowRow());
-        }
-
         if (string.Equals(page, "About", StringComparison.OrdinalIgnoreCase))
         {
             panel.Children.Add(Row("Version", ClipUpdateService.CurrentVersion));
@@ -5994,7 +5890,6 @@ internal sealed class SettingsWindow : Window
     {
         "Privacy" => "Apps listed here are excluded from future Clip history to help prevent saving copied information from sensitive apps, such as password managers, banking apps, and private browsers.",
         "App Overrides" => "Apps here will use custom hotkeys for two actions: Open Clip (which key opens Clip while that app is focused) and Paste (which key Clip sends when pasting into that app). For example, if Photoshop already uses Alt+V, you can override Open Clip to a different shortcut while in Photoshop, or change Paste to send a different keystroke. Add an app, pick the action, and set the hotkey.",
-        "Developer" => "Integrations with other tools. Wispr Flow detection uses the system clipboard owner: when Wispr Flow writes to the clipboard, Clip can either ignore it, store every transcript, or only store the ones that didn't make it into an input field (Smart mode uses a low-level keyboard hook to watch for Wispr's paste keystroke).",
         _ => null,
     };
 
@@ -6753,32 +6648,6 @@ internal sealed class SettingsWindow : Window
                 _settings.DefaultPasteFormat = preference;
                 _applyDefaultPasteFormat(preference);
             }));
-    }
-
-    private Border WisprFlowRow()
-    {
-        var ignore = MainWindow.WisprFlowLabel(WisprFlowMode.Off);
-        var saveAll = MainWindow.WisprFlowLabel(WisprFlowMode.SaveAll);
-        var smart = MainWindow.WisprFlowLabel(WisprFlowMode.Smart);
-        var current = MainWindow.WisprFlowLabel(_settings.WisprFlow);
-
-        return ControlRow(
-            "Wispr Flow",
-            "Off keeps dictations out of Clip. Save every transcript stores each one. Smart only stores transcripts when Wispr's paste didn't land in an input field.",
-            StyledDropdown(current, new[] { ignore, saveAll, smart }, selected =>
-            {
-                var mode = selected == saveAll ? WisprFlowMode.SaveAll
-                    : selected == smart ? WisprFlowMode.Smart
-                    : WisprFlowMode.Off;
-                if (mode == _settings.WisprFlow)
-                {
-                    return;
-                }
-
-                _settings.WisprFlow = mode;
-                _applyWisprFlow(mode);
-            }),
-            minHeight: 80);
     }
 
     private Border ResetAllSettingsRow()

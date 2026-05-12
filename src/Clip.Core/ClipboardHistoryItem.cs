@@ -40,8 +40,6 @@ public sealed class ClipboardHistoryItem
 
     public string? SourceApplicationPath { get; set; }
 
-    public string? IntegrationSource { get; set; }
-
     public long? AssetSizeBytes { get; set; }
 
     public int? ImageWidth { get; set; }
