@@ -6,7 +6,7 @@ It runs locally, opens with `Alt+V`, and keeps clipboard history on your own dev
 
 ## Install
 
-**[⬇ Download Clip-Setup.exe](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-Setup.exe)** — double-click and click through the wizard. Installs per-user with no admin prompt, adds a Start menu entry, and registers in Add/Remove Programs.
+**[⬇ Get the latest installer](https://github.com/IsaiahCalvo/Clip/releases/latest)** — open the latest release page and download `Clip_X.Y.Z-Setup.exe` from the Assets list, then double-click and click through the wizard. Installs per-user with no admin prompt, adds a Start menu entry, and registers in Add/Remove Programs.
 
 Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64.zip)**, unzip anywhere, and run `Clip.exe`.
 

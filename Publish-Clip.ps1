@@ -76,7 +76,7 @@ if (-not $NoInstaller) {
             throw "Inno Setup compile failed (exit $LASTEXITCODE)."
         }
 
-        $setupExe = Join-Path $publishRoot "Clip-Setup.exe"
+        $setupExe = Join-Path $publishRoot "Clip_$Version-Setup.exe"
         if (Test-Path $setupExe) {
             Write-Output "Created $setupExe"
         }

@@ -43,10 +43,10 @@ jobs:
         shell: pwsh
         run: |
           $zip = "artifacts/publish/Clip-win-x64.zip"
-          $setup = "artifacts/publish/Clip-Setup.exe"
+          $setup = Get-ChildItem "artifacts/publish/Clip_*-Setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not (Test-Path $zip))   { throw "Missing $zip" }
-          if (-not (Test-Path $setup)) { throw "Missing $setup" }
-          Get-Item $zip, $setup | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
+          if (-not $setup) { throw "Missing Clip_*-Setup.exe in artifacts/publish" }
+          Get-Item $zip, $setup.FullName | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
 
       # ── SignPath code signing (enable once your free OSS subscription is approved) ──
       # 1. SignPath emails you: Organization ID, Project Slug, Signing Policy Slug, and an API token.
@@ -87,5 +87,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            artifacts/publish/Clip-Setup.exe
+            artifacts/publish/Clip_*-Setup.exe
             artifacts/publish/Clip-win-x64.zip
