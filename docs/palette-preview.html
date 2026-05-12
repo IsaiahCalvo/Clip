@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Clip Accent Palette Preview</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --neutral-bg-light: #F7F7F7;
+    --neutral-surface-light: #FFFFFF;
+    --neutral-surface2-light: #EDEDED;
+    --neutral-surface3-light: #DCDCDC;
+    --neutral-line-light: #B8B8B8;
+    --neutral-line2-light: #989898;
+    --neutral-text-light: #1A1A1A;
+    --neutral-muted-light: #646464;
+
+    --neutral-bg-dark: #1A1A1A;
+    --neutral-surface-dark: #212121;
+    --neutral-surface2-dark: #272727;
+    --neutral-surface3-dark: #323232;
+    --neutral-line-dark: #494949;
+    --neutral-line2-dark: #5A5A5A;
+    --neutral-text-dark: #F1F1F1;
+    --neutral-muted-dark: #989898;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    font-family: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    background: #222;
+    color: #eee;
+  }
+  body { padding: 32px 24px 80px; }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .intro {
+    color: #aaa;
+    font-size: 13px;
+    max-width: 720px;
+    margin: 0 0 28px;
+    line-height: 1.5;
+  }
+  .palette-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(640px, 1fr));
+    gap: 22px;
+  }
+  .palette {
+    background: #1c1c1c;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .palette-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .palette-name { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .palette-desc { font-size: 11px; color: #888; }
+  .palette-pair { display: grid; grid-template-columns: 1fr 1fr; }
+
+  /* Each mockup */
+  .mock {
+    padding: 14px;
+    font-family: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  }
+  .mock.light { background: var(--neutral-bg-light); color: var(--neutral-text-light); }
+  .mock.dark  { background: var(--neutral-bg-dark);  color: var(--neutral-text-dark); }
+
+  .mock .label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-bottom: 8px;
+  }
+  .mock .search {
+    height: 30px;
+    border-radius: 6px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    border: 1px solid var(--accent);
+  }
+  .mock.light .search { background: var(--neutral-surface-light); color: var(--neutral-muted-light); }
+  .mock.dark  .search { background: var(--neutral-surface-dark);  color: var(--neutral-muted-dark); }
+
+  .mock .row-group { margin-top: 10px; }
+  .mock .row {
+    height: 36px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    border-radius: 6px;
+  }
+  .mock.light .row { color: var(--neutral-text-light); }
+  .mock.dark  .row { color: var(--neutral-text-dark); }
+  .mock .row.selected {
+    background: var(--selected);
+    border: 1px solid var(--selected-border);
+    font-weight: 600;
+  }
+  .mock .divider {
+    height: 1px;
+    margin: 10px 0;
+  }
+  .mock.light .divider { background: var(--neutral-line-light); }
+  .mock.dark  .divider { background: var(--neutral-line-dark); }
+
+  .mock .footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .mock .footer .chip {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid;
+  }
+  .mock.light .footer .chip {
+    background: var(--neutral-surface-light);
+    border-color: var(--neutral-line2-light);
+    color: var(--accent);
+  }
+  .mock.dark .footer .chip {
+    background: var(--neutral-surface-dark);
+    border-color: var(--neutral-line2-dark);
+    color: var(--accent);
+  }
+  .mock .footer .open-btn {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent-on-soft);
+    border: 1px solid var(--selected-border);
+  }
+  .mock .swatch-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .mock .swatch {
+    flex: 1;
+    height: 22px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(0,0,0,0.08);
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .mock.dark .swatch { border-color: rgba(255,255,255,0.10); }
+</style>
+</head>
+<body>
+  <h1>Clip — Accent Palette Test</h1>
+  <p class="intro">Open this file on each of your monitors and pick the palette that holds up best on the brightest screen <strong>without</strong> looking flat on the dim one. Background, dividers, and text are the new neutral grays (already chosen). Only the accent, the selected-row tint, and the "Open" button color change between options.</p>
+
+  <div class="palette-grid">
+
+    <!-- 1. Slate Blue -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">1 — Slate Blue</div>
+        <div class="palette-desc">muted pro / Linear-style</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#3B5BDB;--accent-soft:#E1E7FB;--accent-on-soft:#1A2D7A;--selected:#E1E7FB;--selected-border:#5C7CFA;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#3B5BDB;color:#fff;">#3B5BDB</div>
+            <div class="swatch" style="background:#E1E7FB;color:#1A2D7A;">#E1E7FB</div>
+            <div class="swatch" style="background:#5C7CFA;color:#fff;">#5C7CFA</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#8A9CCC;--accent-soft:#232A45;--accent-on-soft:#DDE3FA;--selected:#232A45;--selected-border:#6878A8;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#8A9CCC;color:#0b1230;">#8A9CCC</div>
+            <div class="swatch" style="background:#232A45;color:#DDE3FA;">#232A45</div>
+            <div class="swatch" style="background:#6878A8;color:#fff;">#6878A8</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Indigo -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">2 — Indigo</div>
+        <div class="palette-desc">vibrant SaaS classic</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#4F46E5;--accent-soft:#E0E7FF;--accent-on-soft:#1E1B4B;--selected:#E0E7FF;--selected-border:#6366F1;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#4F46E5;color:#fff;">#4F46E5</div>
+            <div class="swatch" style="background:#E0E7FF;color:#1E1B4B;">#E0E7FF</div>
+            <div class="swatch" style="background:#6366F1;color:#fff;">#6366F1</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#A5B4FC;--accent-soft:#1E1B4B;--accent-on-soft:#E0E7FF;--selected:#1E1B4B;--selected-border:#6366F1;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#A5B4FC;color:#1E1B4B;">#A5B4FC</div>
+            <div class="swatch" style="background:#1E1B4B;color:#E0E7FF;">#1E1B4B</div>
+            <div class="swatch" style="background:#6366F1;color:#fff;">#6366F1</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Emerald -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">3 — Emerald</div>
+        <div class="palette-desc">earthy, never washes</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#047857;--accent-soft:#D1FAE5;--accent-on-soft:#064E3B;--selected:#D1FAE5;--selected-border:#10B981;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#047857;color:#fff;">#047857</div>
+            <div class="swatch" style="background:#D1FAE5;color:#064E3B;">#D1FAE5</div>
+            <div class="swatch" style="background:#10B981;color:#fff;">#10B981</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#34D399;--accent-soft:#064E3B;--accent-on-soft:#D1FAE5;--selected:#064E3B;--selected-border:#10B981;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#34D399;color:#064E3B;">#34D399</div>
+            <div class="swatch" style="background:#064E3B;color:#D1FAE5;">#064E3B</div>
+            <div class="swatch" style="background:#10B981;color:#fff;">#10B981</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. Plum -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">4 — Plum</div>
+        <div class="palette-desc">rich, distinctive, holds up bright</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#9333EA;--accent-soft:#F3E8FF;--accent-on-soft:#3B0764;--selected:#F3E8FF;--selected-border:#A855F7;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#9333EA;color:#fff;">#9333EA</div>
+            <div class="swatch" style="background:#F3E8FF;color:#3B0764;">#F3E8FF</div>
+            <div class="swatch" style="background:#A855F7;color:#fff;">#A855F7</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#D8B4FE;--accent-soft:#3B0764;--accent-on-soft:#F3E8FF;--selected:#3B0764;--selected-border:#A855F7;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#D8B4FE;color:#3B0764;">#D8B4FE</div>
+            <div class="swatch" style="background:#3B0764;color:#F3E8FF;">#3B0764</div>
+            <div class="swatch" style="background:#A855F7;color:#fff;">#A855F7</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. Amber -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">5 — Amber</div>
+        <div class="palette-desc">warm, energetic, never washes</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#C2410C;--accent-soft:#FFEDD5;--accent-on-soft:#7C2D12;--selected:#FFEDD5;--selected-border:#F97316;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#C2410C;color:#fff;">#C2410C</div>
+            <div class="swatch" style="background:#FFEDD5;color:#7C2D12;">#FFEDD5</div>
+            <div class="swatch" style="background:#F97316;color:#fff;">#F97316</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#FB923C;--accent-soft:#431407;--accent-on-soft:#FFEDD5;--selected:#431407;--selected-border:#F97316;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#FB923C;color:#431407;">#FB923C</div>
+            <div class="swatch" style="background:#431407;color:#FFEDD5;">#431407</div>
+            <div class="swatch" style="background:#F97316;color:#fff;">#F97316</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6. Mono -->
+    <div class="palette">
+      <div class="palette-header">
+        <div class="palette-name">6 — Mono</div>
+        <div class="palette-desc">no color / Notion-style timeless</div>
+      </div>
+      <div class="palette-pair">
+        <div class="mock light" style="--accent:#1A1A1A;--accent-soft:#EDEDED;--accent-on-soft:#1A1A1A;--selected:#EDEDED;--selected-border:#646464;">
+          <div class="label">Light</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#1A1A1A;color:#fff;">#1A1A1A</div>
+            <div class="swatch" style="background:#EDEDED;color:#1A1A1A;">#EDEDED</div>
+            <div class="swatch" style="background:#646464;color:#fff;">#646464</div>
+          </div>
+        </div>
+        <div class="mock dark" style="--accent:#F1F1F1;--accent-soft:#323232;--accent-on-soft:#F1F1F1;--selected:#323232;--selected-border:#989898;">
+          <div class="label">Dark</div>
+          <div class="search">Search clipboard history…</div>
+          <div class="row-group">
+            <div class="row">Verkada Security Design</div>
+            <div class="row selected">Broad Street Elementary School</div>
+            <div class="row">INT-19</div>
+          </div>
+          <div class="divider"></div>
+          <div class="footer">
+            <span class="chip">Enter</span><span style="font-size:11px;opacity:.7;">Paste</span>
+            <span class="open-btn">Open</span>
+          </div>
+          <div class="swatch-row">
+            <div class="swatch" style="background:#F1F1F1;color:#1A1A1A;">#F1F1F1</div>
+            <div class="swatch" style="background:#323232;color:#F1F1F1;">#323232</div>
+            <div class="swatch" style="background:#989898;color:#fff;">#989898</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

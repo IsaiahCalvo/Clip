@@ -789,6 +789,18 @@ public partial class MainWindow : Window
         TitleText.MouseLeftButtonDown += OnTitleTextMouseLeftButtonDown;
         TitleText.MouseEnter += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Accent");
         TitleText.MouseLeave += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Text");
+        AllFilterShell.MouseEnter += (_, _) =>
+        {
+            AllFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
+            AllFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+        };
+        AllFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
+        FilesFilterShell.MouseEnter += (_, _) =>
+        {
+            FilesFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
+            FilesFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+        };
+        FilesFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
@@ -1486,6 +1498,24 @@ public partial class MainWindow : Window
         grid.Children.Add(meta);
 
         row.Child = grid;
+        row.MouseEnter += (_, _) =>
+        {
+            if (_selected?.Id == item.Id)
+            {
+                return;
+            }
+
+            row.Background = (WpfBrush)FindResource("AccentSoft");
+        };
+        row.MouseLeave += (_, _) =>
+        {
+            if (_selected?.Id == item.Id)
+            {
+                return;
+            }
+
+            row.Background = WpfBrushes.Transparent;
+        };
         row.MouseLeftButtonDown += (_, e) =>
         {
             if (e.ClickCount >= 2)
@@ -1584,6 +1614,8 @@ public partial class MainWindow : Window
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(10, 7, 10, 7),
                 Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
                 Opacity = action.Enabled ? 1.0 : 0.45,
             };
             var grid = new Grid();
@@ -1630,7 +1662,8 @@ public partial class MainWindow : Window
             {
                 row.MouseEnter += (_, _) =>
                 {
-                    row.Background = (WpfBrush)FindResource("Surface3");
+                    row.Background = (WpfBrush)FindResource("AccentSoft");
+                    row.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
                     if (action.Children.Count > 0)
                     {
                         ShowShareSubmenu(action.Children, row);
@@ -1641,7 +1674,11 @@ public partial class MainWindow : Window
                         ActionMenuPopup.StaysOpen = false;
                     }
                 };
-                row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
+                row.MouseLeave += (_, _) =>
+                {
+                    row.Background = WpfBrushes.Transparent;
+                    row.BorderBrush = WpfBrushes.Transparent;
+                };
                 row.MouseLeftButtonDown += (_, e) =>
                 {
                     if (action.Children.Count > 0)
@@ -1684,6 +1721,8 @@ public partial class MainWindow : Window
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(10, 7, 10, 7),
                 Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
                 Opacity = action.Enabled ? 1.0 : 0.45,
                 MinWidth = 170,
             };
@@ -1698,8 +1737,16 @@ public partial class MainWindow : Window
 
             if (action.Enabled)
             {
-                row.MouseEnter += (_, _) => row.Background = (WpfBrush)FindResource("Surface3");
-                row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
+                row.MouseEnter += (_, _) =>
+                {
+                    row.Background = (WpfBrush)FindResource("AccentSoft");
+                    row.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+                };
+                row.MouseLeave += (_, _) =>
+                {
+                    row.Background = WpfBrushes.Transparent;
+                    row.BorderBrush = WpfBrushes.Transparent;
+                };
                 row.MouseLeftButtonDown += (_, e) =>
                 {
                     CloseActionMenus();
@@ -2380,7 +2427,7 @@ public partial class MainWindow : Window
 
     private void EditText(ClipboardHistoryItem item)
     {
-        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"))
+        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
@@ -2405,7 +2452,7 @@ public partial class MainWindow : Window
 
     private void RenameItem(ClipboardHistoryItem item)
     {
-        var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"))
+        var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
@@ -2487,7 +2534,9 @@ public partial class MainWindow : Window
                 (WpfBrush)FindResource("Text"),
                 (WpfBrush)FindResource("Muted"),
                 (WpfBrush)FindResource("Line"),
-                (WpfBrush)FindResource("Selected"))
+                (WpfBrush)FindResource("Selected"),
+                (WpfBrush)FindResource("AccentSoft"),
+                (WpfBrush)FindResource("SelectedBorder"))
             {
                 Owner = this,
             };
@@ -3201,7 +3250,8 @@ public partial class MainWindow : Window
         (WpfBrush)FindResource("Line2"),
         (WpfBrush)FindResource("Accent"),
         (WpfBrush)FindResource("AccentSoft"),
-        (WpfBrush)FindResource("Selected"));
+        (WpfBrush)FindResource("Selected"),
+        (WpfBrush)FindResource("SelectedBorder"));
 
     private void ApplyAppIcon(AppIconPreference preference, bool save)
     {
@@ -3485,20 +3535,20 @@ public partial class MainWindow : Window
             _ => IsWindowsDarkMode(),
         };
 
-        SetBrush("Bg", useDark ? "#1A1816" : "#FAFAF8");
-        SetBrush("Surface", useDark ? "#211F1C" : "#FFFFFF");
-        SetBrush("Surface2", useDark ? "#26231F" : "#F4F3EF");
-        SetBrush("Surface3", useDark ? "#2F2C27" : "#ECEBE6");
-        SetBrush("Line", useDark ? "#322E29" : "#E6E4DD");
-        SetBrush("Line2", useDark ? "#3D3934" : "#D8D5CC");
-        SetBrush("Text", useDark ? "#F2EFE9" : "#1A1816");
-        SetBrush("Muted", useDark ? "#8A8478" : "#7A756C");
-        SetBrush("Muted2", useDark ? "#BDB6AB" : "#4A4641");
-        SetBrush("Muted3", useDark ? "#5F5A52" : "#A8A299");
-        SetBrush("Accent", useDark ? "#5FBACA" : "#237F8D");
-        SetBrush("AccentSoft", useDark ? "#21484F" : "#D5F1F6");
-        SetBrush("Selected", useDark ? "#17383E" : "#D9F1F0");
-        SetBrush("SelectedBorder", useDark ? "#226873" : "#92C2C1");
+        SetBrush("Bg", useDark ? "#1A1A1A" : "#F7F7F7");
+        SetBrush("Surface", useDark ? "#212121" : "#FFFFFF");
+        SetBrush("Surface2", useDark ? "#272727" : "#EDEDED");
+        SetBrush("Surface3", useDark ? "#323232" : "#DCDCDC");
+        SetBrush("Line", useDark ? "#494949" : "#B8B8B8");
+        SetBrush("Line2", useDark ? "#5A5A5A" : "#989898");
+        SetBrush("Text", useDark ? "#F1F1F1" : "#1A1A1A");
+        SetBrush("Muted", useDark ? "#989898" : "#646464");
+        SetBrush("Muted2", useDark ? "#BBBBBB" : "#474747");
+        SetBrush("Muted3", useDark ? "#777777" : "#6A6A6A");
+        SetBrush("Accent", useDark ? "#8A9CCC" : "#3B5BDB");
+        SetBrush("AccentSoft", useDark ? "#232A45" : "#E1E7FB");
+        SetBrush("Selected", useDark ? "#324068" : "#C9D3F5");
+        SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
         Background = (WpfBrush)FindResource("Bg");
         HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
@@ -3795,7 +3845,9 @@ public partial class MainWindow : Window
                 (WpfBrush)FindResource("Surface2"),
                 (WpfBrush)FindResource("Text"),
                 (WpfBrush)FindResource("Muted"),
-                (WpfBrush)FindResource("Line"))
+                (WpfBrush)FindResource("Line"),
+                (WpfBrush)FindResource("AccentSoft"),
+                (WpfBrush)FindResource("SelectedBorder"))
             {
                 Owner = this,
             };
@@ -3880,11 +3932,18 @@ public partial class MainWindow : Window
 
     private void SetFilterVisual(WpfButton button, Border? shell, bool selected)
     {
+        var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
         button.Foreground = selected ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
         button.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         if (shell is not null)
         {
             shell.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
+            shell.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+        }
+        else
+        {
+            button.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
         }
     }
 
@@ -4364,7 +4423,7 @@ internal sealed class WpfWindowHandle(IntPtr handle) : Forms.IWin32Window
 
 internal sealed class HotkeyHelpWindow : Window
 {
-    public HotkeyHelpWindow(ClipHotkeySettings hotkeys, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush text, WpfBrush muted, WpfBrush line)
+    public HotkeyHelpWindow(ClipHotkeySettings hotkeys, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
         Title = "Clip Hotkeys";
         Width = 430;
@@ -4420,15 +4479,38 @@ internal sealed class HotkeyHelpWindow : Window
             Content = "Close",
             Foreground = muted,
             Background = WpfBrushes.Transparent,
-            BorderThickness = new Thickness(0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
             Padding = new Thickness(14, 6, 14, 6),
-            Margin = new Thickness(0, 0, 10, 0),
+            Margin = new Thickness(0, 0, 14, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
         };
+        close.MouseEnter += (_, _) => { close.Background = accentSoft; close.BorderBrush = selectedBorder; close.Foreground = text; };
+        close.MouseLeave += (_, _) => { close.Background = WpfBrushes.Transparent; close.BorderBrush = WpfBrushes.Transparent; close.Foreground = muted; };
         close.Click += (_, _) => Close();
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
-        shell.Children.Add(header);
+        var headerBorder = new Border
+        {
+            Child = header,
+            BorderBrush = line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+        shell.Children.Add(headerBorder);
 
         var rows = new StackPanel { Margin = new Thickness(22, 18, 22, 22) };
         foreach (var (key, action) in new[]
@@ -4491,6 +4573,8 @@ internal sealed class OpenWithWindow : Window
     private readonly WpfBrush _muted;
     private readonly WpfBrush _line;
     private readonly WpfBrush _selected;
+    private readonly WpfBrush _accentSoft;
+    private readonly WpfBrush _selectedBorder;
     private readonly WpfTextBox _search = new();
     private readonly WpfListBox _apps = new();
     private readonly TextBlock _status = new();
@@ -4521,7 +4605,7 @@ internal sealed class OpenWithWindow : Window
         });
     }
 
-    public OpenWithWindow(string targetPath, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public OpenWithWindow(string targetPath, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
         _targetPath = targetPath;
         _bg = bg;
@@ -4532,6 +4616,8 @@ internal sealed class OpenWithWindow : Window
         _muted = muted;
         _line = line;
         _selected = selected;
+        _accentSoft = accentSoft;
+        _selectedBorder = selectedBorder;
 
         Title = "Open With";
         Width = 620;
@@ -4654,17 +4740,44 @@ internal sealed class OpenWithWindow : Window
 
     private WpfButton PlainButton(string label)
     {
-        return new WpfButton
+        var button = new WpfButton
         {
             Content = label,
             Foreground = _muted,
             Background = WpfBrushes.Transparent,
-            BorderBrush = _line,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
-            Margin = new Thickness(0, 0, 10, 0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(0, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
         };
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = _accentSoft;
+            button.BorderBrush = _selectedBorder;
+            button.Foreground = _text;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+            button.Foreground = _muted;
+        };
+        return button;
     }
 
     private async Task LoadAppsAsync()
@@ -4932,17 +5045,21 @@ internal sealed class ExcludedAppPickerWindow : Window
     private readonly WpfBrush _muted;
     private readonly WpfBrush _surface;
     private readonly WpfBrush _line;
+    private readonly WpfBrush _accentSoft;
+    private readonly WpfBrush _selectedBorder;
     private readonly WpfTextBox _search = new();
     private readonly WpfListBox _apps = new();
     private readonly TextBlock _status = new();
     private List<WatcherAppChoice> _allApps = [];
 
-    public ExcludedAppPickerWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public ExcludedAppPickerWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
         _text = text;
         _muted = muted;
         _surface = surface;
         _line = line;
+        _accentSoft = accentSoft;
+        _selectedBorder = selectedBorder;
 
         Title = "Choose Excluded App";
         Width = 620;
@@ -5052,16 +5169,44 @@ internal sealed class ExcludedAppPickerWindow : Window
 
     private WpfButton PlainButton(string label)
     {
-        return new WpfButton
+        var button = new WpfButton
         {
             Content = label,
             Foreground = _muted,
             Background = WpfBrushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
-            Margin = new Thickness(0, 0, 10, 0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(0, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
         };
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = _accentSoft;
+            button.BorderBrush = _selectedBorder;
+            button.Foreground = _text;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+            button.Foreground = _muted;
+        };
+        return button;
     }
 
     private async Task LoadAppsAsync()
@@ -5236,7 +5381,7 @@ internal sealed class ExcludedAppPickerWindow : Window
     }
 }
 
-internal sealed record SettingsPalette(WpfBrush Bg, WpfBrush Surface, WpfBrush Surface2, WpfBrush Surface3, WpfBrush Text, WpfBrush Muted, WpfBrush Line, WpfBrush Line2, WpfBrush Accent, WpfBrush AccentSoft, WpfBrush Selected);
+internal sealed record SettingsPalette(WpfBrush Bg, WpfBrush Surface, WpfBrush Surface2, WpfBrush Surface3, WpfBrush Text, WpfBrush Muted, WpfBrush Line, WpfBrush Line2, WpfBrush Accent, WpfBrush AccentSoft, WpfBrush Selected, WpfBrush SelectedBorder);
 
 internal sealed class SettingsWindow : Window
 {
@@ -5264,6 +5409,7 @@ internal sealed class SettingsWindow : Window
     private readonly ImageSource _dropdownIcon;
     private Border? _root;
     private Grid? _header;
+    private Border? _headerBorder;
     private TextBlock? _headerTitle;
     private WpfButton? _closeButton;
     private Border? _sidebarBorder;
@@ -5280,6 +5426,7 @@ internal sealed class SettingsWindow : Window
     private WpfBrush _accent = WpfBrushes.Teal;
     private WpfBrush _accentSoft = WpfBrushes.Transparent;
     private WpfBrush _selected = WpfBrushes.Transparent;
+    private WpfBrush _selectedBorder = WpfBrushes.Transparent;
     private string _currentPage = "General";
 
     public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
@@ -5365,27 +5512,37 @@ internal sealed class SettingsWindow : Window
             Content = "Close",
             Foreground = _muted,
             Background = WpfBrushes.Transparent,
-            BorderThickness = new Thickness(0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
             Template = TransparentButtonTemplate(),
             Padding = new Thickness(14, 6, 14, 6),
-            Margin = new Thickness(0, 0, 10, 0),
+            Margin = new Thickness(0, 0, 14, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         _closeButton = close;
         close.MouseEnter += (_, _) =>
         {
             close.Background = _accentSoft;
+            close.BorderBrush = _selectedBorder;
             close.Foreground = _text;
         };
         close.MouseLeave += (_, _) =>
         {
             close.Background = WpfBrushes.Transparent;
+            close.BorderBrush = WpfBrushes.Transparent;
             close.Foreground = _muted;
         };
         close.Click += (_, _) => Close();
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
-        shell.Children.Add(header);
+        var headerBorder = new Border
+        {
+            Child = header,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+        _headerBorder = headerBorder;
+        shell.Children.Add(headerBorder);
 
         var body = new Grid();
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(172) });
@@ -5406,12 +5563,14 @@ internal sealed class SettingsWindow : Window
             {
                 button.Foreground = _text;
                 button.Background = _accentSoft;
+                button.BorderBrush = _selectedBorder;
             };
             button.MouseLeave += (_, _) =>
             {
                 var active = string.Equals(_currentPage, page, StringComparison.OrdinalIgnoreCase);
                 button.Foreground = active ? _text : _muted;
                 button.Background = active ? _selected : WpfBrushes.Transparent;
+                button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
             };
             button.Click += (_, _) => ShowPage(page);
             _nav[page] = button;
@@ -5467,10 +5626,11 @@ internal sealed class SettingsWindow : Window
             HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
             Height = 36,
             Margin = new Thickness(0, 0, 0, 8),
-            Padding = new Thickness(12, 0, 12, 0),
+            Padding = new Thickness(11, 0, 11, 0),
             Background = WpfBrushes.Transparent,
             Foreground = _muted,
-            BorderThickness = new Thickness(0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
             FontSize = 13,
         };
     }
@@ -5483,6 +5643,8 @@ internal sealed class SettingsWindow : Window
                  TargetType="{x:Type Button}">
   <Border x:Name="Root"
           Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
           CornerRadius="5">
     <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                       VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
@@ -5529,6 +5691,7 @@ internal sealed class SettingsWindow : Window
         _accent = palette.Accent;
         _accentSoft = palette.AccentSoft;
         _selected = palette.Selected;
+        _selectedBorder = palette.SelectedBorder;
     }
 
     private void RefreshTheme()
@@ -5544,6 +5707,11 @@ internal sealed class SettingsWindow : Window
         if (_header is not null)
         {
             _header.Background = _surface2;
+        }
+
+        if (_headerBorder is not null)
+        {
+            _headerBorder.BorderBrush = _line;
         }
 
         if (_headerTitle is not null)
@@ -5585,6 +5753,7 @@ internal sealed class SettingsWindow : Window
             var active = string.Equals(name, page, StringComparison.OrdinalIgnoreCase);
             button.Background = active ? _selected : WpfBrushes.Transparent;
             button.Foreground = active ? _text : _muted;
+            button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
         }
 
         _content.Children.Clear();
@@ -5892,7 +6061,7 @@ internal sealed class SettingsWindow : Window
         button.Width = 104;
         button.Click += (_, _) =>
         {
-            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected)
+            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected, _accentSoft, _selectedBorder)
             {
                 Owner = this,
             };
@@ -5967,7 +6136,7 @@ internal sealed class SettingsWindow : Window
         button.Width = 104;
         button.Click += (_, _) =>
         {
-            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected)
+            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected, _accentSoft, _selectedBorder)
             {
                 Owner = this,
             };
@@ -6791,6 +6960,8 @@ internal sealed class SettingsWindow : Window
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(10, 7, 10, 7),
                 Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
             };
             row.Child = new TextBlock
             {
@@ -6799,8 +6970,16 @@ internal sealed class SettingsWindow : Window
                 FontSize = 12,
                 FontWeight = FontWeights.Medium,
             };
-            row.MouseEnter += (_, _) => row.Background = _surface3;
-            row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
+            row.MouseEnter += (_, _) =>
+            {
+                row.Background = _accentSoft;
+                row.BorderBrush = _selectedBorder;
+            };
+            row.MouseLeave += (_, _) =>
+            {
+                row.Background = WpfBrushes.Transparent;
+                row.BorderBrush = WpfBrushes.Transparent;
+            };
             row.MouseLeftButtonDown += (_, e) =>
             {
                 popup.IsOpen = false;
@@ -7009,7 +7188,7 @@ internal sealed class RenameWindow : Window
     private readonly WpfTextBox _box = new();
     public string Value => _box.Text;
 
-    public RenameWindow(string value, WpfBrush background, WpfBrush foreground, WpfBrush muted, WpfBrush line)
+    public RenameWindow(string value, WpfBrush background, WpfBrush foreground, WpfBrush muted, WpfBrush line, WpfBrush surface, WpfBrush accentSoft, WpfBrush selected, WpfBrush selectedBorder)
     {
         Title = "Rename";
         Width = 420;
@@ -7030,7 +7209,7 @@ internal sealed class RenameWindow : Window
         _box.Foreground = foreground;
         _box.BorderThickness = new Thickness(0);
         _box.FontSize = 13;
-        _box.SelectionBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x50, 0x79, 0x88));
+        _box.SelectionBrush = accentSoft;
         _box.MaxLength = 120;
         _box.KeyDown += (_, e) =>
         {
@@ -7046,16 +7225,10 @@ internal sealed class RenameWindow : Window
             }
         };
 
-        var useLightPalette = IsLightBrush(background);
-        var fieldBackground = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x24, 0x23, 0x24));
-        var primaryBackground = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD5, 0xF1, 0xF6))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x26, 0x39, 0x41));
-        var primaryBorder = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x92, 0xC2, 0xC1))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x56, 0x82, 0x8E));
+        var fieldBackground = surface;
+        var primaryBackground = accentSoft;
+        var primaryBorder = selectedBorder;
+        var hoverBackground = selected;
 
         var grid = new Grid { Background = background };
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -7094,9 +7267,9 @@ internal sealed class RenameWindow : Window
         body.Children.Add(boxShell);
 
         var buttons = new StackPanel { Orientation = WpfOrientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
-        var cancel = ModalButton("Cancel", foreground, line, fieldBackground, primaryBackground, primaryBorder, false);
+        var cancel = ModalButton("Cancel", foreground, line, fieldBackground, primaryBackground, primaryBorder, hoverBackground, false);
         cancel.Margin = new Thickness(0, 0, 8, 0);
-        var save = ModalButton("Save", foreground, line, fieldBackground, primaryBackground, primaryBorder, true);
+        var save = ModalButton("Save", foreground, line, fieldBackground, primaryBackground, primaryBorder, hoverBackground, true);
         cancel.Click += (_, _) => DialogResult = false;
         save.Click += (_, _) => DialogResult = true;
         buttons.Children.Add(cancel);
@@ -7116,10 +7289,11 @@ internal sealed class RenameWindow : Window
 
     private static bool IsLightBrush(WpfBrush brush) => MainWindow.IsLightBackground(brush);
 
-    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush fieldBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, bool primary)
+    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush fieldBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
     {
         var idleBackground = primary ? primaryBackground : fieldBackground;
-        var hoverBackground = primaryBackground;
+        var idleBorder = primary ? primaryBorder : line;
+        var hoverBg = primary ? hoverBackground : primaryBackground;
         var button = new WpfButton
         {
             Content = text,
@@ -7127,27 +7301,26 @@ internal sealed class RenameWindow : Window
             MinWidth = primary ? 74 : 68,
             Padding = new Thickness(14, 0, 14, 0),
             Background = idleBackground,
-            BorderBrush = primary ? primaryBorder : line,
+            BorderBrush = idleBorder,
             BorderThickness = new Thickness(1),
             Foreground = foreground,
             FontSize = 12,
             FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
             Cursor = System.Windows.Input.Cursors.Hand,
+            FocusVisualStyle = null,
         };
         button.Template = (ControlTemplate)XamlReader.Parse("""
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
   </Border>
   <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True">
-      <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
-    </Trigger>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
   </ControlTemplate.Triggers>
 </ControlTemplate>
 """);
-        button.MouseEnter += (_, _) => button.Background = hoverBackground;
-        button.MouseLeave += (_, _) => button.Background = idleBackground;
+        button.MouseEnter += (_, _) => { button.Background = hoverBg; button.BorderBrush = primaryBorder; };
+        button.MouseLeave += (_, _) => { button.Background = idleBackground; button.BorderBrush = idleBorder; };
         return button;
     }
 }
@@ -7157,7 +7330,7 @@ internal sealed class TextEditWindow : Window
     private readonly System.Windows.Controls.TextBox _box = new();
     public string Value => _box.Text;
 
-    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line)
+    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder)
     {
         Title = "Edit Text";
         Width = 640;
@@ -7170,22 +7343,12 @@ internal sealed class TextEditWindow : Window
         ShowInTaskbar = false;
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
 
-        var useLightPalette = MainWindow.IsLightBackground(background);
-        var editorBackground = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x24, 0x23, 0x24));
-        var primaryBackground = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD5, 0xF1, 0xF6))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x26, 0x39, 0x41));
-        var primaryBorder = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x92, 0xC2, 0xC1))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x56, 0x82, 0x8E));
-        var secondaryBackground = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x24, 0x23, 0x24));
-        var selectionBrush = useLightPalette
-            ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD5, 0xF1, 0xF6))
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x50, 0x79, 0x88));
+        var editorBackground = surface;
+        var primaryBackground = accentSoft;
+        var primaryBorder = selectedBorder;
+        var secondaryBackground = surface;
+        var selectionBrush = accentSoft;
+        var hoverBackground = selected;
 
         _box.Text = value;
         _box.TextWrapping = TextWrapping.Wrap;
@@ -7218,7 +7381,7 @@ internal sealed class TextEditWindow : Window
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
         });
-        var trim = ModalButton("Trim", foreground, line, secondaryBackground, primaryBackground, primaryBorder, false);
+        var trim = ModalButton("Trim", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, false);
         trim.Margin = new Thickness(0, 0, 8, 0);
         trim.Click += (_, _) => _box.Text = _box.Text.Trim();
         Grid.SetColumn(trim, 1);
@@ -7238,9 +7401,9 @@ internal sealed class TextEditWindow : Window
         grid.Children.Add(editorShell);
 
         var buttons = new StackPanel { Orientation = WpfOrientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(18, 14, 18, 18) };
-        var cancel = ModalButton("Cancel", foreground, line, secondaryBackground, primaryBackground, primaryBorder, false);
+        var cancel = ModalButton("Cancel", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, false);
         cancel.Margin = new Thickness(0, 0, 8, 0);
-        var save = ModalButton("Save", foreground, line, secondaryBackground, primaryBackground, primaryBorder, true);
+        var save = ModalButton("Save", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, true);
         cancel.Click += (_, _) => DialogResult = false;
         save.Click += (_, _) => DialogResult = true;
         buttons.Children.Add(cancel);
@@ -7251,10 +7414,11 @@ internal sealed class TextEditWindow : Window
         Content = grid;
     }
 
-    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush secondaryBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, bool primary)
+    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush secondaryBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
     {
         var idleBackground = primary ? primaryBackground : secondaryBackground;
-        var hoverBackground = primaryBackground;
+        var idleBorder = primary ? primaryBorder : line;
+        var hoverBg = primary ? hoverBackground : primaryBackground;
         var button = new WpfButton
         {
             Content = text,
@@ -7262,27 +7426,36 @@ internal sealed class TextEditWindow : Window
             MinWidth = primary ? 74 : 68,
             Padding = new Thickness(14, 0, 14, 0),
             Background = idleBackground,
-            BorderBrush = primary ? primaryBorder : line,
+            BorderBrush = idleBorder,
             BorderThickness = new Thickness(1),
             Foreground = foreground,
             FontSize = 12,
             FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
             Cursor = System.Windows.Input.Cursors.Hand,
+            FocusVisualStyle = null,
         };
         button.Template = (ControlTemplate)XamlReader.Parse("""
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
   </Border>
   <ControlTemplate.Triggers>
     <Trigger Property="IsPressed" Value="True">
-      <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
+      <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
     </Trigger>
   </ControlTemplate.Triggers>
 </ControlTemplate>
 """);
-        button.MouseEnter += (_, _) => button.Background = hoverBackground;
-        button.MouseLeave += (_, _) => button.Background = idleBackground;
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = hoverBg;
+            button.BorderBrush = primaryBorder;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = idleBackground;
+            button.BorderBrush = idleBorder;
+        };
         return button;
     }
 }
