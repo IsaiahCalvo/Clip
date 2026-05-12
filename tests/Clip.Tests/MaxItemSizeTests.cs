@@ -8,11 +8,11 @@ public sealed class MaxItemSizeTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void FileItemOverLimitIsRejected()
+    public void FileItemSizeCountsPathTextNotFileContent()
     {
         Directory.CreateDirectory(_root);
         var path = Path.Combine(_root, "large.bin");
-        File.WriteAllBytes(path, new byte[12]);
+        File.WriteAllBytes(path, new byte[10_000_000]);
         var item = new ClipboardHistoryItem
         {
             Kind = ClipboardItemKind.Files,
@@ -20,8 +20,9 @@ public sealed class MaxItemSizeTests : IDisposable
             Preview = "large.bin",
         };
 
-        Assert.False(ClipItemSizeLimit.Allows(item, maxBytes: 10));
-        Assert.True(ClipItemSizeLimit.Allows(item, maxBytes: 12));
+        var pathBytes = System.Text.Encoding.UTF8.GetByteCount(path);
+        Assert.False(ClipItemSizeLimit.Allows(item, maxBytes: pathBytes - 1));
+        Assert.True(ClipItemSizeLimit.Allows(item, maxBytes: pathBytes));
         Assert.True(ClipItemSizeLimit.Allows(item, maxBytes: null));
     }
 

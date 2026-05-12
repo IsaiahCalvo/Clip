@@ -235,7 +235,7 @@ internal static class ClipItemSizeLimit
         {
             ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color => TextBytes(item.Text) + TextBytes(item.HtmlText) + TextBytes(item.RtfText),
             ClipboardItemKind.Image => ExistingPathBytes(item.AssetPath),
-            ClipboardItemKind.Files => item.FilePaths.Sum(PathBytes),
+            ClipboardItemKind.Files => item.FilePaths.Sum(TextBytes),
             _ => 0,
         };
     }
@@ -267,11 +267,6 @@ internal static class ClipItemSizeLimit
         {
             return 0;
         }
-    }
-
-    private static long PathBytes(string path)
-    {
-        return ExistingPathBytes(path);
     }
 
     public static string MaxItemSizeLabel(long? bytes)
@@ -1193,18 +1188,7 @@ public partial class MainWindow : Window
                 var text = System.Windows.Clipboard.GetText();
                 var htmlText = ClipboardTextOrNull(System.Windows.TextDataFormat.Html);
                 var rtfText = ClipboardTextOrNull(System.Windows.TextDataFormat.Rtf);
-                if (ClipboardPathText.TryParseExistingFilePaths(text, out var paths))
-                {
-                    item = new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Files,
-                        FilePaths = paths,
-                        Preview = paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files",
-                        SourceApplication = source.Name,
-                        SourceApplicationPath = source.Path,
-                    };
-                }
-                else if (TryNormalizeColorText(text, source.Name, out var colorHex))
+                if (TryNormalizeColorText(text, source.Name, out var colorHex))
                 {
                     item = new ClipboardHistoryItem
                     {

@@ -577,19 +577,7 @@ internal sealed class ClipboardWatcherForm : Form
             else if (Clipboard.ContainsText())
             {
                 var text = Clipboard.GetText();
-                if (ClipboardPathText.TryParseExistingFilePaths(text, out var paths))
-                {
-                    _store.AddOrUpdate(new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Files,
-                        FilePaths = paths,
-                        Preview = paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files",
-                        ContentHash = HashText(string.Join("|", paths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
-                        SourceApplication = SourceName(),
-                        SourceApplicationPath = SourcePath(),
-                    });
-                }
-                else if (!string.IsNullOrWhiteSpace(text))
+                if (!string.IsNullOrWhiteSpace(text))
                 {
                     _store.AddOrUpdate(new ClipboardHistoryItem
                     {
