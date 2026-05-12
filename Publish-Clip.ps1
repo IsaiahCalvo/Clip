@@ -21,16 +21,11 @@ dotnet publish (Join-Path $root "src\Clip.Shell\Clip.Shell.csproj") `
     -c $Configuration `
     -r $Runtime `
     --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:EnableCompressionInSingleFile=true `
+    -p:PublishSingleFile=false `
+    -p:PublishReadyToRun=false `
     -o $publishDir
 
-$shellExe = Join-Path $publishDir "Clip.Shell.exe"
-$appExe = Join-Path $publishDir "Clip.exe"
-if (Test-Path $shellExe) {
-    Copy-Item $shellExe $appExe -Force
-    Remove-Item -LiteralPath $shellExe -Force
-}
+# AssemblyName=Clip in Clip.Shell.csproj, so publish already produces Clip.exe + Clip.dll.
 
 Copy-Item (Join-Path $root "README.md") $publishDir -Force
 Copy-Item (Join-Path $root "LICENSE") $publishDir -Force

@@ -49,12 +49,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "startupentry"; Description: "Launch {#MyAppName} when I sign in to Windows"; GroupDescription: "Startup:"
 
 [Files]
-Source: "..\artifacts\publish\Clip-win-x64\Clip.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\publish\Clip-win-x64\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\publish\Clip-win-x64\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\publish\Clip-win-x64\PRIVACY.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\publish\Clip-win-x64\Start-Clip.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\publish\Clip-win-x64\Install-ClipStartup.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\artifacts\publish\Clip-win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

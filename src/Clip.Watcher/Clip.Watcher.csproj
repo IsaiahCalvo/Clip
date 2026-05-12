@@ -18,7 +18,7 @@
       <_Parameter1>Clip.Tests</_Parameter1>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>Clip.Shell</_Parameter1>
+      <_Parameter1>Clip</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 
