@@ -787,6 +787,8 @@ public partial class MainWindow : Window
         TitleText.Cursor = System.Windows.Input.Cursors.IBeam;
         TitleText.ToolTip = "Double-click to rename";
         TitleText.MouseLeftButtonDown += OnTitleTextMouseLeftButtonDown;
+        TitleText.Foreground = (WpfBrush)FindResource("Text");
+        SubTitleText.Foreground = (WpfBrush)FindResource("Muted");
         TitleText.MouseEnter += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Accent");
         TitleText.MouseLeave += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Text");
         AllFilterShell.MouseEnter += (_, _) =>
@@ -3554,6 +3556,8 @@ public partial class MainWindow : Window
         HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
         TextPreview.CaretBrush = (WpfBrush)FindResource("Accent");
+        if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
+        if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
         RefreshChromeIcons();
         ShellLog.Info($"theme applied preference={preference} dark={useDark}");
 
