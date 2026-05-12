@@ -14,6 +14,10 @@ Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://
 
 After install, press `Alt+V` to open it.
 
+### Code Signing
+
+Clip uses free code signing provided by the [SignPath Foundation](https://signpath.org/) for open-source projects. Once signed, future releases will install without a SmartScreen warning. Certificates are issued in SignPath Foundation's name.
+
 ## Features
 
 - Clipboard history for text, links, colors, images, files, and folders.
