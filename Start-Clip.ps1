@@ -13,14 +13,15 @@ function Write-LauncherLog {
 }
 
 function Start-ClipOnce {
+    $publishedAppExe = Join-Path $PSScriptRoot "Clip.exe"
     $publishedExe = Join-Path $PSScriptRoot "Clip.Shell.exe"
     $releaseExe = Join-Path $PSScriptRoot "src\Clip.Shell\bin\Release\net8.0-windows10.0.19041.0\Clip.Shell.exe"
     $releaseRuntimeExe = Join-Path $PSScriptRoot "src\Clip.Shell\bin\Release\net8.0-windows10.0.19041.0\win-x64\Clip.Shell.exe"
     $debugExe = Join-Path $PSScriptRoot "src\Clip.Shell\bin\Debug\net8.0-windows10.0.19041.0\Clip.Shell.exe"
     $project = Join-Path $PSScriptRoot "src\Clip.Shell\Clip.Shell.csproj"
-    $exe = @($publishedExe, $releaseExe, $debugExe, $releaseRuntimeExe) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $exe = @($publishedAppExe, $publishedExe, $releaseExe, $debugExe, $releaseRuntimeExe) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-    $running = Get-Process Clip.Shell -ErrorAction SilentlyContinue
+    $running = @(Get-Process Clip -ErrorAction SilentlyContinue) + @(Get-Process Clip.Shell -ErrorAction SilentlyContinue)
     if ($running) {
         Write-LauncherLog "Clip already running pid=$($running.Id -join ',')"
         return

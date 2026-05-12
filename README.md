@@ -15,6 +15,7 @@ It runs locally, opens with `Alt+V`, and keeps clipboard history on your own dev
 - Color swatches for copied hex colors.
 - Source app metadata and item information panel.
 - Local debug logs with `Ctrl+Shift+L`.
+- Public settings for theme, startup, updates, history limits, storage, hotkeys, paste format, and excluded apps.
 
 ## Requirements
 
@@ -43,6 +44,12 @@ The release files are created under:
 artifacts\publish\Clip-win-x64
 ```
 
+Double-click this app file to start Clip:
+
+```text
+artifacts\publish\Clip-win-x64\Clip.exe
+```
+
 The zip file is created at:
 
 ```text
@@ -57,17 +64,17 @@ After publishing or building, run:
 .\Install-ClipStartup.ps1
 ```
 
-This installs Clip for your Windows user account only.
+This installs Clip under `%LOCALAPPDATA%\Programs\Clip`, creates Desktop and Start Menu shortcuts, and starts Clip automatically when your Windows user signs in.
 
 ## Privacy
 
 Clip stores clipboard history locally under:
 
 ```text
-%LOCALAPPDATA%\Clip
+%LOCALAPPDATA%\Clip\Clipboard History
 ```
 
-That folder may contain copied text, image assets, file paths, logs, and metadata. Review `PRIVACY.md` before sharing logs or local app data.
+App settings, update state, app cache data, and logs are stored under `%LOCALAPPDATA%\Clip`. Review `PRIVACY.md` before sharing logs or local app data.
 
 ## Development
 

@@ -4,7 +4,10 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using Windows.Storage;
+using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -20,11 +23,15 @@ using Forms = System.Windows.Forms;
 using WpfBrush = System.Windows.Media.Brush;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
+using WpfWebView2 = Microsoft.Web.WebView2.Wpf.WebView2;
 using WpfImage = System.Windows.Controls.Image;
 using WpfListBox = System.Windows.Controls.ListBox;
 using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfOrientation = System.Windows.Controls.Orientation;
 using WpfTextBox = System.Windows.Controls.TextBox;
+using WinDataPackageOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation;
+using WinDataRequestedEventArgs = Windows.ApplicationModel.DataTransfer.DataRequestedEventArgs;
+using WinDataTransferManager = Windows.ApplicationModel.DataTransfer.DataTransferManager;
 using WatcherAppChoice = Clip.Watcher.AppChoice;
 using WatcherAppDiscovery = Clip.Watcher.AppDiscovery;
 using WatcherAppLauncher = Clip.Watcher.AppLauncher;
@@ -36,21 +43,711 @@ using WatcherStaticDocumentPreviewRenderer = Clip.Watcher.StaticDocumentPreviewR
 
 namespace Clip.Shell;
 
+internal enum ClipThemePreference
+{
+    System,
+    Light,
+    Dark,
+}
+
+internal enum AppIconPreference
+{
+    Light,
+    Dark,
+}
+
+internal enum PasteFormatPreference
+{
+    PlainText,
+    OriginalFormatting,
+}
+
+internal sealed class ClipShellSettings
+{
+    private const string ClipboardFolderName = "Clipboard History";
+    private const string PreviousClipboardFolderName = "Clipboard";
+
+    public ClipThemePreference Theme { get; set; } = ClipThemePreference.System;
+    public AppIconPreference AppIcon { get; set; } = AppIconPreference.Light;
+    public PasteFormatPreference DefaultPasteFormat { get; set; } = PasteFormatPreference.PlainText;
+    public int? HistoryLimit { get; set; } = 500;
+    public long? MaxItemSizeBytes { get; set; } = 50L * 1024 * 1024;
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
+    public bool InstallUpdatesAutomatically { get; set; } = true;
+    public string? ClipboardFolderPath { get; set; }
+    public ClipHotkeySettings Hotkeys { get; set; } = new();
+    public ClipPrivacySettings Privacy { get; set; } = new();
+    public List<string> AltVPasteApps { get; set; } = new();
+    public List<ClipAppOverride> AppOverrides { get; set; } = new();
+
+    public static string DefaultClipboardFolderPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Clip",
+        ClipboardFolderName);
+
+    public static string PreviousDefaultClipboardFolderPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Clip",
+        PreviousClipboardFolderName);
+
+    public string EffectiveClipboardFolderPath()
+    {
+        return string.IsNullOrWhiteSpace(ClipboardFolderPath) ? DefaultClipboardFolderPath : ClipboardFolderPath;
+    }
+
+    public void ResetToDefaults()
+    {
+        Theme = ClipThemePreference.System;
+        AppIcon = AppIconPreference.Light;
+        DefaultPasteFormat = PasteFormatPreference.PlainText;
+        HistoryLimit = 500;
+        MaxItemSizeBytes = 50L * 1024 * 1024;
+        CheckForUpdatesOnStartup = true;
+        InstallUpdatesAutomatically = true;
+        ClipboardFolderPath = null;
+        Hotkeys = new ClipHotkeySettings();
+        Hotkeys.ResetToDefaults();
+        Privacy = new ClipPrivacySettings();
+        AltVPasteApps = new List<string>();
+        AppOverrides = new List<ClipAppOverride>();
+    }
+
+    public static string SettingsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Clip",
+        "settings.json");
+
+    public static ClipShellSettings Load()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath))
+            {
+                return new ClipShellSettings();
+            }
+
+            var settings = JsonSerializer.Deserialize<ClipShellSettings>(File.ReadAllText(SettingsPath)) ?? new ClipShellSettings();
+            settings.Hotkeys ??= new ClipHotkeySettings();
+            settings.Hotkeys.Normalize();
+            settings.Privacy ??= new ClipPrivacySettings();
+            settings.Privacy.Normalize();
+            settings.AltVPasteApps ??= new List<string>();
+            settings.AppOverrides ??= new List<ClipAppOverride>();
+            foreach (var entry in settings.AppOverrides)
+            {
+                entry.Action = ClipAppOverride.NormalizeAction(entry.Action);
+            }
+            if (settings.AltVPasteApps.Count > 0)
+            {
+                foreach (var legacy in settings.AltVPasteApps)
+                {
+                    if (string.IsNullOrWhiteSpace(legacy)) continue;
+                    if (!settings.AppOverrides.Any(o => string.Equals(o.AppName, legacy, StringComparison.OrdinalIgnoreCase) && string.Equals(o.Action, ClipAppOverride.ActionPaste, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        settings.AppOverrides.Add(new ClipAppOverride { AppName = legacy, Action = ClipAppOverride.ActionPaste, Hotkey = "Alt+V" });
+                    }
+                }
+                settings.AltVPasteApps.Clear();
+            }
+            if (string.Equals(settings.ClipboardFolderPath, PreviousDefaultClipboardFolderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                settings.ClipboardFolderPath = null;
+            }
+
+            return settings;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "settings load failed");
+            return new ClipShellSettings();
+        }
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(SettingsPath, json);
+            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon} historyLimit={HistoryLimit?.ToString() ?? "Unlimited"} maxItemSize={ClipItemSizeLimit.MaxItemSizeLabel(MaxItemSizeBytes)} updateCheck={CheckForUpdatesOnStartup} autoInstall={InstallUpdatesAutomatically} clipboardFolder={EffectiveClipboardFolderPath()} openHotkey={Hotkeys.OpenClip} debugHotkey={Hotkeys.SaveDebugLog} excludedApps={Privacy.ExcludedApps.Count}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "settings save failed");
+        }
+    }
+}
+
+internal sealed class ClipAppOverride
+{
+    public const string ActionOpenClip = "Open Clip";
+    public const string ActionPaste = "Paste";
+
+    // Legacy action labels — migrated to ActionPaste on load.
+    public const string LegacyActionPasteImage = "Paste image";
+    public const string LegacyActionPasteText = "Paste text";
+    public const string LegacyActionPasteFiles = "Paste files";
+    public const string LegacyActionPasteLink = "Paste link";
+
+    public static readonly string[] AvailableActions =
+    {
+        ActionOpenClip,
+        ActionPaste,
+    };
+
+    public string AppName { get; set; } = string.Empty;
+    public string? ExecutablePath { get; set; }
+    public string Action { get; set; } = ActionPaste;
+    public string Hotkey { get; set; } = "Alt+V";
+
+    public static string NormalizeAction(string? value)
+    {
+        var v = (value ?? string.Empty).Trim();
+        if (v.Equals(ActionOpenClip, StringComparison.OrdinalIgnoreCase)) return ActionOpenClip;
+        if (v.Equals(ActionPaste, StringComparison.OrdinalIgnoreCase)) return ActionPaste;
+        if (v.Equals(LegacyActionPasteImage, StringComparison.OrdinalIgnoreCase)
+            || v.Equals(LegacyActionPasteText, StringComparison.OrdinalIgnoreCase)
+            || v.Equals(LegacyActionPasteFiles, StringComparison.OrdinalIgnoreCase)
+            || v.Equals(LegacyActionPasteLink, StringComparison.OrdinalIgnoreCase))
+        {
+            return ActionPaste;
+        }
+        return ActionPaste;
+    }
+}
+
+internal static class ClipItemSizeLimit
+{
+    public static bool Allows(ClipboardHistoryItem item, long? maxBytes)
+    {
+        if (maxBytes is null)
+        {
+            return true;
+        }
+
+        return EstimateBytes(item) <= Math.Max(0, maxBytes.Value);
+    }
+
+    public static long EstimateBytes(ClipboardHistoryItem item)
+    {
+        return item.Kind switch
+        {
+            ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color => TextBytes(item.Text) + TextBytes(item.HtmlText) + TextBytes(item.RtfText),
+            ClipboardItemKind.Image => ExistingPathBytes(item.AssetPath),
+            ClipboardItemKind.Files => item.FilePaths.Sum(PathBytes),
+            _ => 0,
+        };
+    }
+
+    private static long TextBytes(string? text)
+    {
+        return string.IsNullOrEmpty(text) ? 0 : Encoding.UTF8.GetByteCount(text);
+    }
+
+    private static long ExistingPathBytes(string? path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return 0;
+            }
+
+            if (File.Exists(path))
+            {
+                return new FileInfo(path).Length;
+            }
+
+            return Directory.Exists(path)
+                ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(file => new FileInfo(file).Length)
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static long PathBytes(string path)
+    {
+        return ExistingPathBytes(path);
+    }
+
+    public static string MaxItemSizeLabel(long? bytes)
+    {
+        if (bytes is null)
+        {
+            return "Unlimited";
+        }
+
+        return $"{Math.Max(0, bytes.Value) / 1024 / 1024} MB";
+    }
+}
+
+internal sealed class ClipPrivacySettings
+{
+    public List<ClipExcludedApp> ExcludedApps { get; set; } = [];
+
+    public void AddExcludedApp(string name, string? executablePath)
+    {
+        var app = ClipExcludedApp.Create(name, executablePath);
+        if (app is null || ExcludedApps.Any(existing => existing.MatchesEntry(app)))
+        {
+            return;
+        }
+
+        ExcludedApps.Add(app);
+    }
+
+    public void RemoveExcludedApp(ClipExcludedApp app)
+    {
+        ExcludedApps.RemoveAll(existing => existing.MatchesEntry(app));
+    }
+
+    public void RemoveExcludedApp(string name, string? executablePath)
+    {
+        var app = ClipExcludedApp.Create(name, executablePath);
+        if (app is null)
+        {
+            return;
+        }
+
+        RemoveExcludedApp(app);
+    }
+
+    public bool IsExcluded(string? sourceName, string? sourcePath)
+    {
+        return ExcludedApps.Any(app => app.MatchesSource(sourceName, sourcePath));
+    }
+
+    public void Normalize()
+    {
+        ExcludedApps = ExcludedApps
+            .Concat(MigrateLegacyExcludedApps())
+            .Select(app => ClipExcludedApp.Create(app.Name, app.ExecutablePath))
+            .Where(app => app is not null)
+            .Select(app => app!)
+            .DistinctBy(app => app.Key, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(app => app.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private List<ClipExcludedApp> MigrateLegacyExcludedApps()
+    {
+        var migrated = new List<ClipExcludedApp>();
+        if (ExcludedApps.Count > 0)
+        {
+            return migrated;
+        }
+
+        // Older builds stored this as a string array. Keep reading it so users do not lose exclusions.
+        try
+        {
+            var json = File.Exists(ClipShellSettings.SettingsPath) ? File.ReadAllText(ClipShellSettings.SettingsPath) : "";
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("Privacy", out var privacy) ||
+                !privacy.TryGetProperty("ExcludedApps", out var apps) ||
+                apps.ValueKind != JsonValueKind.Array)
+            {
+                return migrated;
+            }
+
+            foreach (var app in apps.EnumerateArray())
+            {
+                if (app.ValueKind == JsonValueKind.String)
+                {
+                    var entry = ClipExcludedApp.Create(app.GetString(), null);
+                    if (entry is not null)
+                    {
+                        migrated.Add(entry);
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return migrated;
+    }
+}
+
+internal sealed class ClipExcludedApp
+{
+    public string Name { get; set; } = "";
+    public string? ExecutablePath { get; set; }
+
+    public string Key => NormalizePath(ExecutablePath) ?? NormalizeName(Name) ?? Name;
+
+    public static ClipExcludedApp? Create(string? name, string? executablePath)
+    {
+        var path = NormalizeEntry(executablePath);
+        var displayName = NormalizeEntry(name) ?? Path.GetFileNameWithoutExtension(path);
+        if (displayName is null)
+        {
+            return null;
+        }
+
+        return new ClipExcludedApp
+        {
+            Name = displayName,
+            ExecutablePath = path,
+        };
+    }
+
+    public bool MatchesEntry(ClipExcludedApp other)
+    {
+        return string.Equals(Key, other.Key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool MatchesSource(string? sourceName, string? sourcePath)
+    {
+        var sourceNameKey = NormalizeName(sourceName);
+        var sourcePathKey = NormalizePath(sourcePath);
+        var sourcePathNameKey = NormalizeName(Path.GetFileNameWithoutExtension(sourcePath));
+        var appPathKey = NormalizePath(ExecutablePath);
+        var appNameKey = NormalizeName(Name);
+        var appPathNameKey = NormalizeName(Path.GetFileNameWithoutExtension(ExecutablePath));
+
+        return (!string.IsNullOrWhiteSpace(appPathKey) && string.Equals(appPathKey, sourcePathKey, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrWhiteSpace(appNameKey) &&
+                (string.Equals(appNameKey, sourceNameKey, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(appNameKey, sourcePathNameKey, StringComparison.OrdinalIgnoreCase))) ||
+            (!string.IsNullOrWhiteSpace(appPathNameKey) && string.Equals(appPathNameKey, sourceNameKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? NormalizeEntry(string? value)
+    {
+        var trimmed = value?.Trim().Trim('"');
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    }
+
+    private static string? NormalizeName(string? value)
+    {
+        var normalized = NormalizeEntry(value);
+        return normalized is null ? null : Path.GetFileNameWithoutExtension(normalized);
+    }
+
+    private static string? NormalizePath(string? value)
+    {
+        var normalized = NormalizeEntry(value);
+        return normalized is null || !Path.IsPathRooted(normalized) ? null : Path.GetFullPath(normalized).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+}
+
+internal sealed record ClipboardPastePayload(string Text, string? Html, string? Rtf);
+
+internal static class ClipboardPasteData
+{
+    public static bool HasOriginalFormatting(ClipboardHistoryItem item)
+    {
+        return !string.IsNullOrWhiteSpace(item.HtmlText) || !string.IsNullOrWhiteSpace(item.RtfText);
+    }
+
+    public static ClipboardPastePayload Create(ClipboardHistoryItem item, PasteFormatPreference preference)
+    {
+        var text = item.Text ?? item.Preview ?? string.Empty;
+        if (preference != PasteFormatPreference.OriginalFormatting)
+        {
+            return new ClipboardPastePayload(text, null, null);
+        }
+
+        return new ClipboardPastePayload(
+            text,
+            string.IsNullOrWhiteSpace(item.HtmlText) ? null : item.HtmlText,
+            string.IsNullOrWhiteSpace(item.RtfText) ? null : item.RtfText);
+    }
+}
+
+internal sealed class ClipHotkeySettings
+{
+    public string OpenClip { get; set; } = ClipHotkeyDefaults.OpenClip;
+    public string PasteSelected { get; set; } = ClipHotkeyDefaults.PasteSelected;
+    public string CopySelected { get; set; } = ClipHotkeyDefaults.CopySelected;
+    public string PinSelected { get; set; } = ClipHotkeyDefaults.PinSelected;
+    public string OpenActions { get; set; } = ClipHotkeyDefaults.OpenActions;
+    public string OpenSelected { get; set; } = ClipHotkeyDefaults.OpenSelected;
+    public string EditSelected { get; set; } = ClipHotkeyDefaults.EditSelected;
+    public string SaveDebugLog { get; set; } = ClipHotkeyDefaults.SaveDebugLog;
+    public string DeleteSelected { get; set; } = ClipHotkeyDefaults.DeleteSelected;
+    public string CloseClip { get; set; } = ClipHotkeyDefaults.CloseClip;
+
+    public void ResetToDefaults()
+    {
+        OpenClip = ClipHotkeyDefaults.OpenClip;
+        PasteSelected = ClipHotkeyDefaults.PasteSelected;
+        CopySelected = ClipHotkeyDefaults.CopySelected;
+        PinSelected = ClipHotkeyDefaults.PinSelected;
+        OpenActions = ClipHotkeyDefaults.OpenActions;
+        OpenSelected = ClipHotkeyDefaults.OpenSelected;
+        EditSelected = ClipHotkeyDefaults.EditSelected;
+        SaveDebugLog = ClipHotkeyDefaults.SaveDebugLog;
+        DeleteSelected = ClipHotkeyDefaults.DeleteSelected;
+        CloseClip = ClipHotkeyDefaults.CloseClip;
+    }
+
+    public void Normalize()
+    {
+        OpenClip = NormalizeGlobal(OpenClip, ClipHotkeyDefaults.OpenClip);
+        PasteSelected = NormalizeLocal(PasteSelected, ClipHotkeyDefaults.PasteSelected);
+        CopySelected = NormalizeLocal(CopySelected, ClipHotkeyDefaults.CopySelected);
+        PinSelected = NormalizeLocal(PinSelected, ClipHotkeyDefaults.PinSelected);
+        OpenActions = NormalizeLocal(OpenActions, ClipHotkeyDefaults.OpenActions);
+        OpenSelected = NormalizeLocal(OpenSelected, ClipHotkeyDefaults.OpenSelected);
+        EditSelected = NormalizeLocal(EditSelected, ClipHotkeyDefaults.EditSelected);
+        SaveDebugLog = NormalizeGlobal(SaveDebugLog, ClipHotkeyDefaults.SaveDebugLog);
+        DeleteSelected = NormalizeLocal(DeleteSelected, ClipHotkeyDefaults.DeleteSelected);
+        CloseClip = NormalizeLocal(CloseClip, ClipHotkeyDefaults.CloseClip);
+    }
+
+    private static string NormalizeLocal(string value, string fallback)
+        => ClipHotkeyGesture.TryParse(value, out var gesture) ? gesture.DisplayText : fallback;
+
+    private static string NormalizeGlobal(string value, string fallback)
+        => ClipHotkeyGesture.TryParseGlobal(value, out var gesture) ? gesture.DisplayText : fallback;
+}
+
+internal static class ClipHotkeyDefaults
+{
+    public const string OpenClip = "Alt+V";
+    public const string PasteSelected = "Enter";
+    public const string CopySelected = "Ctrl+C";
+    public const string PinSelected = "Ctrl+P";
+    public const string OpenActions = "Ctrl+K";
+    public const string OpenSelected = "Ctrl+O";
+    public const string EditSelected = "Ctrl+E";
+    public const string SaveDebugLog = "Ctrl+Shift+L";
+    public const string DeleteSelected = "Delete";
+    public const string CloseClip = "Esc";
+}
+
+internal readonly record struct ClipHotkeyGesture(int WinModifiers, int VirtualKey, ModifierKeys WpfModifiers, Key WpfKey, string DisplayText)
+{
+    private const int WinModAlt = 0x0001;
+    private const int WinModControl = 0x0002;
+    private const int WinModShift = 0x0004;
+    private const int WinModWindows = 0x0008;
+
+    public static bool TryParse(string? text, out ClipHotkeyGesture gesture)
+    {
+        gesture = default;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            return false;
+        }
+
+        var winModifiers = 0;
+        var wpfModifiers = ModifierKeys.None;
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            switch (parts[i].ToUpperInvariant())
+            {
+                case "ALT":
+                    winModifiers |= WinModAlt;
+                    wpfModifiers |= ModifierKeys.Alt;
+                    break;
+                case "CTRL":
+                case "CONTROL":
+                    winModifiers |= WinModControl;
+                    wpfModifiers |= ModifierKeys.Control;
+                    break;
+                case "SHIFT":
+                    winModifiers |= WinModShift;
+                    wpfModifiers |= ModifierKeys.Shift;
+                    break;
+                case "WIN":
+                case "WINDOWS":
+                    winModifiers |= WinModWindows;
+                    wpfModifiers |= ModifierKeys.Windows;
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        if (!TryKey(parts[^1], out var key))
+        {
+            return false;
+        }
+
+        var virtualKey = KeyInterop.VirtualKeyFromKey(key);
+        if (virtualKey <= 0)
+        {
+            return false;
+        }
+
+        gesture = new ClipHotkeyGesture(winModifiers, virtualKey, wpfModifiers, key, Format(wpfModifiers, key));
+        return true;
+    }
+
+    public static bool TryParseGlobal(string? text, out ClipHotkeyGesture gesture)
+    {
+        return TryParse(text, out gesture) && gesture.WpfModifiers != ModifierKeys.None;
+    }
+
+    private static bool TryKey(string text, out Key key)
+    {
+        key = Key.None;
+        if (text.Length == 1 && char.IsLetterOrDigit(text[0]) && Enum.TryParse("D" + char.ToUpperInvariant(text[0]), out key))
+        {
+            return true;
+        }
+
+        return Enum.TryParse(text, ignoreCase: true, out key) && key is not Key.None;
+    }
+
+    public static string Format(ModifierKeys modifiers, Key key)
+    {
+        var parts = new List<string>();
+        if (modifiers.HasFlag(ModifierKeys.Control))
+        {
+            parts.Add("Ctrl");
+        }
+
+        if (modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            parts.Add("Shift");
+        }
+
+        if (modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            parts.Add("Alt");
+        }
+
+        if (modifiers.HasFlag(ModifierKeys.Windows))
+        {
+            parts.Add("Win");
+        }
+
+        parts.Add(KeyDisplay(key));
+        return string.Join("+", parts);
+    }
+
+    private static string KeyDisplay(Key key)
+    {
+        if (key >= Key.D0 && key <= Key.D9)
+        {
+            return ((int)(key - Key.D0)).ToString();
+        }
+
+        return key >= Key.A && key <= Key.Z ? key.ToString() : key.ToString();
+    }
+}
+
+internal static class StartupRegistration
+{
+    public const bool DefaultEnabled = true;
+    internal const string RunValueName = "Clip";
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    public static bool IsEnabled() => IsEnabled(RunValueName);
+
+    public static bool IsEnabled(string valueName)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return key?.GetValue(valueName) is string value && !string.IsNullOrWhiteSpace(value);
+    }
+
+    public static string? CurrentValue() => CurrentValue(RunValueName);
+
+    public static string? CurrentValue(string valueName)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return key?.GetValue(valueName) as string;
+    }
+
+    public static void SetEnabled(bool enabled) => SetEnabled(enabled, RunValueName, CurrentExecutablePath(), RemoveLegacyStartupShortcut);
+
+    public static void SetEnabled(bool enabled, string valueName, string executablePath, Action? afterDisable = null)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
+        if (key is null)
+        {
+            throw new InvalidOperationException("Could not open Windows startup registry key.");
+        }
+
+        if (enabled)
+        {
+            key.SetValue(valueName, Quote(executablePath), RegistryValueKind.String);
+            return;
+        }
+
+        key.DeleteValue(valueName, throwOnMissingValue: false);
+        afterDisable?.Invoke();
+    }
+
+    private static string CurrentExecutablePath()
+    {
+        var path = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            return path;
+        }
+
+        using var process = Process.GetCurrentProcess();
+        path = process.MainModule?.FileName;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            return path;
+        }
+
+        throw new InvalidOperationException("Could not find Clip executable path.");
+    }
+
+    private static string Quote(string path) => $"\"{path}\"";
+
+    private static void RemoveLegacyStartupShortcut()
+    {
+        try
+        {
+            var startupShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk");
+            if (File.Exists(startupShortcut))
+            {
+                File.Delete(startupShortcut);
+                ShellLog.Info($"legacy startup shortcut removed path={startupShortcut}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "legacy startup shortcut remove failed");
+        }
+    }
+}
+
 public partial class MainWindow : Window
 {
-    private const int HotkeyId = 0x4350;
-    private const int ModAlt = 0x0001;
-    private const int VkV = 0x56;
+    private const int OpenHotkeyId = 0x4350;
+    private const int DebugLogHotkeyId = 0x4351;
+    private const int OpenOverrideHotkeyId = 0x4352;
     private const int WmHotkey = 0x0312;
     private const int WmClipboardUpdate = 0x031D;
+    private const int WmMouseWheel = 0x020A;
+    private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
 
-    private readonly ClipboardHistoryStore _store = new();
+    private readonly ClipShellSettings _settings = ClipShellSettings.Load();
+    private readonly ClipboardHistoryStore _store;
+    private readonly ClipUpdateService _updates = new();
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
+    private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly System.Windows.Threading.DispatcherTimer _clipboardSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
+    private ClipboardHistoryItem? _pendingTextClipboardItem;
     private HwndSource? _source;
+    private bool _openHotkeyRegistered;
+    private bool _debugLogHotkeyRegistered;
+    private bool _openOverrideRegistered;
+    private string? _activeOpenOverrideApp;
+    private string? _activeOpenOverrideHotkey;
     private string _kindFilter = "all";
     private string _dateFilter = "all";
     private string _fileFilter = "all";
@@ -60,19 +757,60 @@ public partial class MainWindow : Window
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
     private ClipboardHistoryItem? _menuItem;
+    private bool _expandedImagePanning;
+    private System.Windows.Point _expandedImageLastPoint;
+    private System.Windows.Point _expandedImageDownPoint;
+    private bool _expandedImageMoved;
+    private bool _expandedImageDownOnImage;
+    private double _expandedImageZoom = 1.0;
+    private double _expandedImageNaturalWidth = 1.0;
+    private double _expandedImageNaturalHeight = 1.0;
+    private Rect _expandedRestoreBounds;
+    private CornerRadius _expandedRestoreCornerRadius;
+    private bool _expandedWindowResized;
+    private string? _currentPreviewImagePath;
+    private string? _currentPreviewPdfPath;
+    private ClipUpdateStatus _lastUpdateStatus = ClipUpdateStatus.NotChecked(ClipUpdateService.CurrentVersion);
     public bool KeepOpenForDebug { get; set; }
+    internal AppIconPreference AppIconPreference => _settings.AppIcon;
+    internal event Action<AppIconPreference>? AppIconChanged;
 
     public MainWindow()
     {
+        _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath());
         InitializeComponent();
+        RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Enabled);
+        ApplyTheme(_settings.Theme, save: false);
+        ApplyAppIcon(_settings.AppIcon, save: false);
         Opacity = 0;
-        SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24);
-        DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
-        FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24);
+        RefreshChromeIcons();
+        TitleText.Cursor = System.Windows.Input.Cursors.IBeam;
+        TitleText.ToolTip = "Double-click to rename";
+        TitleText.MouseLeftButtonDown += OnTitleTextMouseLeftButtonDown;
+        TitleText.MouseEnter += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Accent");
+        TitleText.MouseLeave += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Text");
+        AllFilterShell.MouseEnter += (_, _) =>
+        {
+            AllFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
+            AllFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+        };
+        AllFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
+        FilesFilterShell.MouseEnter += (_, _) =>
+        {
+            FilesFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
+            FilesFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+        };
+        FilesFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
             Toast.Visibility = Visibility.Collapsed;
+        };
+        _hotkeyRetryTimer.Tick += (_, _) => EnsureHotkeyRegistered("retry");
+        _clipboardSettleTimer.Tick += (_, _) =>
+        {
+            _clipboardSettleTimer.Stop();
+            SavePendingTextClipboardItem();
         };
     }
 
@@ -84,8 +822,9 @@ public partial class MainWindow : Window
             _source?.AddHook(WndProc);
             var hwnd = new WindowInteropHelper(this).Handle;
             ApplyRoundedWindowCorners(hwnd);
-            var hotkey = RegisterHotKey(hwnd, HotkeyId, ModAlt, VkV);
+            var hotkey = EnsureHotkeyRegistered("startup");
             var listener = AddClipboardFormatListener(hwnd);
+            InstallForegroundHook();
             ShellLog.Info($"window initialized hwnd={hwnd} hotkey={hotkey} listener={listener} win32={Marshal.GetLastWin32Error()}");
         };
 
@@ -107,13 +846,40 @@ public partial class MainWindow : Window
 
             ShellLog.Info("window pre-rendered while hidden");
             _ = WarmHtmlPreviewAsync();
+            if (_settings.CheckForUpdatesOnStartup)
+            {
+                _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
+            }
+
             OpenWithWindow.WarmCacheAsync();
+            ClipboardSharePayload.CleanupStaleTemporaryFiles();
         };
 
         Closing += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
-            UnregisterHotKey(hwnd, HotkeyId);
+            _hotkeyRetryTimer.Stop();
+            if (_openHotkeyRegistered)
+            {
+                var released = UnregisterHotKey(hwnd, OpenHotkeyId);
+                ShellLog.Info($"open hotkey unregistered={released} hwnd={hwnd} win32={Marshal.GetLastWin32Error()}");
+                _openHotkeyRegistered = false;
+            }
+
+            if (_debugLogHotkeyRegistered)
+            {
+                var released = UnregisterHotKey(hwnd, DebugLogHotkeyId);
+                ShellLog.Info($"debug log hotkey unregistered={released} hwnd={hwnd} win32={Marshal.GetLastWin32Error()}");
+                _debugLogHotkeyRegistered = false;
+            }
+
+            if (_openOverrideRegistered)
+            {
+                UnregisterHotKey(hwnd, OpenOverrideHotkeyId);
+                _openOverrideRegistered = false;
+            }
+
+            UninstallForegroundHook();
             RemoveClipboardFormatListener(hwnd);
             ShellLog.Info("window closing");
         };
@@ -185,10 +951,40 @@ public partial class MainWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && (msg == WmMouseWheel || msg == WmMouseHWheel))
         {
-            ShellLog.Info("Alt+V received");
+            var delta = WheelDelta(wParam);
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                ZoomExpandedImage(Math.Pow(1.0018, delta), MousePointInExpandedViewport());
+            }
+            else if (msg == WmMouseHWheel)
+            {
+                PanExpandedImage(-delta, 0);
+            }
+            else
+            {
+                PanExpandedImage(0, delta);
+            }
+
+            handled = true;
+        }
+        else if (msg == WmHotkey && wParam.ToInt32() == OpenHotkeyId)
+        {
+            ShellLog.Info($"{_settings.Hotkeys.OpenClip} received");
             ShowPalette();
+            handled = true;
+        }
+        else if (msg == WmHotkey && wParam.ToInt32() == OpenOverrideHotkeyId)
+        {
+            ShellLog.Info($"open override hotkey received key={_activeOpenOverrideHotkey ?? "?"} app={_activeOpenOverrideApp ?? "?"}");
+            ShowPalette();
+            handled = true;
+        }
+        else if (msg == WmHotkey && wParam.ToInt32() == DebugLogHotkeyId)
+        {
+            ShellLog.Info($"{_settings.Hotkeys.SaveDebugLog} received");
+            WriteDebugSnapshot("global-hotkey");
             handled = true;
         }
         else if (msg == WmClipboardUpdate)
@@ -199,12 +995,163 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
+    private bool EnsureHotkeyRegistered(string reason)
+    {
+        if (_openHotkeyRegistered && _debugLogHotkeyRegistered)
+        {
+            _hotkeyRetryTimer.Stop();
+            return true;
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            ShellLog.Info($"hotkey skipped reason={reason} hwnd=0");
+            return false;
+        }
+
+        _openHotkeyRegistered = RegisterConfiguredHotkey(hwnd, OpenHotkeyId, _settings.Hotkeys.OpenClip, ClipHotkeyDefaults.OpenClip, "open", reason);
+        _debugLogHotkeyRegistered = RegisterConfiguredHotkey(hwnd, DebugLogHotkeyId, _settings.Hotkeys.SaveDebugLog, ClipHotkeyDefaults.SaveDebugLog, "debug-log", reason);
+
+        if (_openHotkeyRegistered && _debugLogHotkeyRegistered)
+        {
+            _hotkeyRetryTimer.Stop();
+        }
+        else if (!_hotkeyRetryTimer.IsEnabled)
+        {
+            _hotkeyRetryTimer.Start();
+        }
+
+        return _openHotkeyRegistered && _debugLogHotkeyRegistered;
+    }
+
+    private const uint EVENT_SYSTEM_FOREGROUND = 3;
+    private const uint WINEVENT_OUTOFCONTEXT = 0;
+    private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+    private WinEventDelegate? _foregroundHookDelegate;
+    private IntPtr _foregroundHook = IntPtr.Zero;
+
+    private void InstallForegroundHook()
+    {
+        if (_foregroundHook != IntPtr.Zero) return;
+        _foregroundHookDelegate = OnForegroundChanged;
+        _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, _foregroundHookDelegate, 0, 0, WINEVENT_OUTOFCONTEXT);
+        ShellLog.Info($"foreground hook installed handle={_foregroundHook}");
+        ApplyForegroundOverride(GetForegroundWindow());
+    }
+
+    private void UninstallForegroundHook()
+    {
+        if (_foregroundHook == IntPtr.Zero) return;
+        UnhookWinEvent(_foregroundHook);
+        _foregroundHook = IntPtr.Zero;
+        _foregroundHookDelegate = null;
+    }
+
+    private void OnForegroundChanged(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        if (idObject != 0) return;
+        if (hwnd == IntPtr.Zero) return;
+        var own = new WindowInteropHelper(this).Handle;
+        if (hwnd == own) return;
+        ApplyForegroundOverride(hwnd);
+    }
+
+    private void ApplyForegroundOverride(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        var processName = TryGetProcessNameForWindow(hwnd);
+        if (string.IsNullOrEmpty(processName)) return;
+        using (var self = Process.GetCurrentProcess())
+        {
+            if (string.Equals(processName, self.ProcessName, StringComparison.OrdinalIgnoreCase)) return;
+        }
+
+        var match = _settings.AppOverrides.FirstOrDefault(o =>
+            string.Equals(o.Action, ClipAppOverride.ActionOpenClip, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(StripExeSuffix(o.AppName), processName, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(o.Hotkey));
+
+        var mainHwnd = new WindowInteropHelper(this).Handle;
+        if (mainHwnd == IntPtr.Zero) return;
+
+        if (match is not null)
+        {
+            if (_openOverrideRegistered && string.Equals(_activeOpenOverrideHotkey, match.Hotkey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            if (_openOverrideRegistered)
+            {
+                UnregisterHotKey(mainHwnd, OpenOverrideHotkeyId);
+                _openOverrideRegistered = false;
+            }
+            if (_openHotkeyRegistered)
+            {
+                UnregisterHotKey(mainHwnd, OpenHotkeyId);
+                _openHotkeyRegistered = false;
+            }
+            if (ClipHotkeyGesture.TryParseGlobal(match.Hotkey, out var gesture))
+            {
+                var ok = RegisterHotKey(mainHwnd, OpenOverrideHotkeyId, gesture.WinModifiers, gesture.VirtualKey);
+                if (ok)
+                {
+                    _openOverrideRegistered = true;
+                    _activeOpenOverrideApp = processName;
+                    _activeOpenOverrideHotkey = match.Hotkey;
+                    ShellLog.Info($"open override registered app={processName} key={match.Hotkey}");
+                    return;
+                }
+                ShellLog.Info($"open override register failed app={processName} key={match.Hotkey} win32={Marshal.GetLastWin32Error()}");
+            }
+            EnsureHotkeyRegistered("override-fallback");
+        }
+        else
+        {
+            if (_openOverrideRegistered)
+            {
+                UnregisterHotKey(mainHwnd, OpenOverrideHotkeyId);
+                _openOverrideRegistered = false;
+                _activeOpenOverrideApp = null;
+                _activeOpenOverrideHotkey = null;
+                ShellLog.Info("open override cleared");
+            }
+            if (!_openHotkeyRegistered)
+            {
+                EnsureHotkeyRegistered("foreground-default");
+            }
+        }
+    }
+
+    [DllImport("user32.dll")] private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+    [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    private static bool RegisterConfiguredHotkey(IntPtr hwnd, int id, string configured, string fallback, string name, string reason)
+    {
+        if (!ClipHotkeyGesture.TryParseGlobal(configured, out var gesture) && !ClipHotkeyGesture.TryParseGlobal(fallback, out gesture))
+        {
+            ShellLog.Info($"hotkey register skipped name={name} configured={configured} reason={reason}");
+            return false;
+        }
+
+        var registered = RegisterHotKey(hwnd, id, gesture.WinModifiers, gesture.VirtualKey);
+        var win32 = Marshal.GetLastWin32Error();
+        ShellLog.Info($"hotkey register name={name} key={gesture.DisplayText} reason={reason} registered={registered} hwnd={hwnd} win32={win32}");
+        return registered;
+    }
+
     private void CaptureClipboard()
     {
         try
         {
             ClipboardHistoryItem? item = null;
             var source = ForegroundSource();
+            if (_settings.Privacy.IsExcluded(source.Name, source.Path))
+            {
+                ShellLog.Info($"clipboard skipped excluded source={source.Name} path={source.Path}");
+                return;
+            }
+
             if (System.Windows.Clipboard.ContainsFileDropList())
             {
                 var files = System.Windows.Clipboard.GetFileDropList().Cast<string>().ToList();
@@ -242,7 +1189,20 @@ public partial class MainWindow : Window
             else if (System.Windows.Clipboard.ContainsText())
             {
                 var text = System.Windows.Clipboard.GetText();
-                if (TryNormalizeColorText(text, source.Name, out var colorHex))
+                var htmlText = ClipboardTextOrNull(System.Windows.TextDataFormat.Html);
+                var rtfText = ClipboardTextOrNull(System.Windows.TextDataFormat.Rtf);
+                if (ClipboardPathText.TryParseExistingFilePaths(text, out var paths))
+                {
+                    item = new ClipboardHistoryItem
+                    {
+                        Kind = ClipboardItemKind.Files,
+                        FilePaths = paths,
+                        Preview = paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files",
+                        SourceApplication = source.Name,
+                        SourceApplicationPath = source.Path,
+                    };
+                }
+                else if (TryNormalizeColorText(text, source.Name, out var colorHex))
                 {
                     item = new ClipboardHistoryItem
                     {
@@ -250,6 +1210,8 @@ public partial class MainWindow : Window
                         Text = colorHex,
                         Preview = colorHex,
                         ContentHash = HashText(colorHex),
+                        HtmlText = htmlText,
+                        RtfText = rtfText,
                         SourceApplication = source.Name,
                         SourceApplicationPath = source.Path,
                     };
@@ -258,10 +1220,12 @@ public partial class MainWindow : Window
                 {
                     item = new ClipboardHistoryItem
                     {
-                        Kind = IsLinkOrEmail(text) ? ClipboardItemKind.Link : ClipboardItemKind.Text,
+                        Kind = ClipboardLinkDetector.IsLinkOrEmail(text) ? ClipboardItemKind.Link : ClipboardItemKind.Text,
                         Text = text,
                         Preview = ClipboardHistoryStore.PreviewText(text),
                         ContentHash = HashText(text),
+                        HtmlText = htmlText,
+                        RtfText = rtfText,
                         SourceApplication = source.Name,
                         SourceApplicationPath = source.Path,
                     };
@@ -273,21 +1237,116 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var saved = _store.AddOrUpdate(item);
-            ShellLog.Info($"clipboard captured id={saved.Id} kind={saved.Kind} source={saved.SourceApplication} preview={saved.Preview}");
-            _allItems = _store.QueryItems();
-            if (IsVisible)
-            {
-                RenderItems(reason: "clipboard-live");
-            }
-            else
-            {
-                _itemsDirtySinceRender = true;
-            }
+            CaptureClipboardItem(item);
         }
         catch (Exception ex)
         {
             ShellLog.Error(ex, "clipboard capture failed");
+        }
+    }
+
+    private void CaptureClipboardItem(ClipboardHistoryItem item)
+    {
+        if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
+        {
+            _pendingTextClipboardItem = item;
+            _clipboardSettleTimer.Stop();
+            _clipboardSettleTimer.Start();
+            ShellLog.Info($"clipboard text pending kind={item.Kind} source={item.SourceApplication} preview={item.Preview}");
+            return;
+        }
+
+        DropPendingTextClipboardItem("replaced-before-settle");
+        SaveClipboardItem(item, "clipboard-live");
+    }
+
+    private void SavePendingTextClipboardItem()
+    {
+        var pending = _pendingTextClipboardItem;
+        _pendingTextClipboardItem = null;
+        if (pending is null)
+        {
+            return;
+        }
+
+        if (!ClipboardStillContains(pending))
+        {
+            ShellLog.Info($"clipboard text skipped transient source={pending.SourceApplication} preview={pending.Preview}");
+            return;
+        }
+
+        SaveClipboardItem(pending, "clipboard-live");
+    }
+
+    private void DropPendingTextClipboardItem(string reason)
+    {
+        if (_pendingTextClipboardItem is null)
+        {
+            return;
+        }
+
+        ShellLog.Info($"clipboard text skipped reason={reason} source={_pendingTextClipboardItem.SourceApplication} preview={_pendingTextClipboardItem.Preview}");
+        _pendingTextClipboardItem = null;
+        _clipboardSettleTimer.Stop();
+    }
+
+    private void SaveClipboardItem(ClipboardHistoryItem item, string renderReason)
+    {
+        if (!ClipItemSizeLimit.Allows(item, _settings.MaxItemSizeBytes))
+        {
+            var itemBytes = ClipItemSizeLimit.EstimateBytes(item);
+            ShellLog.Info($"clipboard skipped oversized kind={item.Kind} bytes={itemBytes} limit={ClipItemSizeLimit.MaxItemSizeLabel(_settings.MaxItemSizeBytes)} source={item.SourceApplication} preview={item.Preview}");
+            DeleteUnsavedCaptureAsset(item);
+            ShowToast("Clipboard item skipped: too large");
+            return;
+        }
+
+        var saved = _store.AddOrUpdate(item, EffectiveHistoryLimit());
+        ShellLog.Info($"clipboard captured id={saved.Id} kind={saved.Kind} source={saved.SourceApplication} preview={saved.Preview}");
+        _allItems = _store.QueryItems();
+        if (IsVisible)
+        {
+            RenderItems(reason: renderReason);
+        }
+        else
+        {
+            _itemsDirtySinceRender = true;
+        }
+    }
+
+    private void DeleteUnsavedCaptureAsset(ClipboardHistoryItem item)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(item.AssetPath) ||
+                !Path.GetFullPath(item.AssetPath).StartsWith(Path.GetFullPath(_store.ContentRootPath), StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(item.AssetPath))
+            {
+                return;
+            }
+
+            File.Delete(item.AssetPath);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"oversized capture cleanup failed path={item.AssetPath}");
+        }
+    }
+
+    private static bool ClipboardStillContains(ClipboardHistoryItem item)
+    {
+        try
+        {
+            if (!System.Windows.Clipboard.ContainsText())
+            {
+                return false;
+            }
+
+            return string.Equals(System.Windows.Clipboard.GetText(), item.Text, StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -439,11 +1498,31 @@ public partial class MainWindow : Window
         grid.Children.Add(meta);
 
         row.Child = grid;
+        row.MouseEnter += (_, _) =>
+        {
+            if (_selected?.Id == item.Id)
+            {
+                return;
+            }
+
+            row.Background = (WpfBrush)FindResource("AccentSoft");
+        };
+        row.MouseLeave += (_, _) =>
+        {
+            if (_selected?.Id == item.Id)
+            {
+                return;
+            }
+
+            row.Background = WpfBrushes.Transparent;
+        };
         row.MouseLeftButtonDown += (_, e) =>
         {
             if (e.ClickCount >= 2)
             {
+                SelectItem(item, "double-click-paste");
                 PasteSelected();
+                e.Handled = true;
                 return;
             }
 
@@ -458,14 +1537,24 @@ public partial class MainWindow : Window
         return row;
     }
 
+    private void OnTitleTextMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount >= 2 && _selected is not null)
+        {
+            RenameItem(_selected);
+            e.Handled = true;
+        }
+    }
+
     private void ShowActionMenu(ClipboardHistoryItem item)
     {
         _menuItem = item;
         var actions = new List<MenuAction>
         {
-            new("Paste", PasteSelected, true, shortcut: "Enter"),
-            new("Copy", CopySelected, true, shortcut: "Ctrl+C"),
-            new(item.IsPinned ? "Unpin" : "Pin", () => TogglePin(item), true, shortcut: "Ctrl+P"),
+            new("Paste", PasteSelected, true, shortcut: _settings.Hotkeys.PasteSelected),
+            new("Copy", CopySelected, true, shortcut: _settings.Hotkeys.CopySelected),
+            new("Rename", () => RenameItem(item)),
+            new(item.IsPinned ? "Unpin" : "Pin", () => TogglePin(item), true, shortcut: _settings.Hotkeys.PinSelected),
             new("Move Pin Up", () => MovePin(item, -1), CanMovePin(item, -1)),
             new("Move Pin Down", () => MovePin(item, 1), CanMovePin(item, 1)),
             MenuAction.Separator,
@@ -473,13 +1562,13 @@ public partial class MainWindow : Window
 
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
         {
-            actions.Add(new MenuAction("Edit Text", () => EditText(item), true, shortcut: "Ctrl+E"));
+            actions.Add(new MenuAction("Edit Text", () => EditText(item), true, shortcut: _settings.Hotkeys.EditSelected));
             actions.Add(new MenuAction("Append to Clipboard", () => AppendText(item)));
         }
 
         if (item.Kind == ClipboardItemKind.Link)
         {
-            actions.Add(new MenuAction("Open", () => OpenItem(item), true, shortcut: "Ctrl+O"));
+            actions.Add(new MenuAction("Open", () => OpenItem(item), true, shortcut: _settings.Hotkeys.OpenSelected));
         }
 
         if (item.Kind is ClipboardItemKind.Image or ClipboardItemKind.Files)
@@ -494,7 +1583,15 @@ public partial class MainWindow : Window
             actions.Add(new MenuAction("Copy path", () => CopyPath(item)));
         }
 
+        var shareActions = new List<MenuAction>();
+        if (BlipShareLaunchPlan.IsInstalled())
+        {
+            shareActions.Add(new MenuAction("Blip", () => ShareWithBlip(item)));
+        }
+
+        shareActions.Add(new MenuAction("Windows Share...", () => ShareItem(item)));
         actions.Add(MenuAction.Separator);
+        actions.Add(MenuAction.Submenu("Share", shareActions));
         actions.Add(new MenuAction("Save as File...", () => SaveItem(item)));
         actions.Add(new MenuAction("Delete", () => DeleteItem(item), true, danger: true, shortcut: "Del"));
         ShowStyledMenu(actions, null);
@@ -503,6 +1600,7 @@ public partial class MainWindow : Window
     private void ShowStyledMenu(IEnumerable<MenuAction> actions, UIElement? target)
     {
         ActionMenuHost.Children.Clear();
+        ShareSubmenuPopup.IsOpen = false;
         foreach (var action in actions)
         {
             if (action.IsSeparator)
@@ -516,6 +1614,8 @@ public partial class MainWindow : Window
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(10, 7, 10, 7),
                 Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
                 Opacity = action.Enabled ? 1.0 : 0.45,
             };
             var grid = new Grid();
@@ -543,17 +1643,55 @@ public partial class MainWindow : Window
                 Grid.SetColumn(shortcut, 1);
                 grid.Children.Add(shortcut);
             }
+            else if (action.Children.Count > 0)
+            {
+                var arrow = new TextBlock
+                {
+                    Text = ">",
+                    Foreground = (WpfBrush)FindResource("Muted"),
+                    FontSize = 12,
+                    Margin = new Thickness(20, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                Grid.SetColumn(arrow, 1);
+                grid.Children.Add(arrow);
+            }
 
             row.Child = grid;
             if (action.Enabled)
             {
-                row.MouseEnter += (_, _) => row.Background = (WpfBrush)FindResource("Surface3");
-                row.MouseLeave += (_, _) => row.Background = WpfBrushes.Transparent;
+                row.MouseEnter += (_, _) =>
+                {
+                    row.Background = (WpfBrush)FindResource("AccentSoft");
+                    row.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+                    if (action.Children.Count > 0)
+                    {
+                        ShowShareSubmenu(action.Children, row);
+                    }
+                    else
+                    {
+                        ShareSubmenuPopup.IsOpen = false;
+                        ActionMenuPopup.StaysOpen = false;
+                    }
+                };
+                row.MouseLeave += (_, _) =>
+                {
+                    row.Background = WpfBrushes.Transparent;
+                    row.BorderBrush = WpfBrushes.Transparent;
+                };
                 row.MouseLeftButtonDown += (_, e) =>
                 {
-                    ActionMenuPopup.IsOpen = false;
-                    action.Invoke();
-                    ShellLog.Info($"menu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    if (action.Children.Count > 0)
+                    {
+                        ShowShareSubmenu(action.Children, row);
+                    }
+                    else
+                    {
+                        CloseActionMenus();
+                        action.Invoke();
+                        ShellLog.Info($"menu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    }
+
                     e.Handled = true;
                 };
             }
@@ -573,8 +1711,75 @@ public partial class MainWindow : Window
         ShellLog.Info($"menu opened target={(target is null ? "mouse" : target.GetType().Name)} count={ActionMenuHost.Children.Count}");
     }
 
+    private void ShowShareSubmenu(IReadOnlyList<MenuAction> actions, UIElement owner)
+    {
+        ShareSubmenuHost.Children.Clear();
+        foreach (var action in actions)
+        {
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 7, 10, 7),
+                Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
+                Opacity = action.Enabled ? 1.0 : 0.45,
+                MinWidth = 170,
+            };
+            row.Child = new TextBlock
+            {
+                Text = action.Label,
+                Foreground = action.Danger ? (WpfBrush)FindResource("Danger") : (WpfBrush)FindResource("Text"),
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            if (action.Enabled)
+            {
+                row.MouseEnter += (_, _) =>
+                {
+                    row.Background = (WpfBrush)FindResource("AccentSoft");
+                    row.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+                };
+                row.MouseLeave += (_, _) =>
+                {
+                    row.Background = WpfBrushes.Transparent;
+                    row.BorderBrush = WpfBrushes.Transparent;
+                };
+                row.MouseLeftButtonDown += (_, e) =>
+                {
+                    CloseActionMenus();
+                    action.Invoke();
+                    ShellLog.Info($"submenu action label={action.Label} item={_menuItem?.Id ?? "none"}");
+                    e.Handled = true;
+                };
+            }
+
+            ShareSubmenuHost.Children.Add(row);
+        }
+
+        ShareSubmenuPopup.PlacementTarget = owner;
+        ShareSubmenuPopup.HorizontalOffset = 4;
+        ShareSubmenuPopup.VerticalOffset = -4;
+        ActionMenuPopup.StaysOpen = true;
+        ShareSubmenuPopup.StaysOpen = true;
+        ShareSubmenuPopup.IsOpen = true;
+    }
+
+    private void CloseActionMenus()
+    {
+        ShareSubmenuPopup.IsOpen = false;
+        ActionMenuPopup.IsOpen = false;
+        ShareSubmenuPopup.StaysOpen = false;
+        ActionMenuPopup.StaysOpen = false;
+    }
+
     private void OnActionMenuClosed(object? sender, EventArgs e)
     {
+        ShareSubmenuPopup.IsOpen = false;
+        ShareSubmenuPopup.StaysOpen = false;
+        ActionMenuPopup.StaysOpen = false;
         _suppressDeactivate = false;
         _menuItem = null;
         ShellLog.Info("menu closed");
@@ -606,7 +1811,20 @@ public partial class MainWindow : Window
         HeaderIcon.Source = IconFor(item, 96);
         TitleText.Text = TitleFor(item);
         SubTitleText.Text = HeaderSubtitleFor(item);
-        OpenButton.Visibility = item.Kind is ClipboardItemKind.Link or ClipboardItemKind.Files or ClipboardItemKind.Image ? Visibility.Visible : Visibility.Collapsed;
+        if (item.Kind == ClipboardItemKind.Text)
+        {
+            OpenButton.Content = "Edit";
+            OpenButton.Visibility = Visibility.Visible;
+        }
+        else if (item.Kind is ClipboardItemKind.Link or ClipboardItemKind.Files or ClipboardItemKind.Image)
+        {
+            OpenButton.Content = "Open";
+            OpenButton.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            OpenButton.Visibility = Visibility.Collapsed;
+        }
         RenderInfo(item);
         RenderPreview(item);
         ShellLog.Info($"selection changed reason={reason} id={item.Id} kind={item.Kind}");
@@ -631,6 +1849,7 @@ public partial class MainWindow : Window
             if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
             {
                 TextPreview.Text = TextPayload(item);
+                TextPreview.Foreground = (WpfBrush)FindResource("Text");
                 TextPreview.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview text id={item.Id} chars={TextPreview.Text.Length}");
                 return;
@@ -639,7 +1858,9 @@ public partial class MainWindow : Window
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
                 ImagePreview.Source = LoadBitmap(item.AssetPath);
+                _currentPreviewImagePath = item.AssetPath;
                 ImagePreview.Visibility = Visibility.Visible;
+                ExpandImageButton.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview image id={item.Id} path={item.AssetPath}");
                 return;
             }
@@ -686,7 +1907,9 @@ public partial class MainWindow : Window
                     if (token != _previewToken) return;
                     HidePreviews();
                     ImagePreview.Source = LoadBitmap(path);
+                    _currentPreviewImagePath = path;
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                 });
                 ShellLog.Info($"preview file image path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
@@ -747,7 +1970,13 @@ public partial class MainWindow : Window
 
                     HidePreviews();
                     ImagePreview.Source = BitmapFromDrawingImage(rendered);
+                    if (ext == ".pdf")
+                    {
+                        _currentPreviewPdfPath = path;
+                    }
+
                     ImagePreview.Visibility = Visibility.Visible;
+                    ExpandImageButton.Visibility = Visibility.Visible;
                     rendered.Dispose();
                 });
                 ShellLog.Info($"preview rendered file path={path} elapsedMs={watch.ElapsedMilliseconds}");
@@ -769,6 +1998,11 @@ public partial class MainWindow : Window
         InfoHost.Children.Clear();
         AddInfo("Source", SourceDisplayName(item), SourceIcon(item));
         AddInfo("Content type", ContentType(item));
+        if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
+        {
+            AddInfo("Saved format", ClipboardPasteData.HasOriginalFormatting(item) ? "Plain text + formatting" : "Plain text");
+        }
+
         AddInfo("Copied", item.LastCopiedAt.LocalDateTime.ToString("M/d/yyyy h:mm tt"));
         AddInfo("Times copied", item.CopyCount.ToString());
 
@@ -819,7 +2053,7 @@ public partial class MainWindow : Window
         var left = new TextBlock
         {
             Text = label,
-            Foreground = (WpfBrush)FindResource("Muted"),
+            Foreground = (WpfBrush)FindResource("Muted2"),
             VerticalAlignment = VerticalAlignment.Center,
             FontSize = 12,
         };
@@ -837,6 +2071,7 @@ public partial class MainWindow : Window
         {
             Text = value,
             Style = (Style)FindResource("CleanTextBox"),
+            Foreground = (WpfBrush)FindResource("Text"),
             IsReadOnly = true,
             TextAlignment = TextAlignment.Right,
             FontSize = 12,
@@ -939,29 +2174,244 @@ public partial class MainWindow : Window
     private void CopySelected()
     {
         if (_selected is null) return;
-        SetClipboard(_selected);
+        SetClipboard(_selected, _settings.DefaultPasteFormat);
         ShellLog.Info($"copy selected id={_selected.Id}");
     }
 
     private void PasteSelected()
     {
         if (_selected is null) return;
-        SetClipboard(_selected);
+        SetClipboard(_selected, _settings.DefaultPasteFormat);
         ConcealPalette("paste");
         if (_returnFocusHwnd != IntPtr.Zero)
         {
             SetForegroundWindow(_returnFocusHwnd);
         }
 
-        Forms.SendKeys.SendWait("^v");
-        ShellLog.Info($"paste selected id={_selected.Id}");
+        var actionKey = ClipAppOverride.ActionPaste;
+        var overrideHotkey = ResolveOverrideHotkey(_returnFocusHwnd, actionKey);
+        string pasteKeys;
+        bool suspendHotkeys;
+        if (!string.IsNullOrWhiteSpace(overrideHotkey))
+        {
+            pasteKeys = SendKeysFromGesture(overrideHotkey!);
+            suspendHotkeys = true;
+        }
+        else if (_selected.Kind == ClipboardItemKind.Image && AutoAltVForClaudeCli(_returnFocusHwnd))
+        {
+            pasteKeys = "%v";
+            suspendHotkeys = true;
+        }
+        else
+        {
+            pasteKeys = "^v";
+            suspendHotkeys = false;
+        }
+
+        if (suspendHotkeys)
+        {
+            SuspendOwnHotkeysForSyntheticPaste(() => Forms.SendKeys.SendWait(pasteKeys));
+        }
+        else
+        {
+            Forms.SendKeys.SendWait(pasteKeys);
+        }
+        ShellLog.Info($"paste selected id={_selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"}");
     }
 
-    private static void SetClipboard(ClipboardHistoryItem item)
+    private string? ResolveOverrideHotkey(IntPtr hwnd, string actionKey)
+    {
+        if (hwnd == IntPtr.Zero) return null;
+        var processName = TryGetProcessNameForWindow(hwnd);
+        if (string.IsNullOrEmpty(processName)) return null;
+        var match = _settings.AppOverrides.FirstOrDefault(o =>
+            string.Equals(StripExeSuffix(o.AppName), processName, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(o.Action, actionKey, StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrWhiteSpace(match?.Hotkey) ? null : match!.Hotkey;
+    }
+
+    private static string StripExeSuffix(string name)
+    {
+        var trimmed = (name ?? string.Empty).Trim();
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^4];
+        }
+        return trimmed;
+    }
+
+    private bool AutoAltVForClaudeCli(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        var processName = TryGetProcessNameForWindow(hwnd);
+        if (string.IsNullOrEmpty(processName)) return false;
+        if (!_terminalHostProcesses.Any(t => string.Equals(t, processName, StringComparison.OrdinalIgnoreCase))) return false;
+        return IsClaudeCliRunning();
+    }
+
+    private static string SendKeysFromGesture(string display)
+    {
+        var parts = display.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "^v";
+        var prefix = new System.Text.StringBuilder();
+        string keyToken = "v";
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var token = parts[i];
+            if (string.Equals(token, "Ctrl", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "Control", StringComparison.OrdinalIgnoreCase)) prefix.Append('^');
+            else if (string.Equals(token, "Alt", StringComparison.OrdinalIgnoreCase)) prefix.Append('%');
+            else if (string.Equals(token, "Shift", StringComparison.OrdinalIgnoreCase)) prefix.Append('+');
+            else if (string.Equals(token, "Win", StringComparison.OrdinalIgnoreCase)) { /* SendKeys can't emit Win cleanly; skip */ }
+            else keyToken = MapKeyToken(token);
+        }
+        return prefix.Append(keyToken).ToString();
+    }
+
+    private static string MapKeyToken(string token)
+    {
+        if (token.Length == 1) return token.ToLowerInvariant();
+        return token.ToUpperInvariant() switch
+        {
+            "ENTER" => "{ENTER}",
+            "ESC" or "ESCAPE" => "{ESC}",
+            "SPACE" => " ",
+            "TAB" => "{TAB}",
+            "BACKSPACE" => "{BACKSPACE}",
+            "DELETE" or "DEL" => "{DEL}",
+            "INSERT" or "INS" => "{INS}",
+            "HOME" => "{HOME}",
+            "END" => "{END}",
+            "PAGEUP" or "PGUP" => "{PGUP}",
+            "PAGEDOWN" or "PGDN" => "{PGDN}",
+            "UP" => "{UP}",
+            "DOWN" => "{DOWN}",
+            "LEFT" => "{LEFT}",
+            "RIGHT" => "{RIGHT}",
+            var s when s.StartsWith("F") && int.TryParse(s.AsSpan(1), out _) => "{" + s + "}",
+            _ => token.ToLowerInvariant(),
+        };
+    }
+
+    private void SuspendOwnHotkeysForSyntheticPaste(Action send)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var hadOpen = _openHotkeyRegistered;
+        var hadDebug = _debugLogHotkeyRegistered;
+        var hadOverride = _openOverrideRegistered;
+        if (hwnd != IntPtr.Zero)
+        {
+            if (hadOpen)
+            {
+                UnregisterHotKey(hwnd, OpenHotkeyId);
+                _openHotkeyRegistered = false;
+            }
+            if (hadDebug)
+            {
+                UnregisterHotKey(hwnd, DebugLogHotkeyId);
+                _debugLogHotkeyRegistered = false;
+            }
+            if (hadOverride)
+            {
+                UnregisterHotKey(hwnd, OpenOverrideHotkeyId);
+                _openOverrideRegistered = false;
+            }
+        }
+
+        try
+        {
+            send();
+        }
+        finally
+        {
+            if (hwnd != IntPtr.Zero && (hadOpen || hadDebug || hadOverride))
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    EnsureHotkeyRegistered("post-paste");
+                    ApplyForegroundOverride(GetForegroundWindow());
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+    }
+
+    private static readonly string[] _terminalHostProcesses =
+    {
+        "Code",
+        "Code - Insiders",
+        "WindowsTerminal",
+        "OpenConsole",
+        "conhost",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "wezterm-gui",
+        "alacritty",
+        "mintty",
+        "cursor",
+    };
+
+    private static string? TryGetProcessNameForWindow(IntPtr hwnd)
+    {
+        try
+        {
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) return null;
+            using var process = Process.GetProcessById((int)pid);
+            return process.ProcessName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsClaudeCliRunning()
+    {
+        try
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                try
+                {
+                    if (process.ProcessName.IndexOf("claude", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static void SetClipboard(ClipboardHistoryItem item, PasteFormatPreference pasteFormat)
     {
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
         {
-            System.Windows.Clipboard.SetText(TextPayload(item));
+            var payload = ClipboardPasteData.Create(item, pasteFormat);
+            var data = new System.Windows.DataObject();
+            data.SetText(payload.Text, System.Windows.TextDataFormat.UnicodeText);
+            if (payload.Html is not null)
+            {
+                data.SetText(payload.Html, System.Windows.TextDataFormat.Html);
+            }
+
+            if (payload.Rtf is not null)
+            {
+                data.SetText(payload.Rtf, System.Windows.TextDataFormat.Rtf);
+            }
+
+            System.Windows.Clipboard.SetDataObject(data, copy: true);
         }
         else if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
         {
@@ -977,7 +2427,7 @@ public partial class MainWindow : Window
 
     private void EditText(ClipboardHistoryItem item)
     {
-        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"))
+        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
@@ -991,6 +2441,32 @@ public partial class MainWindow : Window
                 item.Preview = ClipboardHistoryStore.PreviewText(editor.Value);
                 LoadItems(selectFirst: false, reason: "edit-text");
                 SelectItem(_store.GetItem(item.Id), "edit-text");
+            }
+        }
+        finally
+        {
+            _suppressDeactivate = false;
+            ShowPalette();
+        }
+    }
+
+    private void RenameItem(ClipboardHistoryItem item)
+    {
+        var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
+        {
+            Owner = this,
+        };
+        _suppressDeactivate = true;
+        try
+        {
+            if (editor.ShowDialog() == true)
+            {
+                _store.Rename(item.Id, editor.Value);
+                var updated = _store.GetItem(item.Id);
+                _selected = null;
+                LoadItems(selectFirst: false, reason: "rename");
+                SelectItem(updated, "rename");
+                ShellLog.Info($"rename item id={item.Id}");
             }
         }
         finally
@@ -1016,7 +2492,8 @@ public partial class MainWindow : Window
         {
             if (item.Kind == ClipboardItemKind.Link)
             {
-                Process.Start(new ProcessStartInfo(TextPayload(item)) { UseShellExecute = true });
+                var target = ClipboardLinkDetector.TryNormalize(TextPayload(item), out var normalized) ? normalized : TextPayload(item);
+                Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
             }
             else
             {
@@ -1057,7 +2534,9 @@ public partial class MainWindow : Window
                 (WpfBrush)FindResource("Text"),
                 (WpfBrush)FindResource("Muted"),
                 (WpfBrush)FindResource("Line"),
-                (WpfBrush)FindResource("Selected"))
+                (WpfBrush)FindResource("Selected"),
+                (WpfBrush)FindResource("AccentSoft"),
+                (WpfBrush)FindResource("SelectedBorder"))
             {
                 Owner = this,
             };
@@ -1094,6 +2573,131 @@ public partial class MainWindow : Window
             _suppressDeactivate = false;
             ShowToast("Open With failed. Log saved.");
         }
+    }
+
+    private void ShareItem(ClipboardHistoryItem item)
+    {
+        ClipboardSharePayload? payload = null;
+        try
+        {
+            if (!WinDataTransferManager.IsSupported())
+            {
+                ShowToast("Sharing is not available on this PC.");
+                return;
+            }
+
+            payload = ClipboardSharePayload.Create(item);
+            var hwnd = new WindowInteropHelper(this).Handle;
+            var interop = WinDataTransferManager.As<IDataTransferManagerInterop>();
+            var result = interop.GetForWindow(hwnd, DataTransferManagerId);
+            var manager = WinRT.MarshalInterface<WinDataTransferManager>.FromAbi(result);
+
+            Windows.Foundation.TypedEventHandler<WinDataTransferManager, WinDataRequestedEventArgs>? handler = null;
+            handler = async (_, args) =>
+            {
+                if (handler is not null)
+                {
+                    manager.DataRequested -= handler;
+                }
+
+                var deferral = args.Request.GetDeferral();
+                try
+                {
+                    var data = args.Request.Data;
+                    data.Properties.Title = ShareTitle(item);
+                    data.Properties.Description = ShareDescription(item);
+                    data.RequestedOperation = WinDataPackageOperation.Copy;
+                    if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
+                    {
+                        data.SetText(TextPayload(item));
+                    }
+
+                    var files = new List<StorageFile>();
+                    foreach (var path in payload.FilePaths)
+                    {
+                        files.Add(await StorageFile.GetFileFromPathAsync(path));
+                    }
+
+                    data.SetStorageItems(files);
+                    data.ShareCompleted += (_, _) => payload.Cleanup();
+                    data.ShareCanceled += (_, _) => payload.Cleanup();
+                }
+                catch (Exception ex)
+                {
+                    payload.Cleanup();
+                    ShellLog.Error(ex, $"share data failed id={item.Id}");
+                    args.Request.FailWithDisplayText("Clip could not prepare this item for sharing.");
+                }
+                finally
+                {
+                    deferral.Complete();
+                }
+            };
+
+            manager.DataRequested += handler;
+            interop.ShowShareUIForWindow(hwnd);
+            ShellLog.Info($"share opened id={item.Id} files={payload.FilePaths.Count} temp={payload.HasTemporaryFiles}");
+        }
+        catch (Exception ex)
+        {
+            payload?.Cleanup();
+            ShellLog.Error(ex, $"share failed id={item.Id}");
+            ShowToast("Share failed. Log saved.");
+        }
+    }
+
+    private void ShareWithBlip(ClipboardHistoryItem item)
+    {
+        try
+        {
+            var payload = ClipboardSharePayload.Create(item);
+            var plan = BlipShareLaunchPlan.Create(payload);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = BlipShareLaunchPlan.ExecutableName,
+                UseShellExecute = true,
+                Arguments = string.Join(" ", plan.LaunchArguments.Select(QuoteProcessArgument)),
+            };
+
+            Process.Start(startInfo);
+            ShellLog.Info($"blip opened id={item.Id} files={plan.FilePaths.Count} temp={payload.HasTemporaryFiles}");
+            if (payload.HasTemporaryFiles)
+            {
+                ShowToast($"Blip opened. Temp file: {Path.GetDirectoryName(plan.FilePaths[0])}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"blip failed id={item.Id}");
+            ShowToast("Blip failed. Log saved.");
+        }
+    }
+
+    private static string QuoteProcessArgument(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    }
+
+    private static string ShareTitle(ClipboardHistoryItem item)
+    {
+        return item.Kind switch
+        {
+            ClipboardItemKind.Image => "Clip image",
+            ClipboardItemKind.Files => item.FilePaths.Count == 1 ? Path.GetFileName(item.FilePaths[0]) : "Clip files",
+            ClipboardItemKind.Link => "Clip link",
+            ClipboardItemKind.Color => "Clip color",
+            _ => "Clip text",
+        };
+    }
+
+    private static string ShareDescription(ClipboardHistoryItem item)
+    {
+        return item.Kind switch
+        {
+            ClipboardItemKind.Image => "Image from Clip",
+            ClipboardItemKind.Files => item.FilePaths.Count == 1 ? item.FilePaths[0] : $"{item.FilePaths.Count} files from Clip",
+            _ => "Text saved as a temporary file by Clip",
+        };
     }
 
     private static void CopyPath(ClipboardHistoryItem item)
@@ -1151,13 +2755,376 @@ public partial class MainWindow : Window
 
     private void HidePreviews()
     {
+        CloseExpandedImage();
         TextPreview.Visibility = Visibility.Collapsed;
         ImagePreview.Visibility = Visibility.Collapsed;
+        ExpandImageButton.Visibility = Visibility.Collapsed;
         HtmlPreview.Visibility = Visibility.Collapsed;
         PlaceholderPreview.Visibility = Visibility.Collapsed;
         ColorPreview.Visibility = Visibility.Collapsed;
         TextPreview.Text = string.Empty;
         ImagePreview.Source = null;
+        _currentPreviewImagePath = null;
+        _currentPreviewPdfPath = null;
+    }
+
+    private void OnExpandImageClick(object sender, RoutedEventArgs e)
+    {
+        var source = BestExpandedImageSource();
+        if (source is null)
+        {
+            return;
+        }
+
+        CloseActionMenus();
+        ExpandedImage.Source = source;
+        SetExpandedImageNaturalSize(source);
+        ExpandWindowForImage();
+        ExpandedBackdrop.Source = CaptureShellBackdrop();
+        ExpandedImageOverlay.Visibility = Visibility.Visible;
+        ExpandedImageOverlay.UpdateLayout();
+        ExpandedImageOverlay.Focus();
+        ResetExpandedImageView();
+        ShellLog.Info($"image expanded size={ExpandedImage.Width:0}x{ExpandedImage.Height:0}");
+        e.Handled = true;
+    }
+
+    private ImageSource? BestExpandedImageSource()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_currentPreviewImagePath) && File.Exists(_currentPreviewImagePath))
+            {
+                return LoadBitmap(_currentPreviewImagePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_currentPreviewPdfPath) && File.Exists(_currentPreviewPdfPath) &&
+                WatcherPdfPreviewRenderer.TryRenderFirstPage(_currentPreviewPdfPath, out var pdfImage, 300))
+            {
+                using (pdfImage)
+                {
+                    return BitmapFromDrawingImage(pdfImage);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "best expanded image load failed");
+        }
+
+        return ImagePreview.Source;
+    }
+
+    private void SetExpandedImageNaturalSize(ImageSource source)
+    {
+        if (source is BitmapSource bitmap)
+        {
+            var dpiX = bitmap.DpiX > 0 ? bitmap.DpiX : 96;
+            var dpiY = bitmap.DpiY > 0 ? bitmap.DpiY : 96;
+            _expandedImageNaturalWidth = Math.Max(1, bitmap.PixelWidth * 96.0 / dpiX);
+            _expandedImageNaturalHeight = Math.Max(1, bitmap.PixelHeight * 96.0 / dpiY);
+            ExpandedImage.Width = _expandedImageNaturalWidth;
+            ExpandedImage.Height = _expandedImageNaturalHeight;
+            return;
+        }
+
+        _expandedImageNaturalWidth = Math.Max(1, double.IsNaN(source.Width) || source.Width <= 0 ? ActualWidth : source.Width);
+        _expandedImageNaturalHeight = Math.Max(1, double.IsNaN(source.Height) || source.Height <= 0 ? ActualHeight : source.Height);
+        ExpandedImage.Width = _expandedImageNaturalWidth;
+        ExpandedImage.Height = _expandedImageNaturalHeight;
+    }
+
+    private void ExpandWindowForImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            _expandedRestoreBounds = new Rect(Left, Top, Width, Height);
+            _expandedRestoreCornerRadius = Shell.CornerRadius;
+            _expandedWindowResized = true;
+        }
+
+        var screen = Forms.Screen.FromPoint(Forms.Control.MousePosition).Bounds;
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var topLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
+        var bottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
+        Left = topLeft.X;
+        Top = topLeft.Y;
+        Width = bottomRight.X - topLeft.X;
+        Height = bottomRight.Y - topLeft.Y;
+        Shell.CornerRadius = new CornerRadius(0);
+        UpdateLayout();
+    }
+
+    private void RestoreWindowAfterImage()
+    {
+        if (!_expandedWindowResized)
+        {
+            return;
+        }
+
+        Left = _expandedRestoreBounds.Left;
+        Top = _expandedRestoreBounds.Top;
+        Width = _expandedRestoreBounds.Width;
+        Height = _expandedRestoreBounds.Height;
+        Shell.CornerRadius = _expandedRestoreCornerRadius;
+        _expandedWindowResized = false;
+        UpdateLayout();
+    }
+
+    private ImageSource? CaptureShellBackdrop()
+    {
+        try
+        {
+            var width = Math.Max(1, (int)Math.Round(ActualWidth));
+            var height = Math.Max(1, (int)Math.Round(ActualHeight));
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(Shell);
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "expanded backdrop capture failed");
+            return null;
+        }
+    }
+
+    private static string? ClipboardTextOrNull(System.Windows.TextDataFormat format)
+    {
+        try
+        {
+            return System.Windows.Clipboard.ContainsText(format) ? System.Windows.Clipboard.GetText(format) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void ResetExpandedImageView()
+    {
+        ExpandedImageViewport.UpdateLayout();
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var fitWidth = Math.Max(1, viewportWidth - 48);
+        var fitHeight = Math.Max(1, viewportHeight - 48);
+        var imageWidth = Math.Max(1, _expandedImageNaturalWidth);
+        var imageHeight = Math.Max(1, _expandedImageNaturalHeight);
+        var fitScale = Math.Min(fitWidth / imageWidth, fitHeight / imageHeight);
+        _expandedImageZoom = Math.Clamp(fitScale < 1 ? fitScale : 1.0, 0.05, 32.0);
+        var scaledWidth = imageWidth * _expandedImageZoom;
+        var scaledHeight = imageHeight * _expandedImageZoom;
+        SetExpandedImageBounds(
+            (viewportWidth - scaledWidth) / 2,
+            (viewportHeight - scaledHeight) / 2,
+            scaledWidth,
+            scaledHeight);
+    }
+
+    private void CloseExpandedImage()
+    {
+        if (ExpandedImageOverlay.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _expandedImagePanning = false;
+        _expandedImageDownOnImage = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Visibility = Visibility.Collapsed;
+        ExpandedImage.Source = null;
+        ExpandedBackdrop.Source = null;
+        RestoreWindowAfterImage();
+        ShellLog.Info("image expanded closed");
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _expandedImageDownOnImage = IsPointOverExpandedImage(e.GetPosition(ExpandedImageViewport));
+        if (!_expandedImageDownOnImage)
+        {
+            CloseExpandedImage();
+            e.Handled = true;
+            return;
+        }
+
+        _expandedImagePanning = true;
+        _expandedImageLastPoint = e.GetPosition(ExpandedImageOverlay);
+        _expandedImageDownPoint = _expandedImageLastPoint;
+        _expandedImageMoved = false;
+        ExpandedImageOverlay.CaptureMouse();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.SizeAll;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        var releasedOffImage = !IsPointOverExpandedImage(e.GetPosition(ExpandedImageViewport));
+        StopExpandedImagePan();
+        if (!_expandedImageMoved && !_expandedImageDownOnImage && releasedOffImage)
+        {
+            CloseExpandedImage();
+        }
+
+        _expandedImageDownOnImage = false;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            StopExpandedImagePan();
+        }
+    }
+
+    private void OnExpandedOverlayMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_expandedImagePanning || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var point = e.GetPosition(ExpandedImageOverlay);
+        if (!_expandedImageMoved && Distance(point, _expandedImageDownPoint) > 2)
+        {
+            _expandedImageMoved = true;
+        }
+
+        PanExpandedImage(point.X - _expandedImageLastPoint.X, point.Y - _expandedImageLastPoint.Y);
+        _expandedImageLastPoint = point;
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlayMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            ZoomExpandedImage(Math.Pow(1.0018, e.Delta), e.GetPosition(ExpandedImageViewport));
+        }
+        else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            PanExpandedImage(-e.Delta, 0);
+        }
+        else
+        {
+            PanExpandedImage(0, e.Delta);
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnExpandedOverlaySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible && ExpandedImage.Source is not null)
+        {
+            ClampExpandedImage();
+        }
+    }
+
+    private void StopExpandedImagePan()
+    {
+        _expandedImagePanning = false;
+        ExpandedImageOverlay.ReleaseMouseCapture();
+        ExpandedImageOverlay.Cursor = System.Windows.Input.Cursors.Arrow;
+    }
+
+    private void PanExpandedImage(double deltaX, double deltaY)
+    {
+        Canvas.SetLeft(ExpandedImage, ExpandedImageLeft() + deltaX);
+        Canvas.SetTop(ExpandedImage, ExpandedImageTop() + deltaY);
+        ClampExpandedImage();
+    }
+
+    private void ZoomExpandedImage(double factor, System.Windows.Point center)
+    {
+        var oldZoom = _expandedImageZoom;
+        var newZoom = Math.Clamp(oldZoom * factor, 0.02, 128.0);
+        if (Math.Abs(newZoom - oldZoom) < 0.0001)
+        {
+            return;
+        }
+
+        var imageX = (center.X - ExpandedImageLeft()) / oldZoom;
+        var imageY = (center.Y - ExpandedImageTop()) / oldZoom;
+        _expandedImageZoom = newZoom;
+        ExpandedImage.Width = _expandedImageNaturalWidth * newZoom;
+        ExpandedImage.Height = _expandedImageNaturalHeight * newZoom;
+        Canvas.SetLeft(ExpandedImage, center.X - imageX * newZoom);
+        Canvas.SetTop(ExpandedImage, center.Y - imageY * newZoom);
+        ClampExpandedImage();
+    }
+
+    private void ClampExpandedImage()
+    {
+        var viewportWidth = Math.Max(1, ExpandedImageViewport.ActualWidth);
+        var viewportHeight = Math.Max(1, ExpandedImageViewport.ActualHeight);
+        var scaledWidth = Math.Max(1, ExpandedImage.Width);
+        var scaledHeight = Math.Max(1, ExpandedImage.Height);
+
+        if (scaledWidth <= viewportWidth)
+        {
+            Canvas.SetLeft(ExpandedImage, (viewportWidth - scaledWidth) / 2);
+        }
+        else
+        {
+            Canvas.SetLeft(ExpandedImage, Math.Clamp(ExpandedImageLeft(), viewportWidth - scaledWidth, 0));
+        }
+
+        if (scaledHeight <= viewportHeight)
+        {
+            Canvas.SetTop(ExpandedImage, (viewportHeight - scaledHeight) / 2);
+        }
+        else
+        {
+            Canvas.SetTop(ExpandedImage, Math.Clamp(ExpandedImageTop(), viewportHeight - scaledHeight, 0));
+        }
+    }
+
+    private bool IsPointOverExpandedImage(System.Windows.Point point)
+    {
+        var left = ExpandedImageLeft();
+        var top = ExpandedImageTop();
+        var right = left + Math.Max(1, ExpandedImage.Width);
+        var bottom = top + Math.Max(1, ExpandedImage.Height);
+        return point.X >= left && point.X <= right && point.Y >= top && point.Y <= bottom;
+    }
+
+    private void SetExpandedImageBounds(double left, double top, double width, double height)
+    {
+        ExpandedImage.Width = Math.Max(1, width);
+        ExpandedImage.Height = Math.Max(1, height);
+        Canvas.SetLeft(ExpandedImage, left);
+        Canvas.SetTop(ExpandedImage, top);
+    }
+
+    private double ExpandedImageLeft()
+    {
+        var left = Canvas.GetLeft(ExpandedImage);
+        return double.IsNaN(left) ? 0 : left;
+    }
+
+    private double ExpandedImageTop()
+    {
+        var top = Canvas.GetTop(ExpandedImage);
+        return double.IsNaN(top) ? 0 : top;
+    }
+
+    private System.Windows.Point MousePointInExpandedViewport()
+    {
+        return ExpandedImageViewport.PointFromScreen(new System.Windows.Point(Forms.Control.MousePosition.X, Forms.Control.MousePosition.Y));
+    }
+
+    private static short WheelDelta(IntPtr wParam)
+    {
+        return unchecked((short)(((long)wParam >> 16) & 0xffff));
+    }
+
+    private static double Distance(System.Windows.Point a, System.Windows.Point b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
     }
 
     private void PositionOnMouseScreen()
@@ -1200,15 +3167,53 @@ public partial class MainWindow : Window
     private void OnLinksFilterClick(object sender, RoutedEventArgs e) => SetFilter("links");
     private void OnColorFilterClick(object sender, RoutedEventArgs e) => SetFilter("colors");
     private void OnFilesFilterClick(object sender, RoutedEventArgs e) => SetFilter("files");
-    private void OnOpenClick(object sender, RoutedEventArgs e) { if (_selected is not null) OpenItem(_selected); }
+    private void OnOpenClick(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null) return;
+        if (_selected.Kind == ClipboardItemKind.Text) EditText(_selected);
+        else OpenItem(_selected);
+    }
     private void OnCloseClick(object sender, RoutedEventArgs e) => ConcealPalette("close");
     private void OnMinimizeClick(object sender, RoutedEventArgs e) => ConcealPalette("minimize");
-    private void OnSettingsClick(object sender, RoutedEventArgs e)
+    private void OnSettingsClick(object sender, RoutedEventArgs e) => OpenSettingsInternal(showPaletteOnClose: true);
+
+    public void OpenSettingsFromTray() => OpenSettingsInternal(showPaletteOnClose: false);
+
+    public void PasteLatestFromTray()
+    {
+        var item = _allItems.OrderByDescending(i => i.LastCopiedAt).FirstOrDefault();
+        if (item is null)
+        {
+            ShellLog.Info("tray paste latest skipped — no items");
+            return;
+        }
+
+        var foreground = GetForegroundWindow();
+        var own = new WindowInteropHelper(this).Handle;
+        if (foreground != IntPtr.Zero && foreground != own)
+        {
+            _returnFocusHwnd = foreground;
+        }
+
+        var previous = _selected;
+        _selected = item;
+        try
+        {
+            PasteSelected();
+            ShellLog.Info($"tray paste latest id={item.Id}");
+        }
+        finally
+        {
+            _selected = previous;
+        }
+    }
+
+    private void OpenSettingsInternal(bool showPaletteOnClose)
     {
         try
         {
-            ShellLog.Info("settings opening");
-            var settings = new SettingsWindow((WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("Surface2"), (WpfBrush)FindResource("Surface3"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Selected"))
+            ShellLog.Info($"settings opening showPaletteOnClose={showPaletteOnClose}");
+            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
             {
                 Owner = this,
             };
@@ -1217,7 +3222,10 @@ public partial class MainWindow : Window
             {
                 _suppressDeactivate = false;
                 ShellLog.Info("settings closed");
-                ShowPalette();
+                if (showPaletteOnClose)
+                {
+                    ShowPalette();
+                }
             };
             settings.Show();
         }
@@ -1226,6 +3234,451 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, "settings failed");
             _suppressDeactivate = false;
             ShowToast("Settings failed. Log saved.");
+        }
+    }
+
+    private void ApplyAppIcon(AppIconPreference preference) => ApplyAppIcon(preference, save: true);
+
+    private SettingsPalette CurrentSettingsPalette() => new(
+        (WpfBrush)FindResource("Bg"),
+        (WpfBrush)FindResource("Surface"),
+        (WpfBrush)FindResource("Surface2"),
+        (WpfBrush)FindResource("Surface3"),
+        (WpfBrush)FindResource("Text"),
+        (WpfBrush)FindResource("Muted"),
+        (WpfBrush)FindResource("Line"),
+        (WpfBrush)FindResource("Line2"),
+        (WpfBrush)FindResource("Accent"),
+        (WpfBrush)FindResource("AccentSoft"),
+        (WpfBrush)FindResource("Selected"),
+        (WpfBrush)FindResource("SelectedBorder"));
+
+    private void ApplyAppIcon(AppIconPreference preference, bool save)
+    {
+        _settings.AppIcon = preference;
+        ApplyWindowTitleIcon(preference);
+        var iconPath = AppIconPath(preference);
+
+        if (save)
+        {
+            _settings.Save();
+            AppIconChanged?.Invoke(preference);
+            UpdateInstalledShortcutIcons(iconPath);
+            ShowToast($"Icon set to {preference}");
+        }
+
+        ShellLog.Info($"app icon applied preference={preference} path={iconPath}");
+    }
+
+    private void ApplyRunAtStartup(bool enabled)
+    {
+        try
+        {
+            StartupRegistration.SetEnabled(enabled);
+            var value = StartupRegistration.CurrentValue() ?? "none";
+            ShellLog.Info($"startup preference changed enabled={enabled} value={value}");
+            ShowToast(enabled ? "Startup enabled" : "Startup disabled");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"startup preference failed enabled={enabled}");
+            ShowToast("Startup setting failed. Log saved.");
+        }
+    }
+
+    private void ApplyHistoryLimit(int? limit)
+    {
+        _settings.HistoryLimit = limit;
+        _settings.Save();
+        var removed = _store.ApplyHistoryLimit(EffectiveHistoryLimit());
+        _allItems = _store.QueryItems();
+        if (_selected is not null && _allItems.All(item => item.Id != _selected.Id))
+        {
+            _selected = null;
+        }
+
+        RenderItems("history-limit");
+        SelectItem(FilteredItems().FirstOrDefault(), "history-limit");
+        ShellLog.Info($"history limit changed limit={HistoryLimitLabel(limit)} removed={removed}");
+        ShowToast($"History limit set to {HistoryLimitLabel(limit)}");
+    }
+
+    private void ApplyMaxItemSize(long? maxBytes)
+    {
+        _settings.MaxItemSizeBytes = maxBytes;
+        _settings.Save();
+        ShellLog.Info($"max item size changed limit={ClipItemSizeLimit.MaxItemSizeLabel(maxBytes)}");
+        ShowToast($"Max item size set to {ClipItemSizeLimit.MaxItemSizeLabel(maxBytes)}");
+    }
+
+    private void ApplyUpdateSettings(bool checkOnStartup, bool autoInstall)
+    {
+        _settings.CheckForUpdatesOnStartup = checkOnStartup;
+        _settings.InstallUpdatesAutomatically = autoInstall;
+        _settings.Save();
+        ShellLog.Info($"update settings changed checkOnStartup={checkOnStartup} autoInstall={autoInstall}");
+        ShowToast("Update settings saved");
+    }
+
+    private void CheckForUpdatesFromSettings(Action<ClipUpdateStatus> updateStatus)
+    {
+        _ = CheckForUpdatesAsync(showToastWhenCurrent: true, updateStatus);
+    }
+
+    private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null)
+    {
+        ShellLog.Info("update check started");
+        var status = await _updates.CheckAsync();
+        await Dispatcher.InvokeAsync(async () =>
+        {
+            _lastUpdateStatus = status;
+            updateStatus?.Invoke(status);
+            ShellLog.Info($"update check completed state={status.State} current={status.CurrentVersion} latest={status.LatestVersion ?? "none"} download={status.DownloadUrl ?? "none"}");
+
+            if (status.State == "Update available")
+            {
+                ShowToast(status.Message);
+                if (_settings.InstallUpdatesAutomatically)
+                {
+                    await InstallUpdateAsync(status);
+                }
+            }
+            else if (showToastWhenCurrent)
+            {
+                ShowToast(status.Message);
+            }
+        });
+    }
+
+    private async Task InstallUpdateAsync(ClipUpdateStatus status)
+    {
+        try
+        {
+            var path = await _updates.DownloadUpdateAsync(status);
+            if (path is null)
+            {
+                ShellLog.Info("update install skipped missing download asset");
+                ShowToast("Update found, but no installer is attached");
+                return;
+            }
+
+            ShellLog.Info($"update installer downloaded path={path}");
+            var shouldExit = ClipUpdateService.LaunchInstaller(path, AppContext.BaseDirectory, Environment.ProcessId);
+            ShowToast("Update installer opened");
+            if (shouldExit)
+            {
+                System.Windows.Application.Current.Shutdown();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "update install failed");
+            ShowToast("Update install failed. Log saved.");
+        }
+    }
+
+    private void ClearHistory(bool includePinned)
+    {
+        var removed = _store.ClearHistory(includePinned);
+        if (_selected is not null && _store.GetItem(_selected.Id) is null)
+        {
+            _selected = null;
+        }
+
+        _allItems = _store.QueryItems();
+        RenderItems(includePinned ? "clear-all-history" : "clear-unpinned-history");
+        SelectItem(FilteredItems().FirstOrDefault(), includePinned ? "clear-all-history" : "clear-unpinned-history");
+        ShellLog.Info($"history cleared includePinned={includePinned} removed={removed}");
+        ShowToast(removed == 1 ? "1 item cleared" : $"{removed} items cleared");
+    }
+
+    private void OpenDataFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(_store.ContentRootPath);
+            Process.Start(new ProcessStartInfo(_store.ContentRootPath) { UseShellExecute = true });
+            ShellLog.Info($"clipboard folder opened path={_store.ContentRootPath}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"clipboard folder open failed path={_store.ContentRootPath}");
+            ShowToast("Clipboard folder failed. Log saved.");
+        }
+    }
+
+    private void OpenDebugLog()
+    {
+        try
+        {
+            WriteDebugSnapshot("settings-about");
+            Process.Start(new ProcessStartInfo(ShellLog.Path) { UseShellExecute = true });
+            ShellLog.Info($"debug log opened path={ShellLog.Path}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "debug log open failed");
+            ShowToast("Debug log failed. Log saved.");
+        }
+    }
+
+    private void ChangeClipboardFolder(string folderPath)
+    {
+        _settings.ClipboardFolderPath = folderPath;
+        _settings.Save();
+        _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
+        ShellLog.Info($"clipboard folder changed path={_store.ContentRootPath}");
+        ShowToast("Clipboard folder updated");
+    }
+
+    private void ResetClipboardFolder()
+    {
+        _settings.ClipboardFolderPath = null;
+        _settings.Save();
+        _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
+        ShellLog.Info($"clipboard folder reset path={_store.ContentRootPath}");
+        ShowToast("Clipboard folder reset");
+    }
+
+    private int EffectiveHistoryLimit()
+    {
+        return _settings.HistoryLimit is null ? int.MaxValue : Math.Max(0, _settings.HistoryLimit.Value);
+    }
+
+    private static string HistoryLimitLabel(int? limit) => limit is null ? "Unlimited" : limit.Value.ToString();
+
+    private void ApplyHotkeys(ClipHotkeySettings hotkeys)
+    {
+        hotkeys.Normalize();
+        _settings.Hotkeys = hotkeys;
+        _settings.Save();
+        ReRegisterHotkeys("settings");
+        ShellLog.Info($"hotkeys changed open={_settings.Hotkeys.OpenClip} debug={_settings.Hotkeys.SaveDebugLog}");
+        ShowToast("Hotkeys updated");
+    }
+
+    private void ApplyPrivacy(ClipPrivacySettings privacy)
+    {
+        privacy.Normalize();
+        _settings.Privacy = privacy;
+        _settings.Save();
+        ShellLog.Info($"privacy changed excludedApps={privacy.ExcludedApps.Count}");
+        ShowToast("Privacy settings updated");
+    }
+
+    private void ApplyDefaultPasteFormat(PasteFormatPreference preference)
+    {
+        _settings.DefaultPasteFormat = preference;
+        _settings.Save();
+        ShellLog.Info($"default paste format changed format={preference}");
+        ShowToast($"Paste format set to {PasteFormatLabel(preference)}");
+    }
+
+    private void ResetAllSettings()
+    {
+        _settings.ResetToDefaults();
+        _settings.Save();
+        ApplyRunAtStartup(StartupRegistration.DefaultEnabled);
+        ApplyTheme(_settings.Theme, save: false);
+        ApplyAppIcon(_settings.AppIcon, save: false);
+        _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
+        ReRegisterHotkeys("settings-reset");
+        var removed = _store.ApplyHistoryLimit(EffectiveHistoryLimit());
+        _allItems = _store.QueryItems();
+        RenderItems("settings-reset");
+        SelectItem(FilteredItems().FirstOrDefault(), "settings-reset");
+        ShellLog.Info($"settings reset all removed={removed}");
+        ShowToast("Settings reset to defaults");
+    }
+
+    private static string PasteFormatLabel(PasteFormatPreference preference)
+    {
+        return preference switch
+        {
+            PasteFormatPreference.OriginalFormatting => "Original formatting",
+            _ => "Plain text",
+        };
+    }
+
+    private void ReRegisterHotkeys(string reason)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (_openHotkeyRegistered)
+        {
+            UnregisterHotKey(hwnd, OpenHotkeyId);
+            _openHotkeyRegistered = false;
+        }
+
+        if (_debugLogHotkeyRegistered)
+        {
+            UnregisterHotKey(hwnd, DebugLogHotkeyId);
+            _debugLogHotkeyRegistered = false;
+        }
+
+        EnsureHotkeyRegistered(reason);
+    }
+
+    private void ApplyTheme(ClipThemePreference preference) => ApplyTheme(preference, save: true);
+
+    private void ApplyTheme(ClipThemePreference preference, bool save)
+    {
+        _settings.Theme = preference;
+        var useDark = preference switch
+        {
+            ClipThemePreference.Light => false,
+            ClipThemePreference.Dark => true,
+            _ => IsWindowsDarkMode(),
+        };
+
+        SetBrush("Bg", useDark ? "#1A1A1A" : "#F7F7F7");
+        SetBrush("Surface", useDark ? "#212121" : "#FFFFFF");
+        SetBrush("Surface2", useDark ? "#272727" : "#EDEDED");
+        SetBrush("Surface3", useDark ? "#323232" : "#DCDCDC");
+        SetBrush("Line", useDark ? "#494949" : "#B8B8B8");
+        SetBrush("Line2", useDark ? "#5A5A5A" : "#989898");
+        SetBrush("Text", useDark ? "#F1F1F1" : "#1A1A1A");
+        SetBrush("Muted", useDark ? "#989898" : "#646464");
+        SetBrush("Muted2", useDark ? "#BBBBBB" : "#474747");
+        SetBrush("Muted3", useDark ? "#777777" : "#6A6A6A");
+        SetBrush("Accent", useDark ? "#8A9CCC" : "#3B5BDB");
+        SetBrush("AccentSoft", useDark ? "#232A45" : "#E1E7FB");
+        SetBrush("Selected", useDark ? "#324068" : "#C9D3F5");
+        SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
+        SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
+        Background = (WpfBrush)FindResource("Bg");
+        HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
+        TextPreview.Foreground = (WpfBrush)FindResource("Text");
+        TextPreview.CaretBrush = (WpfBrush)FindResource("Accent");
+        RefreshChromeIcons();
+        ShellLog.Info($"theme applied preference={preference} dark={useDark}");
+
+        if (save)
+        {
+            _settings.Save();
+            RenderItems("theme");
+            if (_selected is not null)
+            {
+                RenderInfo(_selected);
+                RenderPreview(_selected);
+            }
+
+            ShowToast($"Theme set to {ThemeLabel(preference)}");
+        }
+    }
+
+    private void ApplyWindowTitleIcon(AppIconPreference preference)
+    {
+        var iconPath = AppIconPath(preference);
+        if (File.Exists(iconPath))
+        {
+            var icon = LoadBitmap(iconPath);
+            Icon = icon;
+            AppHeaderIcon.Source = icon;
+            ShellLog.Info($"window title icon applied icon={preference} path={iconPath}");
+        }
+    }
+
+    private void RefreshChromeIcons()
+    {
+        SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24, color: BrushHex("Muted2"));
+        DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24, color: BrushHex(_kindFilter == "all" ? "Text" : "Muted2"));
+        FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24, color: BrushHex(_kindFilter == "files" ? "Text" : "Muted2"));
+        ExpandImageIcon.Source = RenderSvg("expand-alt-svgrepo-com.svg", 24, color: BrushHex("Muted2"));
+    }
+
+    private void SetBrush(string key, string hex)
+    {
+        var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+        if (Resources[key] is SolidColorBrush brush)
+        {
+            if (brush.IsFrozen)
+            {
+                Resources[key] = new SolidColorBrush(color);
+                return;
+            }
+
+            brush.Color = color;
+        }
+    }
+
+    private string BrushHex(string key)
+    {
+        if (Resources[key] is SolidColorBrush brush)
+        {
+            return $"#{brush.Color.R:X2}{brush.Color.G:X2}{brush.Color.B:X2}";
+        }
+
+        return "#F2EFE9";
+    }
+
+    private static bool IsWindowsDarkMode()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int value && value == 0;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    internal static bool IsLightBackground(WpfBrush brush)
+    {
+        if (brush is not SolidColorBrush solid)
+        {
+            return false;
+        }
+
+        var color = solid.Color;
+        var brightness = (color.R * 0.299) + (color.G * 0.587) + (color.B * 0.114);
+        return brightness > 150;
+    }
+
+    private static System.Drawing.Color ToDrawingColor(SolidColorBrush brush) =>
+        System.Drawing.Color.FromArgb(brush.Color.A, brush.Color.R, brush.Color.G, brush.Color.B);
+
+    private static string ThemeLabel(ClipThemePreference preference) => preference switch
+    {
+        ClipThemePreference.Light => "Light",
+        ClipThemePreference.Dark => "Dark",
+        _ => "System",
+    };
+
+    private static void UpdateInstalledShortcutIcons(string iconPath)
+    {
+        try
+        {
+            var shortcuts = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Clip.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "Clip", "Clip.lnk"),
+            };
+
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType is null)
+            {
+                return;
+            }
+
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            foreach (var shortcutPath in shortcuts.Where(File.Exists))
+            {
+                dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                shortcut.IconLocation = iconPath;
+                shortcut.Save();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "shortcut icon update failed");
         }
     }
 
@@ -1283,22 +3736,22 @@ public partial class MainWindow : Window
 
     private void OnWindowKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key == Key.L && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        if (MatchesHotkey(e, _settings.Hotkeys.SaveDebugLog))
         {
             WriteDebugSnapshot("keyboard");
             e.Handled = true;
         }
-        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+        else if (MatchesHotkey(e, _settings.Hotkeys.PasteSelected))
         {
             PasteSelected();
             e.Handled = true;
         }
-        else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (MatchesHotkey(e, _settings.Hotkeys.CopySelected))
         {
             CopySelected();
             e.Handled = true;
         }
-        else if (e.Key == Key.P && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (MatchesHotkey(e, _settings.Hotkeys.PinSelected))
         {
             if (_selected is not null)
             {
@@ -1308,7 +3761,7 @@ public partial class MainWindow : Window
 
             e.Handled = true;
         }
-        else if (e.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (MatchesHotkey(e, _settings.Hotkeys.OpenActions))
         {
             if (_selected is not null)
             {
@@ -1323,7 +3776,7 @@ public partial class MainWindow : Window
             ShowHotkeyHelp();
             e.Handled = true;
         }
-        else if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (MatchesHotkey(e, _settings.Hotkeys.OpenSelected))
         {
             if (_selected is not null && _selected.Kind is (ClipboardItemKind.Link or ClipboardItemKind.Files or ClipboardItemKind.Image))
             {
@@ -1333,7 +3786,7 @@ public partial class MainWindow : Window
 
             e.Handled = true;
         }
-        else if (e.Key == Key.E && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (MatchesHotkey(e, _settings.Hotkeys.EditSelected))
         {
             if (_selected is not null && _selected.Kind is (ClipboardItemKind.Text or ClipboardItemKind.Link))
             {
@@ -1343,7 +3796,7 @@ public partial class MainWindow : Window
 
             e.Handled = true;
         }
-        else if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+        else if (MatchesHotkey(e, _settings.Hotkeys.DeleteSelected))
         {
             if (_selected is not null)
             {
@@ -1352,8 +3805,15 @@ public partial class MainWindow : Window
 
             e.Handled = true;
         }
-        else if (e.Key == Key.Escape)
+        else if (MatchesHotkey(e, _settings.Hotkeys.CloseClip))
         {
+            if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+            {
+                CloseExpandedImage();
+                e.Handled = true;
+                return;
+            }
+
             if (ActionMenuPopup.IsOpen)
             {
                 ActionMenuPopup.IsOpen = false;
@@ -1366,18 +3826,28 @@ public partial class MainWindow : Window
         }
     }
 
+    private static bool MatchesHotkey(System.Windows.Input.KeyEventArgs e, string configured)
+    {
+        return ClipHotkeyGesture.TryParse(configured, out var gesture)
+            && e.Key == gesture.WpfKey
+            && Keyboard.Modifiers == gesture.WpfModifiers;
+    }
+
     private void ShowHotkeyHelp()
     {
         try
         {
             ShellLog.Info("hotkey help opening");
             var help = new HotkeyHelpWindow(
+                _settings.Hotkeys,
                 (WpfBrush)FindResource("Bg"),
                 (WpfBrush)FindResource("Surface"),
                 (WpfBrush)FindResource("Surface2"),
                 (WpfBrush)FindResource("Text"),
                 (WpfBrush)FindResource("Muted"),
-                (WpfBrush)FindResource("Line"))
+                (WpfBrush)FindResource("Line"),
+                (WpfBrush)FindResource("AccentSoft"),
+                (WpfBrush)FindResource("SelectedBorder"))
             {
                 Owner = this,
             };
@@ -1400,6 +3870,14 @@ public partial class MainWindow : Window
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
+        if (ExpandedImageOverlay.Visibility == Visibility.Visible)
+        {
+            CloseExpandedImage();
+            Activate();
+            ShellLog.Info("image expanded closed on deactivate");
+            return;
+        }
+
         if (KeepOpenForDebug || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
         {
             ShellLog.Info($"deactivate suppressed debug={KeepOpenForDebug}");
@@ -1446,23 +3924,36 @@ public partial class MainWindow : Window
         SetFilterVisual(ColorButton, null, _kindFilter == "colors");
         SetFilterVisual(FilesButton, FilesFilterShell, _kindFilter == "files");
         DateDropButton.Foreground = _kindFilter == "all" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        DateDropButton.Background = _kindFilter == "all" ? (WpfBrush)FindResource("Surface3") : WpfBrushes.Transparent;
+        DateDropButton.Background = _kindFilter == "all" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         FileDropButton.Foreground = _kindFilter == "files" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        FileDropButton.Background = _kindFilter == "files" ? (WpfBrush)FindResource("Surface3") : WpfBrushes.Transparent;
+        FileDropButton.Background = _kindFilter == "files" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
+        RefreshChromeIcons();
     }
 
     private void SetFilterVisual(WpfButton button, Border? shell, bool selected)
     {
+        var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
         button.Foreground = selected ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        button.Background = selected ? (WpfBrush)FindResource("Surface3") : WpfBrushes.Transparent;
+        button.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         if (shell is not null)
         {
-            shell.Background = selected ? (WpfBrush)FindResource("Surface3") : WpfBrushes.Transparent;
+            shell.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
+            shell.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+        }
+        else
+        {
+            button.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
         }
     }
 
     private static string TitleFor(ClipboardHistoryItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.CustomTitle))
+        {
+            return item.CustomTitle;
+        }
+
         if (item.Kind == ClipboardItemKind.Files && item.FilePaths.Count == 1)
         {
             return Path.GetFileName(item.FilePaths[0]);
@@ -1542,7 +4033,6 @@ public partial class MainWindow : Window
     }
 
     private static string TextPayload(ClipboardHistoryItem item) => item.Text ?? item.Preview ?? string.Empty;
-    private static bool IsLinkOrEmail(string text) => Uri.TryCreate(text.Trim(), UriKind.Absolute, out _) || Regex.IsMatch(text.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$");
     private static bool TryNormalizeColorText(string? text, string? source, out string hex)
     {
         hex = string.Empty;
@@ -1560,6 +4050,7 @@ public partial class MainWindow : Window
 
         var sourceLooksLikeColorPicker = source?.Contains("ColorPicker", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Contains("PowerToys", StringComparison.OrdinalIgnoreCase) == true ||
+            source?.Equals("Clip", StringComparison.OrdinalIgnoreCase) == true ||
             source?.Equals("Clip.Shell", StringComparison.OrdinalIgnoreCase) == true;
 
         if (!trimmed.StartsWith('#') && !sourceLooksLikeColorPicker)
@@ -1650,6 +4141,11 @@ public partial class MainWindow : Window
             {
                 var path = item.FilePaths[0];
                 if (Directory.Exists(path)) return RenderSvg("folder-svgrepo-com.svg", size);
+                if (File.Exists(path) && IsImageFile(Path.GetExtension(path).ToLowerInvariant()))
+                {
+                    return LoadBitmap(path);
+                }
+
                 return RenderFileSvg(path, size);
             }
 
@@ -1687,11 +4183,28 @@ public partial class MainWindow : Window
     private ImageSource RenderFileSvg(string path, int size)
     {
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        if (ShouldUseWindowsFileIcon(ext))
+        {
+            var windowsIcon = WatcherShellIconReader.TryGetIcon(path, large: size >= 48);
+            if (windowsIcon is not null)
+            {
+                using (windowsIcon)
+                {
+                    return BitmapFromDrawingImage(windowsIcon);
+                }
+            }
+        }
+
         var name = string.IsNullOrWhiteSpace(ext) ? "file-60.svg" : $"file-icon-{ext}.svg";
         return File.Exists(AssetIconPath(name)) ? RenderSvg(name, size) : RenderGeneratedFileIcon(ext, size);
     }
 
-    private ImageSource RenderSvg(string fileName, int size, double scaleX = 1.0)
+    private static bool ShouldUseWindowsFileIcon(string ext)
+    {
+        return ext is "doc" or "docx" or "xls" or "xlsx" or "xlsm" or "ppt" or "pptx" or "vsd" or "vsdx" or "pdf";
+    }
+
+    private ImageSource RenderSvg(string fileName, int size, double scaleX = 1.0, string? color = null)
     {
         var renderWidth = Math.Max(1, (int)Math.Round(size * scaleX));
         using var bitmap = new System.Drawing.Bitmap(Math.Max(size, renderWidth), size);
@@ -1699,7 +4212,7 @@ public partial class MainWindow : Window
         graphics.Clear(System.Drawing.Color.Transparent);
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
         graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        var svg = ThemeSvg(File.ReadAllText(AssetIconPath(fileName)));
+        var svg = ThemeSvg(File.ReadAllText(AssetIconPath(fileName)), color ?? BrushHex("Muted2"));
         var document = SvgDocument.FromSvg<SvgDocument>(svg);
         document.Width = renderWidth;
         document.Height = size;
@@ -1759,9 +4272,8 @@ public partial class MainWindow : Window
         return BitmapFromDrawingImage(bitmap);
     }
 
-    private static string ThemeSvg(string svg)
+    private static string ThemeSvg(string svg, string color)
     {
-        var color = "#F4EEE7";
         return Regex.Replace(svg, @"#[0-9a-fA-F]{3,8}|rgb\([^)]+\)|black|#000", color, RegexOptions.IgnoreCase);
     }
 
@@ -1770,6 +4282,14 @@ public partial class MainWindow : Window
         var path = Path.Combine(AppContext.BaseDirectory, "assets", "icons", fileName);
         if (File.Exists(path)) return path;
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "icons", fileName));
+    }
+
+    internal static string AppIconPath(AppIconPreference preference)
+    {
+        var fileName = preference == AppIconPreference.Dark ? "clip-tile-dark.ico" : "clip-tile-light.ico";
+        var path = Path.Combine(AppContext.BaseDirectory, "assets", "app-icons", fileName);
+        if (File.Exists(path)) return path;
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "app-icons", fileName));
     }
 
     private static BitmapImage LoadBitmap(string path)
@@ -1799,9 +4319,15 @@ public partial class MainWindow : Window
         }
     }
 
-    internal static Style ThinScrollBarStyle()
+    internal static Style ThinScrollBarStyle(WpfBrush thumb)
     {
-        return (Style)XamlReader.Parse("""
+        var hex = "#6B656B";
+        if (thumb is SolidColorBrush solid)
+        {
+            hex = $"#{solid.Color.R:X2}{solid.Color.G:X2}{solid.Color.B:X2}";
+        }
+
+        return (Style)XamlReader.Parse($$"""
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type ScrollBar}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Setter Property="Width" Value="6"/>
   <Setter Property="Height" Value="6"/>
@@ -1818,7 +4344,7 @@ public partial class MainWindow : Window
               <Thumb>
                 <Thumb.Template>
                   <ControlTemplate TargetType="{x:Type Thumb}">
-                    <Border Background="#6B656B" CornerRadius="3" Margin="1"/>
+                    <Border Background="{{hex}}" CornerRadius="3" Margin="1"/>
                   </ControlTemplate>
                 </Thumb.Template>
               </Thumb>
@@ -1859,8 +4385,21 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)] private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
+
+    private static readonly Guid DataTransferManagerId = new(0xa5caee9b, 0x8708, 0x49d1, 0x8d, 0x36, 0x67, 0xd2, 0x5a, 0x8d, 0xa0, 0x0c);
+
+    [ComImport]
+    [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDataTransferManagerInterop
+    {
+        IntPtr GetForWindow(IntPtr appWindow, [In] ref Guid riid);
+        void ShowShareUIForWindow(IntPtr appWindow);
+    }
 
     internal static void ApplyRoundedWindowCorners(IntPtr hwnd)
     {
@@ -1884,7 +4423,7 @@ internal sealed class WpfWindowHandle(IntPtr handle) : Forms.IWin32Window
 
 internal sealed class HotkeyHelpWindow : Window
 {
-    public HotkeyHelpWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush text, WpfBrush muted, WpfBrush line)
+    public HotkeyHelpWindow(ClipHotkeySettings hotkeys, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
         Title = "Clip Hotkeys";
         Width = 430;
@@ -1940,29 +4479,52 @@ internal sealed class HotkeyHelpWindow : Window
             Content = "Close",
             Foreground = muted,
             Background = WpfBrushes.Transparent,
-            BorderThickness = new Thickness(0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
             Padding = new Thickness(14, 6, 14, 6),
-            Margin = new Thickness(0, 0, 10, 0),
+            Margin = new Thickness(0, 0, 14, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
         };
+        close.MouseEnter += (_, _) => { close.Background = accentSoft; close.BorderBrush = selectedBorder; close.Foreground = text; };
+        close.MouseLeave += (_, _) => { close.Background = WpfBrushes.Transparent; close.BorderBrush = WpfBrushes.Transparent; close.Foreground = muted; };
         close.Click += (_, _) => Close();
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
-        shell.Children.Add(header);
+        var headerBorder = new Border
+        {
+            Child = header,
+            BorderBrush = line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+        shell.Children.Add(headerBorder);
 
         var rows = new StackPanel { Margin = new Thickness(22, 18, 22, 22) };
         foreach (var (key, action) in new[]
         {
-            ("Alt+V", "Open Clip"),
-            ("Enter", "Paste selected item"),
-            ("Ctrl+C", "Copy selected item"),
-            ("Ctrl+P", "Pin or unpin selected item"),
-            ("Ctrl+K", "Open actions"),
-            ("Ctrl+O", "Open selected link, file, or image"),
-            ("Ctrl+E", "Edit selected text"),
-            ("Ctrl+Shift+L", "Save debug log snapshot"),
-            ("Delete", "Delete selected item"),
-            ("Esc", "Close Clip, close a document preview, or escape modals"),
+            (hotkeys.OpenClip, "Open Clip"),
+            (hotkeys.PasteSelected, "Paste selected item"),
+            (hotkeys.CopySelected, "Copy selected item"),
+            (hotkeys.PinSelected, "Pin or unpin selected item"),
+            (hotkeys.OpenActions, "Open actions"),
+            (hotkeys.OpenSelected, "Open selected link, file, or image"),
+            (hotkeys.EditSelected, "Edit selected text"),
+            (hotkeys.SaveDebugLog, "Save debug log snapshot"),
+            (hotkeys.DeleteSelected, "Delete selected item"),
+            (hotkeys.CloseClip, "Close Clip, close a document preview, or escape modals"),
         })
         {
             rows.Children.Add(HotkeyRow(key, action, surface, text, muted, line));
@@ -2011,6 +4573,8 @@ internal sealed class OpenWithWindow : Window
     private readonly WpfBrush _muted;
     private readonly WpfBrush _line;
     private readonly WpfBrush _selected;
+    private readonly WpfBrush _accentSoft;
+    private readonly WpfBrush _selectedBorder;
     private readonly WpfTextBox _search = new();
     private readonly WpfListBox _apps = new();
     private readonly TextBlock _status = new();
@@ -2041,7 +4605,7 @@ internal sealed class OpenWithWindow : Window
         });
     }
 
-    public OpenWithWindow(string targetPath, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public OpenWithWindow(string targetPath, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
         _targetPath = targetPath;
         _bg = bg;
@@ -2052,6 +4616,8 @@ internal sealed class OpenWithWindow : Window
         _muted = muted;
         _line = line;
         _selected = selected;
+        _accentSoft = accentSoft;
+        _selectedBorder = selectedBorder;
 
         Title = "Open With";
         Width = 620;
@@ -2061,7 +4627,7 @@ internal sealed class OpenWithWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Background = bg;
-        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle());
+        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(muted));
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
         KeyDown += OnKeyDown;
 
@@ -2174,17 +4740,44 @@ internal sealed class OpenWithWindow : Window
 
     private WpfButton PlainButton(string label)
     {
-        return new WpfButton
+        var button = new WpfButton
         {
             Content = label,
             Foreground = _muted,
             Background = WpfBrushes.Transparent,
-            BorderBrush = _line,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
-            Margin = new Thickness(0, 0, 10, 0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(0, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
         };
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = _accentSoft;
+            button.BorderBrush = _selectedBorder;
+            button.Foreground = _text;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+            button.Foreground = _muted;
+        };
+        return button;
     }
 
     private async Task LoadAppsAsync()
@@ -2444,57 +5037,54 @@ internal sealed class OpenWithWindow : Window
     }
 }
 
-internal sealed class SettingsWindow : Window
+internal sealed class ExcludedAppPickerWindow : Window
 {
-    private readonly Grid _content = new();
-    private readonly Dictionary<string, WpfButton> _nav = new(StringComparer.OrdinalIgnoreCase);
-    private readonly WpfBrush _bg;
-    private readonly WpfBrush _surface;
-    private readonly WpfBrush _surface2;
-    private readonly WpfBrush _surface3;
+    private static readonly Dictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object IconCacheGate = new();
     private readonly WpfBrush _text;
     private readonly WpfBrush _muted;
+    private readonly WpfBrush _surface;
     private readonly WpfBrush _line;
-    private readonly WpfBrush _selected;
+    private readonly WpfBrush _accentSoft;
+    private readonly WpfBrush _selectedBorder;
+    private readonly WpfTextBox _search = new();
+    private readonly WpfListBox _apps = new();
+    private readonly TextBlock _status = new();
+    private List<WatcherAppChoice> _allApps = [];
 
-    public SettingsWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected)
+    public ExcludedAppPickerWindow(WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
-        _bg = bg;
-        _surface = surface;
-        _surface2 = surface2;
-        _surface3 = surface3;
         _text = text;
         _muted = muted;
+        _surface = surface;
         _line = line;
-        _selected = selected;
+        _accentSoft = accentSoft;
+        _selectedBorder = selectedBorder;
 
-        Title = "Clip Settings";
-        Width = 720;
-        Height = 500;
+        Title = "Choose Excluded App";
+        Width = 620;
+        Height = 520;
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Background = bg;
+        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(muted));
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
-        KeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Escape)
-            {
-                Close();
-            }
-        };
+        KeyDown += OnKeyDown;
 
         var root = new Border
         {
             Background = bg,
-            BorderBrush = line,
+            BorderBrush = _line,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(14),
         };
         var shell = new Grid();
-        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(54) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(46) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(44) });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(46) });
         root.Child = shell;
 
         var header = new Grid { Background = surface2 };
@@ -2509,27 +5099,450 @@ internal sealed class SettingsWindow : Window
         };
         header.Children.Add(new TextBlock
         {
-            Text = "Settings",
+            Text = "Choose app to exclude",
             Foreground = text,
-            FontSize = 16,
+            FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(18, 0, 0, 0),
+            Margin = new Thickness(18, 0, 18, 0),
         });
-        var close = new WpfButton
-        {
-            Content = "Close",
-            Foreground = muted,
-            Background = WpfBrushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 6, 14, 6),
-            Margin = new Thickness(0, 0, 10, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var close = PlainButton("Close");
         close.Click += (_, _) => Close();
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
         shell.Children.Add(header);
+
+        var searchShell = new Border
+        {
+            Background = surface,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Margin = new Thickness(16, 8, 16, 7),
+            Padding = new Thickness(10, 0, 10, 0),
+        };
+        _search.Background = WpfBrushes.Transparent;
+        _search.Foreground = text;
+        _search.BorderThickness = new Thickness(0);
+        _search.FontSize = 13;
+        _search.VerticalContentAlignment = VerticalAlignment.Center;
+        _search.TextChanged += (_, _) => RenderApps();
+        searchShell.Child = _search;
+        Grid.SetRow(searchShell, 1);
+        shell.Children.Add(searchShell);
+
+        _apps.Background = bg;
+        _apps.Foreground = text;
+        _apps.BorderThickness = new Thickness(0);
+        _apps.Margin = new Thickness(12, 0, 8, 0);
+        _apps.MouseDoubleClick += (_, _) => AcceptSelection();
+        _apps.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
+        _apps.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
+        Grid.SetRow(_apps, 2);
+        shell.Children.Add(_apps);
+
+        var footer = new Grid { Background = surface2 };
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _status.Foreground = muted;
+        _status.FontSize = 12;
+        _status.VerticalAlignment = VerticalAlignment.Center;
+        _status.Margin = new Thickness(16, 0, 0, 0);
+        footer.Children.Add(_status);
+        var browse = PlainButton("Browse...");
+        browse.Margin = new Thickness(0, 0, 12, 0);
+        browse.Click += (_, _) => BrowseForApp();
+        Grid.SetColumn(browse, 1);
+        footer.Children.Add(browse);
+        Grid.SetRow(footer, 3);
+        shell.Children.Add(footer);
+
+        Content = root;
+        Loaded += async (_, _) =>
+        {
+            _search.Focus();
+            await LoadAppsAsync();
+        };
+    }
+
+    public WatcherAppChoice? SelectedApp { get; private set; }
+
+    private WpfButton PlainButton(string label)
+    {
+        var button = new WpfButton
+        {
+            Content = label,
+            Foreground = _muted,
+            Background = WpfBrushes.Transparent,
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(0, 0, 12, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            FocusVisualStyle = null,
+            Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""),
+        };
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = _accentSoft;
+            button.BorderBrush = _selectedBorder;
+            button.Foreground = _text;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = WpfBrushes.Transparent;
+            button.BorderBrush = WpfBrushes.Transparent;
+            button.Foreground = _muted;
+        };
+        return button;
+    }
+
+    private async Task LoadAppsAsync()
+    {
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            _status.Text = "Loading apps...";
+            var target = Path.Combine(Path.GetTempPath(), "clip-privacy-app-picker.txt");
+            _allApps = await Task.Run(() => WatcherAppDiscovery.GetApps(target).Where(app => !string.IsNullOrWhiteSpace(app.ExecutablePath)).ToList());
+            _status.Text = $"{_allApps.Count} apps";
+            ShellLog.Info($"privacy app picker loaded count={_allApps.Count} elapsedMs={watch.ElapsedMilliseconds}");
+        }
+        catch (Exception ex)
+        {
+            _allApps = [];
+            _status.Text = "App list failed. Use Browse.";
+            ShellLog.Error(ex, "privacy app picker load failed");
+        }
+
+        RenderApps();
+    }
+
+    private void RenderApps()
+    {
+        var query = _search.Text.Trim();
+        var apps = _allApps
+            .Where(app => string.IsNullOrWhiteSpace(query) ||
+                app.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                (app.ExecutablePath?.Contains(query, StringComparison.OrdinalIgnoreCase) == true) ||
+                (app.AppUserModelId?.Contains(query, StringComparison.OrdinalIgnoreCase) == true))
+            .OrderByDescending(app => app.IsRecent)
+            .ThenBy(app => app.Name)
+            .Take(80)
+            .ToList();
+
+        _apps.Items.Clear();
+        if (_allApps.Count == 0)
+        {
+            _apps.Items.Add(new WpfListBoxItem
+            {
+                Content = RowContent(null, "Loading apps...", "Use Browse if the app is not listed."),
+                Foreground = _muted,
+                IsEnabled = false,
+            });
+            return;
+        }
+
+        foreach (var app in apps)
+        {
+            var item = new WpfListBoxItem
+            {
+                Tag = app,
+                Content = RowContent(IconForApp(app), app.Name, app.ExecutablePath ?? app.Source),
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(4, 1, 4, 1),
+                Background = WpfBrushes.Transparent,
+                Foreground = _text,
+            };
+            _apps.Items.Add(item);
+        }
+
+        if (_apps.Items.Count > 0)
+        {
+            _apps.SelectedIndex = 0;
+        }
+    }
+
+    private StackPanel RowContent(ImageSource? icon, string title, string subtitle)
+    {
+        var outer = new StackPanel { Orientation = WpfOrientation.Horizontal };
+        outer.Children.Add(new WpfImage
+        {
+            Source = icon,
+            Width = 26,
+            Height = 26,
+            Stretch = Stretch.Uniform,
+            Margin = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var panel = new StackPanel { Orientation = WpfOrientation.Vertical, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock { Text = title, Foreground = _text, FontSize = 13, FontWeight = FontWeights.Medium });
+        panel.Children.Add(new TextBlock { Text = subtitle, Foreground = _muted, FontSize = 11, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis });
+        outer.Children.Add(panel);
+        return outer;
+    }
+
+    private ImageSource? IconForApp(WatcherAppChoice app)
+    {
+        var key = app.AppUserModelId ?? app.ExecutablePath ?? app.Name;
+        lock (IconCacheGate)
+        {
+            if (IconCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        try
+        {
+            DrawingImage? image = null;
+            if (!string.IsNullOrWhiteSpace(app.AppUserModelId))
+            {
+                image = WatcherShellIconReader.TryGetIcon($"shell:AppsFolder\\{app.AppUserModelId}", large: false) ??
+                    WatcherPackageLogoLookup.TryGetIcon(app.AppUserModelId) ??
+                    WatcherStartMenuIconLookup.TryGetIcon(app.Name);
+            }
+            else if (!string.IsNullOrWhiteSpace(app.ExecutablePath) && File.Exists(app.ExecutablePath))
+            {
+                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(app.ExecutablePath);
+                image = icon?.ToBitmap();
+            }
+
+            image ??= WatcherStartMenuIconLookup.TryGetIcon(app.Name) ?? System.Drawing.SystemIcons.Application.ToBitmap();
+            var source = MainWindow.BitmapFromDrawingImage(image);
+            image.Dispose();
+            lock (IconCacheGate)
+            {
+                IconCache[key] = source;
+            }
+
+            return source;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"privacy app picker icon failed app={app.Name}");
+            return null;
+        }
+    }
+
+    private void AcceptSelection()
+    {
+        if (_apps.SelectedItem is not WpfListBoxItem { Tag: WatcherAppChoice app })
+        {
+            return;
+        }
+
+        SelectedApp = app;
+        DialogResult = true;
+    }
+
+    private void BrowseForApp()
+    {
+        using var dialog = new Forms.OpenFileDialog
+        {
+            Title = "Choose an app to exclude",
+            Filter = "Applications|*.exe|All files|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog() != Forms.DialogResult.OK)
+        {
+            return;
+        }
+
+        SelectedApp = new WatcherAppChoice(Path.GetFileNameWithoutExtension(dialog.FileName), dialog.FileName, "Browse");
+        DialogResult = true;
+    }
+
+    private void OnKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            Close();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter)
+        {
+            AcceptSelection();
+            e.Handled = true;
+        }
+    }
+}
+
+internal sealed record SettingsPalette(WpfBrush Bg, WpfBrush Surface, WpfBrush Surface2, WpfBrush Surface3, WpfBrush Text, WpfBrush Muted, WpfBrush Line, WpfBrush Line2, WpfBrush Accent, WpfBrush AccentSoft, WpfBrush Selected, WpfBrush SelectedBorder);
+
+internal sealed class SettingsWindow : Window
+{
+    private readonly Grid _content = new();
+    private readonly Dictionary<string, WpfButton> _nav = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ClipShellSettings _settings;
+    private ClipUpdateStatus _updateStatus;
+    private readonly Action<ClipThemePreference> _applyTheme;
+    private readonly Action<AppIconPreference> _applyAppIcon;
+    private readonly Action<bool> _applyRunAtStartup;
+    private readonly Action<int?> _applyHistoryLimit;
+    private readonly Action<long?> _applyMaxItemSize;
+    private readonly Action<bool, bool> _applyUpdateSettings;
+    private readonly Action<Action<ClipUpdateStatus>> _checkForUpdates;
+    private readonly Action<bool> _clearHistory;
+    private readonly Action _openDataFolder;
+    private readonly Action _openDebugLog;
+    private readonly Action<string> _changeClipboardFolder;
+    private readonly Action _resetClipboardFolder;
+    private readonly Action<ClipHotkeySettings> _applyHotkeys;
+    private readonly Action<ClipPrivacySettings> _applyPrivacy;
+    private readonly Action<PasteFormatPreference> _applyDefaultPasteFormat;
+    private readonly Action _resetAllSettings;
+    private readonly Func<SettingsPalette> _paletteProvider;
+    private readonly ImageSource _dropdownIcon;
+    private Border? _root;
+    private Grid? _header;
+    private Border? _headerBorder;
+    private TextBlock? _headerTitle;
+    private WpfButton? _closeButton;
+    private Border? _sidebarBorder;
+    private StackPanel? _sidebar;
+    private ScrollViewer? _contentScroll;
+    private WpfBrush _bg = WpfBrushes.Transparent;
+    private WpfBrush _surface = WpfBrushes.Transparent;
+    private WpfBrush _surface2 = WpfBrushes.Transparent;
+    private WpfBrush _surface3 = WpfBrushes.Transparent;
+    private WpfBrush _text = WpfBrushes.Black;
+    private WpfBrush _muted = WpfBrushes.Gray;
+    private WpfBrush _line = WpfBrushes.Transparent;
+    private WpfBrush _line2 = WpfBrushes.Transparent;
+    private WpfBrush _accent = WpfBrushes.Teal;
+    private WpfBrush _accentSoft = WpfBrushes.Transparent;
+    private WpfBrush _selected = WpfBrushes.Transparent;
+    private WpfBrush _selectedBorder = WpfBrushes.Transparent;
+    private string _currentPage = "General";
+
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
+    {
+        _settings = settings;
+        _updateStatus = updateStatus;
+        _applyTheme = applyTheme;
+        _applyAppIcon = applyAppIcon;
+        _applyRunAtStartup = applyRunAtStartup;
+        _applyHistoryLimit = applyHistoryLimit;
+        _applyMaxItemSize = applyMaxItemSize;
+        _applyUpdateSettings = applyUpdateSettings;
+        _checkForUpdates = checkForUpdates;
+        _clearHistory = clearHistory;
+        _openDataFolder = openDataFolder;
+        _openDebugLog = openDebugLog;
+        _changeClipboardFolder = changeClipboardFolder;
+        _resetClipboardFolder = resetClipboardFolder;
+        _applyHotkeys = applyHotkeys;
+        _applyPrivacy = applyPrivacy;
+        _applyDefaultPasteFormat = applyDefaultPasteFormat;
+        _resetAllSettings = resetAllSettings;
+        _paletteProvider = paletteProvider;
+        _dropdownIcon = dropdownIcon;
+        ApplyPalette(_paletteProvider());
+
+        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(_muted));
+        Title = "Clip Settings";
+        Width = 720;
+        Height = 500;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        ShowInTaskbar = false;
+        Background = _bg;
+        SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
+        Loaded += (_, _) => CenterOnCursorScreen();
+        KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                Close();
+            }
+        };
+
+        var root = new Border
+        {
+            Background = _bg,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+        };
+        _root = root;
+        var shell = new Grid();
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(54) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Child = shell;
+
+        var header = new Grid { Background = _surface2 };
+        _header = header;
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ButtonState == MouseButtonState.Pressed)
+            {
+                DragMove();
+            }
+        };
+        var headerTitle = new TextBlock
+        {
+            Text = "Settings",
+            Foreground = _text,
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(18, 0, 0, 0),
+        };
+        _headerTitle = headerTitle;
+        header.Children.Add(headerTitle);
+        var close = new WpfButton
+        {
+            Content = "Close",
+            Foreground = _muted,
+            Background = WpfBrushes.Transparent,
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Template = TransparentButtonTemplate(),
+            Padding = new Thickness(14, 6, 14, 6),
+            Margin = new Thickness(0, 0, 14, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _closeButton = close;
+        close.MouseEnter += (_, _) =>
+        {
+            close.Background = _accentSoft;
+            close.BorderBrush = _selectedBorder;
+            close.Foreground = _text;
+        };
+        close.MouseLeave += (_, _) =>
+        {
+            close.Background = WpfBrushes.Transparent;
+            close.BorderBrush = WpfBrushes.Transparent;
+            close.Foreground = _muted;
+        };
+        close.Click += (_, _) => Close();
+        Grid.SetColumn(close, 1);
+        header.Children.Add(close);
+        var headerBorder = new Border
+        {
+            Child = header,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+        _headerBorder = headerBorder;
+        shell.Children.Add(headerBorder);
 
         var body = new Grid();
         body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(172) });
@@ -2539,25 +5552,69 @@ internal sealed class SettingsWindow : Window
 
         var sidebar = new StackPanel
         {
-            Background = surface2,
-            Margin = new Thickness(12),
+            Background = _surface2,
+            Margin = new Thickness(12, 14, 12, 12),
         };
-        foreach (var page in new[] { "General", "History", "Shortcuts", "Appearance" })
+        _sidebar = sidebar;
+        foreach (var page in new[] { "General", "History", "Shortcuts", "Privacy", "App Overrides", "Appearance", "About" })
         {
             var button = NavButton(page);
+            button.MouseEnter += (_, _) =>
+            {
+                button.Foreground = _text;
+                button.Background = _accentSoft;
+                button.BorderBrush = _selectedBorder;
+            };
+            button.MouseLeave += (_, _) =>
+            {
+                var active = string.Equals(_currentPage, page, StringComparison.OrdinalIgnoreCase);
+                button.Foreground = active ? _text : _muted;
+                button.Background = active ? _selected : WpfBrushes.Transparent;
+                button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
+            };
             button.Click += (_, _) => ShowPage(page);
             _nav[page] = button;
             sidebar.Children.Add(button);
         }
-        body.Children.Add(sidebar);
+        var sidebarBorder = new Border
+        {
+            Background = _surface2,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 1, 0),
+            Child = sidebar,
+        };
+        _sidebarBorder = sidebarBorder;
+        body.Children.Add(sidebarBorder);
 
-        _content.Background = surface;
+        _content.Background = _surface;
         _content.Margin = new Thickness(0);
-        Grid.SetColumn(_content, 1);
-        body.Children.Add(_content);
+        var contentScroll = new ScrollViewer
+        {
+            Content = _content,
+            Background = _surface,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        _contentScroll = contentScroll;
+        Grid.SetColumn(contentScroll, 1);
+        body.Children.Add(contentScroll);
 
         Content = root;
         ShowPage("General");
+    }
+
+    private void CenterOnCursorScreen()
+    {
+        var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Control.MousePosition).WorkingArea;
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? System.Windows.Media.Matrix.Identity;
+        var topLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
+        var bottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
+        var screenWidth = bottomRight.X - topLeft.X;
+        var screenHeight = bottomRight.Y - topLeft.Y;
+        var w = ActualWidth > 0 ? ActualWidth : Width;
+        var h = ActualHeight > 0 ? ActualHeight : Height;
+        Left = topLeft.X + Math.Max(0, (screenWidth - w) / 2);
+        Top = topLeft.Y + Math.Max(0, (screenHeight - h) / 2);
     }
 
     private WpfButton NavButton(string label)
@@ -2565,43 +5622,393 @@ internal sealed class SettingsWindow : Window
         return new WpfButton
         {
             Content = label,
+            Template = TransparentButtonTemplate(),
             HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
             Height = 36,
             Margin = new Thickness(0, 0, 0, 8),
-            Padding = new Thickness(12, 0, 12, 0),
+            Padding = new Thickness(11, 0, 11, 0),
             Background = WpfBrushes.Transparent,
             Foreground = _muted,
-            BorderThickness = new Thickness(0),
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
             FontSize = 13,
         };
     }
 
+    private static ControlTemplate TransparentButtonTemplate()
+    {
+        return (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="5">
+    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      Margin="{TemplateBinding Padding}"/>
+  </Border>
+</ControlTemplate>
+""");
+    }
+
+    private static ControlTemplate SubtleSettingsButtonTemplate()
+    {
+        return (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+""");
+    }
+
+    private void ApplyPalette(SettingsPalette palette)
+    {
+        _bg = palette.Bg;
+        _surface = palette.Surface;
+        _surface2 = palette.Surface2;
+        _surface3 = palette.Surface3;
+        _text = palette.Text;
+        _muted = palette.Muted;
+        _line = palette.Line;
+        _line2 = palette.Line2;
+        _accent = palette.Accent;
+        _accentSoft = palette.AccentSoft;
+        _selected = palette.Selected;
+        _selectedBorder = palette.SelectedBorder;
+    }
+
+    private void RefreshTheme()
+    {
+        ApplyPalette(_paletteProvider());
+        Background = _bg;
+        if (_root is not null)
+        {
+            _root.Background = _bg;
+            _root.BorderBrush = _line;
+        }
+
+        if (_header is not null)
+        {
+            _header.Background = _surface2;
+        }
+
+        if (_headerBorder is not null)
+        {
+            _headerBorder.BorderBrush = _line;
+        }
+
+        if (_headerTitle is not null)
+        {
+            _headerTitle.Foreground = _text;
+        }
+
+        if (_closeButton is not null && !_closeButton.IsMouseOver)
+        {
+            _closeButton.Background = WpfBrushes.Transparent;
+            _closeButton.Foreground = _muted;
+        }
+
+        if (_sidebar is not null)
+        {
+            _sidebar.Background = _surface2;
+        }
+
+        if (_sidebarBorder is not null)
+        {
+            _sidebarBorder.Background = _surface2;
+            _sidebarBorder.BorderBrush = _line;
+        }
+
+        _content.Background = _surface;
+        if (_contentScroll is not null)
+        {
+            _contentScroll.Background = _surface;
+        }
+
+        ShowPage(_currentPage);
+    }
+
     private void ShowPage(string page)
     {
+        _currentPage = page;
         foreach (var (name, button) in _nav)
         {
             var active = string.Equals(name, page, StringComparison.OrdinalIgnoreCase);
             button.Background = active ? _selected : WpfBrushes.Transparent;
             button.Foreground = active ? _text : _muted;
+            button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
         }
 
         _content.Children.Clear();
         var panel = new StackPanel { Margin = new Thickness(24, 22, 24, 24) };
-        panel.Children.Add(new TextBlock
+        panel.Children.Add(BuildPageHeader(page));
+        panel.Children.Add(PageSubtitle(page));
+
+        if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
         {
-            Text = page,
-            Foreground = _text,
-            FontSize = 18,
-            FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 0, 0, 18),
-        });
+            panel.Children.Add(StartupRow());
+            panel.Children.Add(UpdateCheckRow());
+            panel.Children.Add(AutoInstallUpdatesRow());
+            panel.Children.Add(DefaultPasteFormatRow());
+        }
+
+        if (string.Equals(page, "Appearance", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(ThemeRow());
+            panel.Children.Add(AppIconRow());
+        }
+
+        if (string.Equals(page, "History", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(HistoryLimitRow());
+            panel.Children.Add(MaxItemSizeRow());
+            panel.Children.Add(ClearHistoryRow());
+            panel.Children.Add(DataFolderRow());
+        }
+
+        if (string.Equals(page, "Shortcuts", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var row in HotkeyRows())
+            {
+                panel.Children.Add(row);
+            }
+
+            panel.Children.Add(ResetHotkeysRow());
+        }
+
+        if (string.Equals(page, "Privacy", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(AddExcludedAppRow());
+            foreach (var app in _settings.Privacy.ExcludedApps)
+            {
+                panel.Children.Add(ExcludedAppRow(app));
+            }
+        }
+
+        if (string.Equals(page, "App Overrides", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(AddAppOverrideRow());
+            foreach (var entry in _settings.AppOverrides)
+            {
+                panel.Children.Add(AppOverrideRow(entry));
+            }
+        }
+
+        if (string.Equals(page, "About", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(Row("Version", ClipUpdateService.CurrentVersion));
+            panel.Children.Add(Row("Updates", _settings.CheckForUpdatesOnStartup
+                ? (_settings.InstallUpdatesAutomatically ? "Checks and installs automatically" : "Checks automatically")
+                : "Manual checks only"));
+            panel.Children.Add(Row("Data folder", _settings.EffectiveClipboardFolderPath()));
+            panel.Children.Add(Row("Update status", _updateStatus.Message));
+            panel.Children.Add(AboutActionsRow());
+        }
 
         foreach (var row in RowsFor(page))
         {
             panel.Children.Add(Row(row.Label, row.Value));
         }
 
+        if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
+        {
+            panel.Children.Add(ResetDefaultsFooter());
+        }
+
         _content.Children.Add(panel);
+    }
+
+    private FrameworkElement BuildPageHeader(string page)
+    {
+        var info = InfoDescriptionFor(page);
+        if (info is null)
+        {
+            return new TextBlock
+            {
+                Text = page,
+                Foreground = _text,
+                FontSize = 18,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 4),
+            };
+        }
+
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = page,
+            Foreground = _text,
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(title, 0);
+        grid.Children.Add(title);
+
+        var badge = InfoBadge();
+        badge.Click += (_, _) => ShowInfoPopup(page, info);
+        Grid.SetColumn(badge, 1);
+        grid.Children.Add(badge);
+        return grid;
+    }
+
+    private static string? InfoDescriptionFor(string page) => page switch
+    {
+        "Privacy" => "Apps listed here are excluded from future Clip history to help prevent saving copied information from sensitive apps, such as password managers, banking apps, and private browsers.",
+        "App Overrides" => "Apps here will use custom hotkeys for two actions: Open Clip (which key opens Clip while that app is focused) and Paste (which key Clip sends when pasting into that app). For example, if Photoshop already uses Alt+V, you can override Open Clip to a different shortcut while in Photoshop, or change Paste to send a different keystroke. Add an app, pick the action, and set the hotkey.",
+        _ => null,
+    };
+
+    private WpfButton InfoBadge()
+    {
+        var glyph = new TextBlock
+        {
+            Text = "i",
+            Foreground = _muted,
+            FontFamily = new System.Windows.Media.FontFamily("Cambria, Georgia, Segoe UI"),
+            FontStyle = FontStyles.Italic,
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var ring = new Border
+        {
+            Width = 22,
+            Height = 22,
+            CornerRadius = new CornerRadius(11),
+            BorderBrush = _muted,
+            BorderThickness = new Thickness(1),
+            Background = WpfBrushes.Transparent,
+            Child = glyph,
+        };
+        var button = new WpfButton
+        {
+            Width = 22,
+            Height = 22,
+            Padding = new Thickness(0),
+            Background = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Content = ring,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = "What is this?",
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            FocusVisualStyle = null,
+        };
+        button.Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
+  <Border Background="{TemplateBinding Background}" CornerRadius="11">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsMouseOver" Value="True">
+      <Setter Property="Opacity" Value="0.75"/>
+    </Trigger>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter Property="Opacity" Value="0.5"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+""");
+        return button;
+    }
+
+    private void ShowInfoPopup(string title, string description)
+    {
+        var stack = new StackPanel { Margin = new Thickness(20) };
+        stack.Children.Add(new TextBlock
+        {
+            Text = title,
+            Foreground = _text,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 10),
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = description,
+            Foreground = _muted,
+            FontSize = 13,
+            LineHeight = 20,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 380,
+        });
+
+        var close = SecondaryButton("Got it");
+        close.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
+        close.Margin = new Thickness(0, 16, 0, 0);
+        stack.Children.Add(close);
+
+        var border = new Border
+        {
+            Background = _surface,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Child = stack,
+        };
+
+        var shell = new Grid
+        {
+            Background = WpfBrushes.Transparent,
+            Margin = new Thickness(24),
+        };
+        shell.Children.Add(border);
+
+        var popup = new Popup
+        {
+            AllowsTransparency = true,
+            StaysOpen = false,
+            Placement = PlacementMode.Center,
+            PlacementTarget = this,
+            Child = shell,
+        };
+        close.Click += (_, _) => popup.IsOpen = false;
+        popup.IsOpen = true;
+    }
+
+    private TextBlock PageSubtitle(string page)
+    {
+        var subtitle = page switch
+        {
+            "General" => "Behavior of the Clip clipboard manager",
+            "History" => "Storage, limits, and cleanup",
+            "Shortcuts" => "Keyboard controls for Clip",
+            "Privacy" => "Apps excluded from clipboard history",
+            "App Overrides" => "Custom hotkeys per app for Clip actions",
+            "Appearance" => "Theme and icon preferences",
+            "About" => "Version, updates, and support files",
+            _ => string.Empty,
+        };
+
+        return new TextBlock
+        {
+            Text = subtitle,
+            Foreground = _muted,
+            FontSize = 13,
+            Margin = new Thickness(0, 0, 0, 18),
+        };
     }
 
     private IEnumerable<(string Label, string Value)> RowsFor(string page)
@@ -2611,31 +6018,1087 @@ internal sealed class SettingsWindow : Window
             "History" => new[]
             {
                 ("Pinned items", "Kept until unpinned"),
-                ("History limit", "Saved locally"),
                 ("Duplicate handling", "Same content updates copy count"),
-                ("Storage", System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip")),
             },
-            "Shortcuts" => new[]
-            {
-                ("Open Clip", "Alt+V"),
-                ("Save debug log", "Ctrl+Shift+L"),
-                ("Paste selected", "Enter"),
-                ("Close", "Esc or click outside"),
-            },
+            "Shortcuts" => [],
             "Appearance" => new[]
             {
-                ("Theme", "System dark"),
                 ("Density", "Compact"),
                 ("Preview style", "Native when available"),
                 ("Accent", "Teal"),
             },
-            _ => new[]
+            "Privacy" => [],
+            "App Overrides" => [],
+            "About" => [],
+            _ => [],
+        };
+    }
+
+    private Border PrivacyNote()
+    {
+        return new Border
+        {
+            Background = _surface2,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 0, 12),
+            Child = new TextBlock
             {
-                ("Theme", "System"),
-                ("Hotkey", "Alt+V"),
-                ("Debug log", "Ctrl+Shift+L"),
-                ("Dismiss", "Click outside or Esc"),
+                Text = "Apps listed here are excluded from future Clip history to help prevent saving copied information from sensitive apps, such as password managers, banking apps, and private browsers.",
+                Foreground = _muted,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 18,
             },
+        };
+    }
+
+    private Border AddExcludedAppRow()
+    {
+        var button = SecondaryButton("Add app");
+        button.Width = 104;
+        button.Click += (_, _) =>
+        {
+            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected, _accentSoft, _selectedBorder)
+            {
+                Owner = this,
+            };
+            if (picker.ShowDialog() == true && picker.SelectedApp is not null)
+            {
+                var privacy = CopyPrivacy();
+                privacy.AddExcludedApp(picker.SelectedApp.Name, picker.SelectedApp.ExecutablePath);
+                ApplyPrivacyChange(privacy);
+                ShowPage("Privacy");
+            }
+        };
+
+        return ControlRow("Add excluded app", "Choose from installed apps or browse for an .exe.", button);
+    }
+
+    private Border ExcludedAppRow(ClipExcludedApp app)
+    {
+        var button = SecondaryButton("Remove");
+        button.Click += (_, _) =>
+        {
+            var privacy = CopyPrivacy();
+            privacy.RemoveExcludedApp(app);
+            ApplyPrivacyChange(privacy);
+            ShowPage("Privacy");
+        };
+
+        return ControlRow(app.Name, string.IsNullOrWhiteSpace(app.ExecutablePath) ? "Excluded from clipboard history." : app.ExecutablePath, button);
+    }
+
+    private ClipPrivacySettings CopyPrivacy()
+    {
+        return new ClipPrivacySettings
+        {
+            ExcludedApps = _settings.Privacy.ExcludedApps
+                .Select(app => ClipExcludedApp.Create(app.Name, app.ExecutablePath))
+                .Where(app => app is not null)
+                .Select(app => app!)
+                .ToList(),
+        };
+    }
+
+    private void ApplyPrivacyChange(ClipPrivacySettings privacy)
+    {
+        _applyPrivacy(privacy);
+        _settings.Privacy = privacy;
+    }
+
+    private Border AppOverrideNote()
+    {
+        return new Border
+        {
+            Background = _surface2,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 0, 12),
+            Child = new TextBlock
+            {
+                Text = "Apps here will use custom hotkeys for two actions: Open Clip (which key opens Clip while that app is focused) and Paste (which key Clip sends when pasting into that app). For example, if Photoshop already uses Alt+V, you can override Open Clip to a different shortcut while in Photoshop, or change Paste to send a different keystroke. Add an app, pick the action, and set the hotkey.",
+                Foreground = _muted,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 18,
+            },
+        };
+    }
+
+    private Border AddAppOverrideRow()
+    {
+        var button = SecondaryButton("Add app");
+        button.Width = 104;
+        button.Click += (_, _) =>
+        {
+            var picker = new ExcludedAppPickerWindow(_bg, _surface, _surface2, _surface3, _text, _muted, _line, _selected, _accentSoft, _selectedBorder)
+            {
+                Owner = this,
+            };
+            if (picker.ShowDialog() == true && picker.SelectedApp is not null)
+            {
+                var name = ProcessNameFromAppEntry(picker.SelectedApp.Name, picker.SelectedApp.ExecutablePath);
+                if (string.IsNullOrWhiteSpace(name)) return;
+                _settings.AppOverrides.Add(new ClipAppOverride
+                {
+                    AppName = name,
+                    ExecutablePath = picker.SelectedApp.ExecutablePath,
+                    Action = ClipAppOverride.ActionPaste,
+                    Hotkey = "Alt+V",
+                });
+                _settings.Save();
+                ShowPage("App Overrides");
+            }
+        };
+
+        return ControlRow("Add app override", "Choose an app, then pick an action and a custom hotkey for it.", button);
+    }
+
+    private Border AppOverrideRow(ClipAppOverride entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.ExecutablePath))
+        {
+            var resolved = ResolveExecutablePathFromProcessName(entry.AppName);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                entry.ExecutablePath = resolved;
+                _settings.Save();
+            }
+        }
+
+        var actionDropdown = StyledDropdown(entry.Action, ClipAppOverride.AvailableActions, selected =>
+        {
+            if (string.Equals(entry.Action, selected, StringComparison.OrdinalIgnoreCase)) return;
+            entry.Action = selected;
+            _settings.Save();
+        });
+        actionDropdown.Width = 108;
+
+        var hotkeyInput = HotkeyInput(entry.Hotkey, requireModifier: true, value =>
+        {
+            entry.Hotkey = value;
+            _settings.Save();
+        });
+        hotkeyInput.Width = 108;
+
+        var remove = SecondaryButton("Remove");
+        remove.Click += (_, _) =>
+        {
+            _settings.AppOverrides.Remove(entry);
+            _settings.Save();
+            ShowPage("App Overrides");
+        };
+
+        var controls = new StackPanel
+        {
+            Orientation = WpfOrientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        controls.Children.Add(actionDropdown);
+        controls.Children.Add(new Border { Width = 6 });
+        controls.Children.Add(hotkeyInput);
+        controls.Children.Add(new Border { Width = 6 });
+        controls.Children.Add(remove);
+
+        var grid = new Grid { MinHeight = 64 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var nameText = new TextBlock
+        {
+            Text = entry.AppName,
+            Foreground = _text,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        Grid.SetRow(nameText, 0);
+        Grid.SetColumn(nameText, 0);
+        grid.Children.Add(nameText);
+
+        var pathText = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(entry.ExecutablePath) ? "Path not available — re-add to refresh." : entry.ExecutablePath!,
+            Foreground = _muted,
+            FontSize = 12,
+            Margin = new Thickness(0, 6, 0, 12),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        Grid.SetRow(pathText, 1);
+        Grid.SetColumn(pathText, 0);
+        Grid.SetColumnSpan(pathText, 3);
+        grid.Children.Add(pathText);
+
+        Grid.SetRow(controls, 0);
+        Grid.SetColumn(controls, 2);
+        grid.Children.Add(controls);
+
+        return new Border
+        {
+            Child = grid,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    private static string? ResolveExecutablePathFromProcessName(string processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName)) return null;
+        try
+        {
+            var processes = Process.GetProcessesByName(processName);
+            try
+            {
+                foreach (var process in processes)
+                {
+                    try
+                    {
+                        var path = process.MainModule?.FileName;
+                        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return path;
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
+        return null;
+    }
+
+    private static string ProcessNameFromAppEntry(string? name, string? executablePath)
+    {
+        if (!string.IsNullOrWhiteSpace(executablePath))
+        {
+            try
+            {
+                return Path.GetFileNameWithoutExtension(executablePath);
+            }
+            catch
+            {
+            }
+        }
+
+        var trimmed = (name ?? string.Empty).Trim();
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^4];
+        }
+        return trimmed;
+    }
+
+    private Border StartupRow()
+    {
+        var enabled = StartupRegistration.IsEnabled();
+        var toggle = StartupToggle(enabled);
+        return ControlRow(
+            "Run at startup",
+            "Start Clip when you log in to Windows.",
+            toggle);
+    }
+
+    private Border UpdateCheckRow()
+    {
+        var toggle = ToggleButton(_settings.CheckForUpdatesOnStartup, next =>
+        {
+            _settings.CheckForUpdatesOnStartup = next;
+            _applyUpdateSettings(_settings.CheckForUpdatesOnStartup, _settings.InstallUpdatesAutomatically);
+        });
+
+        return ControlRow("Check for updates", "Look for new Clip releases when the app opens.", toggle);
+    }
+
+    private Border AutoInstallUpdatesRow()
+    {
+        var toggle = ToggleButton(_settings.InstallUpdatesAutomatically, next =>
+        {
+            _settings.InstallUpdatesAutomatically = next;
+            _applyUpdateSettings(_settings.CheckForUpdatesOnStartup, _settings.InstallUpdatesAutomatically);
+        });
+
+        return ControlRow("Install updates automatically", "Download and open the installer when an update is available.", toggle);
+    }
+
+    private Border HistoryLimitRow()
+    {
+        return ControlRow(
+            "History limit",
+            "Maximum unpinned items to keep.",
+            StyledDropdown(HistoryLimitLabel(_settings.HistoryLimit), new[] { "100", "250", "500", "1000", "Unlimited" }, selected =>
+            {
+                var limit = string.Equals(selected, "Unlimited", StringComparison.OrdinalIgnoreCase)
+                    ? (int?)null
+                    : int.Parse(selected, System.Globalization.CultureInfo.InvariantCulture);
+                if (limit == _settings.HistoryLimit)
+                {
+                    return;
+                }
+
+                _settings.HistoryLimit = limit;
+                _applyHistoryLimit(limit);
+                ShellLog.Info($"settings history limit changed limit={selected}");
+            }));
+    }
+
+    private static string HistoryLimitLabel(int? limit) => limit is null ? "Unlimited" : limit.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private Border MaxItemSizeRow()
+    {
+        return ControlRow(
+            "Max item size",
+            "Ignore copied items larger than this.",
+            StyledDropdown(ClipItemSizeLimit.MaxItemSizeLabel(_settings.MaxItemSizeBytes), new[] { "10 MB", "25 MB", "50 MB", "100 MB", "Unlimited" }, selected =>
+            {
+                var maxBytes = ParseMaxItemSize(selected);
+                if (maxBytes == _settings.MaxItemSizeBytes)
+                {
+                    return;
+                }
+
+                _settings.MaxItemSizeBytes = maxBytes;
+                _applyMaxItemSize(maxBytes);
+            }));
+    }
+
+    private static long? ParseMaxItemSize(string label)
+    {
+        if (label.Equals("Unlimited", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var numberText = label.Replace("MB", "", StringComparison.OrdinalIgnoreCase).Trim();
+        return long.TryParse(numberText, out var megabytes) ? megabytes * 1024 * 1024 : 50L * 1024 * 1024;
+    }
+
+    private Border ClearHistoryRow()
+    {
+        const double clearControlWidth = 142;
+        var includePinned = false;
+        var generalOption = ClearHistorySegment("General", selected: true);
+        var allOption = ClearHistorySegment("All", selected: false);
+        void Refresh()
+        {
+            ApplyClearHistorySegmentState(generalOption, !includePinned);
+            ApplyClearHistorySegmentState(allOption, includePinned);
+        }
+
+        generalOption.MouseLeftButtonDown += (_, _) =>
+        {
+            includePinned = false;
+            Refresh();
+        };
+        allOption.MouseLeftButtonDown += (_, _) =>
+        {
+            includePinned = true;
+            Refresh();
+        };
+
+        var selector = new Grid
+        {
+            Width = clearControlWidth,
+            Height = 30,
+            Background = WpfBrushes.Transparent,
+            ClipToBounds = true,
+        };
+        selector.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        selector.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        selector.Children.Add(generalOption);
+        Grid.SetColumn(allOption, 1);
+        selector.Children.Add(allOption);
+
+        var selectorShell = new Border
+        {
+            Width = clearControlWidth,
+            Height = 30,
+            Background = _surface2,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Child = selector,
+        };
+
+        var clear = SecondaryButton("Clear");
+        clear.Width = clearControlWidth;
+        clear.Height = 28;
+        clear.Margin = new Thickness(0, 6, 0, 0);
+        clear.Click += (_, _) => ConfirmClearHistory(includePinned);
+
+        var actions = new StackPanel
+        {
+            Orientation = WpfOrientation.Vertical,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new Thickness(0, 6, 0, 6),
+        };
+        actions.Children.Add(selectorShell);
+        actions.Children.Add(clear);
+
+        return ControlRow("Clear history", "General keeps pinned items. All removes everything.", actions, minHeight: 78);
+    }
+
+    private Border DataFolderRow()
+    {
+        var open = SecondaryButton("Open");
+        open.Width = 72;
+        open.Click += (_, _) => _openDataFolder();
+
+        var change = SecondaryButton("Change");
+        change.Width = 86;
+        change.Margin = new Thickness(8, 0, 0, 0);
+        change.Click += (_, _) => PickClipboardFolder();
+
+        var reset = SecondaryButton("Reset");
+        reset.Width = 72;
+        reset.Margin = new Thickness(8, 0, 0, 0);
+        reset.Click += (_, _) =>
+        {
+            _resetClipboardFolder();
+            ShowPage("History");
+        };
+
+        var actions = new StackPanel
+        {
+            Orientation = WpfOrientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+        };
+        actions.Children.Add(open);
+        actions.Children.Add(change);
+        actions.Children.Add(reset);
+
+        return ActionOverDetailRow(
+            "Clipboard folder",
+            _settings.EffectiveClipboardFolderPath(),
+            actions,
+            minHeight: 76);
+    }
+
+    private Border AboutActionsRow()
+    {
+        var check = SecondaryButton("Check");
+        check.Width = 74;
+        check.Click += (_, _) =>
+        {
+            _updateStatus = new ClipUpdateStatus("Checking", "Checking for updates...", ClipUpdateService.CurrentVersion);
+            ShowPage("About");
+            _checkForUpdates(status =>
+            {
+                _updateStatus = status;
+                ShowPage("About");
+            });
+        };
+
+        var data = SecondaryButton("Data");
+        data.Width = 72;
+        data.Margin = new Thickness(8, 0, 0, 0);
+        data.Click += (_, _) => _openDataFolder();
+
+        var log = SecondaryButton("Log");
+        log.Width = 64;
+        log.Margin = new Thickness(8, 0, 0, 0);
+        log.Click += (_, _) => _openDebugLog();
+
+        var actions = new StackPanel
+        {
+            Orientation = WpfOrientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+        };
+        actions.Children.Add(check);
+        actions.Children.Add(data);
+        actions.Children.Add(log);
+
+        return ActionOverDetailRow("Tools", "Check updates, open data, or save/open the debug log.", actions, minHeight: 64);
+    }
+
+    private void PickClipboardFolder()
+    {
+        using var dialog = new Forms.FolderBrowserDialog
+        {
+            Description = "Choose where Clip saves clipboard content.",
+            SelectedPath = _settings.EffectiveClipboardFolderPath(),
+            ShowNewFolderButton = true,
+        };
+
+        if (dialog.ShowDialog() != Forms.DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        {
+            return;
+        }
+
+        var clipboardFolder = string.Equals(Path.GetFileName(dialog.SelectedPath), "Clipboard History", StringComparison.OrdinalIgnoreCase)
+            ? dialog.SelectedPath
+            : Path.Combine(dialog.SelectedPath, "Clipboard History");
+        _changeClipboardFolder(clipboardFolder);
+        ShowPage("History");
+    }
+
+    private void ConfirmClearHistory(bool includePinned)
+    {
+        var message = includePinned
+            ? "Clear all saved clipboard history, including pinned items and their saved files?"
+            : "Clear general clipboard history and saved files while keeping pinned items?";
+        var confirm = System.Windows.MessageBox.Show(
+            this,
+            message,
+            "Clear history",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Warning);
+
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _clearHistory(includePinned);
+        ShowPage("History");
+    }
+
+    private Border ClearHistorySegment(string text, bool selected)
+    {
+        var segment = new Border
+        {
+            Margin = new Thickness(3),
+            CornerRadius = new CornerRadius(6),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Child = new TextBlock
+            {
+                Text = text,
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        ApplyClearHistorySegmentState(segment, selected);
+        return segment;
+    }
+
+    private void ApplyClearHistorySegmentState(Border segment, bool selected)
+    {
+        segment.Background = selected ? _surface : WpfBrushes.Transparent;
+        if (segment.Child is TextBlock label)
+        {
+            label.Foreground = selected ? _accent : _muted;
+        }
+    }
+
+    private Border DefaultPasteFormatRow()
+    {
+        return ControlRow(
+            "Default paste format",
+            "Choose how saved text is pasted.",
+            StyledDropdown(PasteFormatLabel(_settings.DefaultPasteFormat), new[] { "Plain text", "Original formatting" }, selected =>
+            {
+                var preference = string.Equals(selected, "Original formatting", StringComparison.OrdinalIgnoreCase)
+                    ? PasteFormatPreference.OriginalFormatting
+                    : PasteFormatPreference.PlainText;
+                if (preference == _settings.DefaultPasteFormat)
+                {
+                    return;
+                }
+
+                _settings.DefaultPasteFormat = preference;
+                _applyDefaultPasteFormat(preference);
+            }));
+    }
+
+    private Border ResetAllSettingsRow()
+    {
+        var button = SecondaryButton("Reset");
+        button.Click += (_, _) =>
+        {
+            var confirm = System.Windows.MessageBox.Show(
+                this,
+                "Reset all settings to their defaults? This restores startup, updates, appearance, paste format, history limit, max item size, clipboard folder, hotkeys, and privacy exclusions.",
+                "Reset settings",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+
+            if (confirm != System.Windows.MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _resetAllSettings();
+            ShowPage("General");
+        };
+
+        return ControlRow("Reset all settings", "Restore defaults for every settings section.", button);
+    }
+
+    private Border ResetDefaultsFooter()
+    {
+        var button = SecondaryButton("Reset to defaults");
+        button.Width = 128;
+        button.Height = 28;
+        button.Click += (_, _) =>
+        {
+            var confirm = System.Windows.MessageBox.Show(
+                this,
+                "Reset all settings to their defaults? This restores startup, updates, appearance, paste format, history limit, max item size, clipboard folder, hotkeys, and privacy exclusions.",
+                "Reset settings",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Question);
+            if (confirm != System.Windows.MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _resetAllSettings();
+            ShowPage("General");
+        };
+
+        var grid = new Grid { Margin = new Thickness(0, 18, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new TextBlock
+        {
+            Text = "Changes save automatically.",
+            Foreground = _muted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        Grid.SetColumn(button, 1);
+        grid.Children.Add(button);
+
+        return new Border { Child = grid };
+    }
+
+    private static string PasteFormatLabel(PasteFormatPreference preference)
+    {
+        return preference switch
+        {
+            PasteFormatPreference.OriginalFormatting => "Original formatting",
+            _ => "Plain text",
+        };
+    }
+
+    private IEnumerable<Border> HotkeyRows()
+    {
+        yield return HotkeyRow("Open Clip", "Bring up the app.", _settings.Hotkeys.OpenClip, true, value => ApplyHotkeyChange(openClip: value));
+        yield return HotkeyRow("Paste selected", "Paste selected item.", _settings.Hotkeys.PasteSelected, false, value => ApplyHotkeyChange(pasteSelected: value));
+        yield return HotkeyRow("Copy selected", "Copy selected item.", _settings.Hotkeys.CopySelected, false, value => ApplyHotkeyChange(copySelected: value));
+        yield return HotkeyRow("Pin selected", "Pin or unpin selected item.", _settings.Hotkeys.PinSelected, false, value => ApplyHotkeyChange(pinSelected: value));
+        yield return HotkeyRow("Open actions", "Open the item action menu.", _settings.Hotkeys.OpenActions, false, value => ApplyHotkeyChange(openActions: value));
+        yield return HotkeyRow("Open selected", "Open selected link, file, or image.", _settings.Hotkeys.OpenSelected, false, value => ApplyHotkeyChange(openSelected: value));
+        yield return HotkeyRow("Edit selected", "Edit selected text.", _settings.Hotkeys.EditSelected, false, value => ApplyHotkeyChange(editSelected: value));
+        yield return HotkeyRow("Save debug log", "Save a log snapshot.", _settings.Hotkeys.SaveDebugLog, true, value => ApplyHotkeyChange(saveDebugLog: value));
+        yield return HotkeyRow("Delete selected", "Delete selected item.", _settings.Hotkeys.DeleteSelected, false, value => ApplyHotkeyChange(deleteSelected: value));
+        yield return HotkeyRow("Close", "Close Clip or escape previews.", _settings.Hotkeys.CloseClip, false, value => ApplyHotkeyChange(closeClip: value));
+    }
+
+    private Border HotkeyRow(string label, string hint, string current, bool requireModifier, Action<string> apply)
+    {
+        return ControlRow(label, hint, HotkeyInput(current, requireModifier, apply));
+    }
+
+    private WpfTextBox HotkeyInput(string current, bool requireModifier, Action<string> apply)
+    {
+        var input = new WpfTextBox
+        {
+            Text = current,
+            Width = 170,
+            Height = 30,
+            Padding = new Thickness(10, 5, 10, 0),
+            Background = _surface2,
+            Foreground = _text,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            CaretBrush = _text,
+            IsReadOnly = true,
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+
+        input.GotKeyboardFocus += (_, _) => input.Text = "Type shortcut";
+        input.LostKeyboardFocus += (_, _) =>
+        {
+            if (input.Text == "Type shortcut")
+            {
+                input.Text = current;
+            }
+        };
+        input.PreviewKeyDown += (_, e) =>
+        {
+            if (!TryCreateGestureFromKeyEvent(e, requireModifier, out var gesture))
+            {
+                input.Text = requireModifier ? "Use Ctrl, Alt, Shift, or Win" : "Invalid shortcut";
+                e.Handled = true;
+                return;
+            }
+
+            input.Text = gesture.DisplayText;
+            apply(gesture.DisplayText);
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        };
+
+        return input;
+    }
+
+    private static bool TryCreateGestureFromKeyEvent(System.Windows.Input.KeyEventArgs e, bool requireModifier, out ClipHotkeyGesture gesture)
+    {
+        gesture = default;
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin or Key.None)
+        {
+            return false;
+        }
+
+        var modifiers = Keyboard.Modifiers;
+        var text = ClipHotkeyGesture.Format(modifiers, key);
+        return requireModifier ? ClipHotkeyGesture.TryParseGlobal(text, out gesture) : ClipHotkeyGesture.TryParse(text, out gesture);
+    }
+
+    private Border ResetHotkeysRow()
+    {
+        var button = SecondaryButton("Reset");
+        button.Click += (_, _) =>
+        {
+            var hotkeys = new ClipHotkeySettings();
+            hotkeys.ResetToDefaults();
+            _applyHotkeys(hotkeys);
+            ShowPage("Shortcuts");
+        };
+
+        return ControlRow("Reset hotkeys", "Restore the default shortcuts.", button);
+    }
+
+    private void ApplyHotkeyChange(string? openClip = null, string? pasteSelected = null, string? copySelected = null, string? pinSelected = null, string? openActions = null, string? openSelected = null, string? editSelected = null, string? saveDebugLog = null, string? deleteSelected = null, string? closeClip = null)
+    {
+        var hotkeys = new ClipHotkeySettings
+        {
+            OpenClip = openClip ?? _settings.Hotkeys.OpenClip,
+            PasteSelected = pasteSelected ?? _settings.Hotkeys.PasteSelected,
+            CopySelected = copySelected ?? _settings.Hotkeys.CopySelected,
+            PinSelected = pinSelected ?? _settings.Hotkeys.PinSelected,
+            OpenActions = openActions ?? _settings.Hotkeys.OpenActions,
+            OpenSelected = openSelected ?? _settings.Hotkeys.OpenSelected,
+            EditSelected = editSelected ?? _settings.Hotkeys.EditSelected,
+            SaveDebugLog = saveDebugLog ?? _settings.Hotkeys.SaveDebugLog,
+            DeleteSelected = deleteSelected ?? _settings.Hotkeys.DeleteSelected,
+            CloseClip = closeClip ?? _settings.Hotkeys.CloseClip,
+        };
+        _applyHotkeys(hotkeys);
+        _settings.Hotkeys = hotkeys;
+    }
+
+    private WpfButton StartupToggle(bool enabled)
+    {
+        return ToggleButton(enabled, next => _applyRunAtStartup(next));
+    }
+
+    private WpfButton ToggleButton(bool enabled, Action<bool> apply)
+    {
+        var trackOff = _line2;
+        var trackBorderOff = _line2;
+        var knob = new Border
+        {
+            Width = 14,
+            Height = 14,
+            CornerRadius = new CornerRadius(7),
+            Background = WpfBrushes.White,
+            HorizontalAlignment = enabled ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(3),
+        };
+        var track = new Border
+        {
+            Width = 42,
+            Height = 22,
+            CornerRadius = new CornerRadius(11),
+            Background = enabled ? _accent : trackOff,
+            BorderBrush = enabled ? _accent : trackBorderOff,
+            BorderThickness = new Thickness(1),
+            Child = knob,
+        };
+        var toggle = new WpfButton
+        {
+            Width = 46,
+            Height = 34,
+            Padding = new Thickness(0),
+            Background = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Content = track,
+            Tag = enabled,
+            Cursor = System.Windows.Input.Cursors.Hand,
+        };
+
+        toggle.Click += (_, _) =>
+        {
+            var next = toggle.Tag is not true;
+            toggle.Tag = next;
+            knob.HorizontalAlignment = next ? System.Windows.HorizontalAlignment.Right : System.Windows.HorizontalAlignment.Left;
+            track.Background = next ? _accent : trackOff;
+            track.BorderBrush = next ? _accent : trackBorderOff;
+            apply(next);
+        };
+
+        return toggle;
+    }
+
+    private Border ThemeRow()
+    {
+        return ControlRow(
+            "Theme",
+            "Choose System, Light, or Dark.",
+            StyledDropdown(_settings.Theme.ToString(), new[] { "System", "Light", "Dark" }, selected =>
+            {
+                if (!Enum.TryParse<ClipThemePreference>(selected, out var theme) || theme == _settings.Theme)
+                {
+                    return;
+                }
+
+                _applyTheme(theme);
+                RefreshTheme();
+                ShellLog.Info($"settings theme changed theme={theme}");
+            }));
+    }
+
+    private Border AppIconRow()
+    {
+        return ControlRow(
+            "App icon",
+            "Choose Light or Dark.",
+            StyledDropdown(_settings.AppIcon.ToString(), new[] { "Light", "Dark" }, selected =>
+            {
+                if (!Enum.TryParse<AppIconPreference>(selected, out var icon) || icon == _settings.AppIcon)
+                {
+                    return;
+                }
+
+                _applyAppIcon(icon);
+                ShellLog.Info($"settings app icon changed icon={icon}");
+            }));
+    }
+
+    private WpfButton StyledDropdown(string selected, IReadOnlyList<string> items, Action<string> onSelected)
+    {
+        var label = new TextBlock
+        {
+            Text = selected,
+            Foreground = _text,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var content = new Grid();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.Children.Add(label);
+        var arrow = new WpfImage
+        {
+            Source = _dropdownIcon,
+            Width = 11,
+            Height = 11,
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(arrow, 1);
+        content.Children.Add(arrow);
+
+        var button = new WpfButton
+        {
+            Width = 170,
+            Height = 30,
+            Padding = new Thickness(10, 0, 10, 0),
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+            Background = _surface2,
+            Foreground = _text,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            Content = content,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Template = SubtleSettingsButtonTemplate(),
+            FocusVisualStyle = null,
+        };
+        button.MouseEnter += (_, _) => button.Background = _accentSoft;
+        button.MouseLeave += (_, _) => button.Background = _surface2;
+
+        var optionHost = new StackPanel();
+        var popup = new Popup
+        {
+            PlacementTarget = button,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = _surface,
+                BorderBrush = _line,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(4),
+                MinWidth = 170,
+                Child = optionHost,
+            },
+        };
+
+        foreach (var item in items)
+        {
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 7, 10, 7),
+                Background = WpfBrushes.Transparent,
+                BorderBrush = WpfBrushes.Transparent,
+                BorderThickness = new Thickness(1),
+            };
+            row.Child = new TextBlock
+            {
+                Text = item,
+                Foreground = string.Equals(item, selected, StringComparison.OrdinalIgnoreCase) ? _accent : _muted,
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+            };
+            row.MouseEnter += (_, _) =>
+            {
+                row.Background = _accentSoft;
+                row.BorderBrush = _selectedBorder;
+            };
+            row.MouseLeave += (_, _) =>
+            {
+                row.Background = WpfBrushes.Transparent;
+                row.BorderBrush = WpfBrushes.Transparent;
+            };
+            row.MouseLeftButtonDown += (_, e) =>
+            {
+                popup.IsOpen = false;
+                label.Text = item;
+                onSelected(item);
+                foreach (Border optionRow in optionHost.Children)
+                {
+                    var isSelected = optionRow.Child is TextBlock text && string.Equals(text.Text, item, StringComparison.OrdinalIgnoreCase);
+                    optionRow.Background = WpfBrushes.Transparent;
+                    if (optionRow.Child is TextBlock optionText)
+                    {
+                        optionText.Foreground = isSelected ? _accent : _muted;
+                    }
+                }
+
+                e.Handled = true;
+            };
+            optionHost.Children.Add(row);
+        }
+
+        button.Click += (_, _) => popup.IsOpen = true;
+        return button;
+    }
+
+    private WpfButton SecondaryButton(string text)
+    {
+        var button = new WpfButton
+        {
+            Content = text,
+            Width = 88,
+            Height = 30,
+            Padding = new Thickness(12, 0, 12, 0),
+            Background = _surface2,
+            Foreground = _text,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Template = SubtleSettingsButtonTemplate(),
+            FocusVisualStyle = null,
+        };
+        button.MouseEnter += (_, _) => button.Background = _accentSoft;
+        button.MouseLeave += (_, _) => button.Background = _surface2;
+        return button;
+    }
+
+    private Border ControlRow(string label, string hint, FrameworkElement control, double minHeight = 58)
+    {
+        var grid = new Grid { MinHeight = minHeight };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = _text,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+        });
+        textPanel.Children.Add(new TextBlock
+        {
+            Text = hint,
+            Foreground = _muted,
+            FontSize = 12,
+            Margin = new Thickness(0, 3, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        grid.Children.Add(textPanel);
+        Grid.SetColumn(control, 2);
+        control.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(control);
+
+        return new Border
+        {
+            Child = grid,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    private Border ActionOverDetailRow(string label, string detail, FrameworkElement actions, double minHeight)
+    {
+        var grid = new Grid { MinHeight = minHeight };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        grid.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = _text,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 12, 16, 0),
+        });
+
+        Grid.SetColumn(actions, 1);
+        actions.Margin = new Thickness(0, 9, 0, 0);
+        actions.VerticalAlignment = VerticalAlignment.Top;
+        grid.Children.Add(actions);
+
+        var detailText = new TextBlock
+        {
+            Text = detail,
+            Foreground = _muted,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 16, 12),
+        };
+        Grid.SetRow(detailText, 1);
+        Grid.SetColumnSpan(detailText, 2);
+        grid.Children.Add(detailText);
+
+        return new Border
+        {
+            Child = grid,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
         };
     }
 
@@ -2678,7 +7141,7 @@ internal sealed class MenuAction
 {
     public static readonly MenuAction Separator = new("", static () => { }, isSeparator: true);
 
-    public MenuAction(string label, Action invoke, bool enabled = true, bool danger = false, bool isSeparator = false, string shortcut = "")
+    public MenuAction(string label, Action invoke, bool enabled = true, bool danger = false, bool isSeparator = false, string shortcut = "", IReadOnlyList<MenuAction>? children = null)
     {
         Label = label;
         Invoke = invoke;
@@ -2686,7 +7149,10 @@ internal sealed class MenuAction
         Danger = danger;
         IsSeparator = isSeparator;
         Shortcut = shortcut;
+        Children = children ?? [];
     }
+
+    public static MenuAction Submenu(string label, IReadOnlyList<MenuAction> children) => new(label, static () => { }, children: children);
 
     public string Label { get; }
     public Action Invoke { get; }
@@ -2694,6 +7160,7 @@ internal sealed class MenuAction
     public bool Danger { get; }
     public bool IsSeparator { get; }
     public string Shortcut { get; }
+    public IReadOnlyList<MenuAction> Children { get; }
 }
 
 internal static class ShellLog
@@ -2716,12 +7183,154 @@ internal static class ShellLog
     }
 }
 
+internal sealed class RenameWindow : Window
+{
+    private readonly WpfTextBox _box = new();
+    public string Value => _box.Text;
+
+    public RenameWindow(string value, WpfBrush background, WpfBrush foreground, WpfBrush muted, WpfBrush line, WpfBrush surface, WpfBrush accentSoft, WpfBrush selected, WpfBrush selectedBorder)
+    {
+        Title = "Rename";
+        Width = 420;
+        Height = 190;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = background;
+        Foreground = foreground;
+        ShowInTaskbar = false;
+        SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
+
+        _box.Text = value;
+        _box.FocusVisualStyle = null;
+        _box.Margin = new Thickness(0);
+        _box.Padding = new Thickness(12, 8, 12, 8);
+        _box.Background = WpfBrushes.Transparent;
+        _box.Foreground = foreground;
+        _box.BorderThickness = new Thickness(0);
+        _box.FontSize = 13;
+        _box.SelectionBrush = accentSoft;
+        _box.MaxLength = 120;
+        _box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                DialogResult = true;
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                DialogResult = false;
+                e.Handled = true;
+            }
+        };
+
+        var fieldBackground = surface;
+        var primaryBackground = accentSoft;
+        var primaryBorder = selectedBorder;
+        var hoverBackground = selected;
+
+        var grid = new Grid { Background = background };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = "Rename",
+            Foreground = foreground,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(18, 16, 18, 2),
+        };
+        grid.Children.Add(title);
+
+        var hint = new TextBlock
+        {
+            Text = "Leave blank to use the original title.",
+            Foreground = muted,
+            FontSize = 12,
+            Margin = new Thickness(18, 0, 18, 12),
+        };
+        Grid.SetRow(hint, 1);
+        grid.Children.Add(hint);
+
+        var body = new StackPanel { Margin = new Thickness(18, 0, 18, 18) };
+        var boxShell = new Border
+        {
+            Background = fieldBackground,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Child = _box,
+        };
+        body.Children.Add(boxShell);
+
+        var buttons = new StackPanel { Orientation = WpfOrientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        var cancel = ModalButton("Cancel", foreground, line, fieldBackground, primaryBackground, primaryBorder, hoverBackground, false);
+        cancel.Margin = new Thickness(0, 0, 8, 0);
+        var save = ModalButton("Save", foreground, line, fieldBackground, primaryBackground, primaryBorder, hoverBackground, true);
+        cancel.Click += (_, _) => DialogResult = false;
+        save.Click += (_, _) => DialogResult = true;
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        body.Children.Add(buttons);
+
+        Grid.SetRow(body, 2);
+        grid.Children.Add(body);
+        Content = grid;
+
+        Loaded += (_, _) =>
+        {
+            _box.Focus();
+            _box.SelectAll();
+        };
+    }
+
+    private static bool IsLightBrush(WpfBrush brush) => MainWindow.IsLightBackground(brush);
+
+    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush fieldBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
+    {
+        var idleBackground = primary ? primaryBackground : fieldBackground;
+        var idleBorder = primary ? primaryBorder : line;
+        var hoverBg = primary ? hoverBackground : primaryBackground;
+        var button = new WpfButton
+        {
+            Content = text,
+            Height = 32,
+            MinWidth = primary ? 74 : 68,
+            Padding = new Thickness(14, 0, 14, 0),
+            Background = idleBackground,
+            BorderBrush = idleBorder,
+            BorderThickness = new Thickness(1),
+            Foreground = foreground,
+            FontSize = 12,
+            FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FocusVisualStyle = null,
+        };
+        button.Template = (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+""");
+        button.MouseEnter += (_, _) => { button.Background = hoverBg; button.BorderBrush = primaryBorder; };
+        button.MouseLeave += (_, _) => { button.Background = idleBackground; button.BorderBrush = idleBorder; };
+        return button;
+    }
+}
+
 internal sealed class TextEditWindow : Window
 {
     private readonly System.Windows.Controls.TextBox _box = new();
     public string Value => _box.Text;
 
-    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line)
+    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder)
     {
         Title = "Edit Text";
         Width = 640;
@@ -2733,6 +7342,14 @@ internal sealed class TextEditWindow : Window
         Foreground = foreground;
         ShowInTaskbar = false;
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
+
+        var editorBackground = surface;
+        var primaryBackground = accentSoft;
+        var primaryBorder = selectedBorder;
+        var secondaryBackground = surface;
+        var selectionBrush = accentSoft;
+        var hoverBackground = selected;
+
         _box.Text = value;
         _box.TextWrapping = TextWrapping.Wrap;
         _box.AcceptsReturn = true;
@@ -2746,7 +7363,7 @@ internal sealed class TextEditWindow : Window
         _box.BorderThickness = new Thickness(0);
         _box.FontFamily = new System.Windows.Media.FontFamily("JetBrains Mono, Cascadia Mono, Consolas");
         _box.FontSize = 13;
-        _box.SelectionBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x50, 0x79, 0x88));
+        _box.SelectionBrush = selectionBrush;
 
         var grid = new Grid { Background = background };
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(60) });
@@ -2764,7 +7381,7 @@ internal sealed class TextEditWindow : Window
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
         });
-        var trim = ModalButton("Trim", foreground, line, false);
+        var trim = ModalButton("Trim", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, false);
         trim.Margin = new Thickness(0, 0, 8, 0);
         trim.Click += (_, _) => _box.Text = _box.Text.Trim();
         Grid.SetColumn(trim, 1);
@@ -2773,7 +7390,7 @@ internal sealed class TextEditWindow : Window
 
         var editorShell = new Border
         {
-            Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x24, 0x23, 0x24)),
+            Background = editorBackground,
             BorderBrush = line,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
@@ -2784,9 +7401,9 @@ internal sealed class TextEditWindow : Window
         grid.Children.Add(editorShell);
 
         var buttons = new StackPanel { Orientation = WpfOrientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(18, 14, 18, 18) };
-        var cancel = ModalButton("Cancel", foreground, line, false);
+        var cancel = ModalButton("Cancel", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, false);
         cancel.Margin = new Thickness(0, 0, 8, 0);
-        var save = ModalButton("Save", foreground, line, true);
+        var save = ModalButton("Save", foreground, line, secondaryBackground, primaryBackground, primaryBorder, hoverBackground, true);
         cancel.Click += (_, _) => DialogResult = false;
         save.Click += (_, _) => DialogResult = true;
         buttons.Children.Add(cancel);
@@ -2797,37 +7414,48 @@ internal sealed class TextEditWindow : Window
         Content = grid;
     }
 
-    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, bool primary)
+    private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush secondaryBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
     {
+        var idleBackground = primary ? primaryBackground : secondaryBackground;
+        var idleBorder = primary ? primaryBorder : line;
+        var hoverBg = primary ? hoverBackground : primaryBackground;
         var button = new WpfButton
         {
             Content = text,
             Height = 32,
             MinWidth = primary ? 74 : 68,
             Padding = new Thickness(14, 0, 14, 0),
-            Background = primary
-                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x26, 0x39, 0x41))
-                : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x24, 0x23, 0x24)),
-            BorderBrush = primary
-                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x56, 0x82, 0x8E))
-                : line,
+            Background = idleBackground,
+            BorderBrush = idleBorder,
             BorderThickness = new Thickness(1),
             Foreground = foreground,
             FontSize = 12,
             FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FocusVisualStyle = null,
         };
         button.Template = (ControlTemplate)XamlReader.Parse("""
 <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
   </Border>
   <ControlTemplate.Triggers>
-    <Trigger Property="IsMouseOver" Value="True">
-      <Setter TargetName="Root" Property="Opacity" Value="0.88"/>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
     </Trigger>
   </ControlTemplate.Triggers>
 </ControlTemplate>
 """);
+        button.MouseEnter += (_, _) =>
+        {
+            button.Background = hoverBg;
+            button.BorderBrush = primaryBorder;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = idleBackground;
+            button.BorderBrush = idleBorder;
+        };
         return button;
     }
 }

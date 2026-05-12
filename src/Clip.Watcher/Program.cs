@@ -558,10 +558,38 @@ internal sealed class ClipboardWatcherForm : Form
     {
         try
         {
-            if (Clipboard.ContainsText())
+            if (Clipboard.ContainsFileDropList())
+            {
+                var files = Clipboard.GetFileDropList().Cast<string>().ToList();
+                if (files.Count > 0)
+                {
+                    _store.AddOrUpdate(new ClipboardHistoryItem
+                    {
+                        Kind = ClipboardItemKind.Files,
+                        FilePaths = files,
+                        Preview = string.Join(", ", files.Select(Path.GetFileName)),
+                        ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
+                        SourceApplication = SourceName(),
+                        SourceApplicationPath = SourcePath(),
+                    });
+                }
+            }
+            else if (Clipboard.ContainsText())
             {
                 var text = Clipboard.GetText();
-                if (!string.IsNullOrWhiteSpace(text))
+                if (ClipboardPathText.TryParseExistingFilePaths(text, out var paths))
+                {
+                    _store.AddOrUpdate(new ClipboardHistoryItem
+                    {
+                        Kind = ClipboardItemKind.Files,
+                        FilePaths = paths,
+                        Preview = paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files",
+                        ContentHash = HashText(string.Join("|", paths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
+                        SourceApplication = SourceName(),
+                        SourceApplicationPath = SourcePath(),
+                    });
+                }
+                else if (!string.IsNullOrWhiteSpace(text))
                 {
                     _store.AddOrUpdate(new ClipboardHistoryItem
                     {
@@ -592,22 +620,6 @@ internal sealed class ClipboardWatcherForm : Form
                     SourceApplication = SourceName(),
                     SourceApplicationPath = SourcePath(),
                 });
-            }
-            else if (Clipboard.ContainsFileDropList())
-            {
-                var files = Clipboard.GetFileDropList().Cast<string>().ToList();
-                if (files.Count > 0)
-                {
-                    _store.AddOrUpdate(new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Files,
-                        FilePaths = files,
-                        Preview = string.Join(", ", files.Select(Path.GetFileName)),
-                        ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
-                        SourceApplication = SourceName(),
-                        SourceApplicationPath = SourcePath(),
-                    });
-                }
             }
         }
         catch
@@ -2043,6 +2055,11 @@ internal sealed class ClipboardPaletteForm : Form
 
     private static string PreviewHeaderTitle(ClipboardHistoryItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.CustomTitle))
+        {
+            return item.CustomTitle;
+        }
+
         return item.Kind switch
         {
             ClipboardItemKind.Link => "Link",
@@ -3037,6 +3054,15 @@ internal sealed class ClipboardPaletteForm : Form
             return DrawFileIcon();
         }
 
+        if (ShouldUseWindowsFileIcon(extension))
+        {
+            var windowsIcon = ShellIconReader.TryGetIcon(path, large: iconSize >= 48);
+            if (windowsIcon is not null)
+            {
+                return windowsIcon;
+            }
+        }
+
         var fileName = $"file-icon-{extension}.svg";
         var iconPath = AssetIconPath(fileName);
         if (File.Exists(iconPath))
@@ -3045,6 +3071,11 @@ internal sealed class ClipboardPaletteForm : Form
         }
 
         return DrawGeneratedFileIcon(extension, iconSize);
+    }
+
+    private static bool ShouldUseWindowsFileIcon(string extension)
+    {
+        return extension is "doc" or "docx" or "xls" or "xlsx" or "xlsm" or "ppt" or "pptx" or "vsd" or "vsdx" or "pdf";
     }
 
     private static string AssetIconPath(string fileName)
@@ -3131,6 +3162,11 @@ internal sealed class ClipboardPaletteForm : Form
 
     private static string TitleFor(ClipboardHistoryItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.CustomTitle))
+        {
+            return item.CustomTitle;
+        }
+
         return item.Kind switch
         {
             ClipboardItemKind.Image => item.Preview,
@@ -6049,7 +6085,7 @@ internal static class StaticDocumentPreviewRenderer
 
 internal static class PdfPreviewRenderer
 {
-    public static bool TryRenderFirstPage(string path, out Image image)
+    public static bool TryRenderFirstPage(string path, out Image image, int dpi = 120)
     {
         image = new Bitmap(1, 1);
         try
@@ -6064,7 +6100,8 @@ internal static class PdfPreviewRenderer
 
             var cacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip", "pdf-previews");
             Directory.CreateDirectory(cacheRoot);
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length)));
+            dpi = Math.Clamp(dpi, 72, 400);
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length + "|" + dpi)));
             var outputPrefix = Path.Combine(cacheRoot, fingerprint);
             var outputFile = outputPrefix + ".png";
             if (!File.Exists(outputFile))
@@ -6083,7 +6120,7 @@ internal static class PdfPreviewRenderer
                     args.Add("-singlefile");
                     args.Add("-png");
                     args.Add("-r");
-                    args.Add("120");
+                    args.Add(dpi.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     args.Add(path);
                     args.Add(outputPrefix);
                 }));
