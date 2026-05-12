@@ -3974,7 +3974,9 @@ public partial class MainWindow : Window
             return item.ImageWidth is not null && item.ImageHeight is not null ? "Screenshot" : "Image";
         }
 
-        return item.SourceApplication ?? item.Kind.ToString();
+        return DisplaySourceName(item.SourceApplication) is { Length: > 0 } source && source != "Unknown"
+            ? source
+            : item.Kind.ToString();
     }
 
     private static string HeaderSubtitleFor(ClipboardHistoryItem item)
