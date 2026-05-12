@@ -1,9 +1,20 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
+    [string]$Version = "",
     [switch]$NoZip,
     [switch]$NoInstaller
 )
+
+if (-not $Version) {
+    $tag = $env:GITHUB_REF_NAME
+    if ($tag -match '^v?(\d+\.\d+\.\d+)') {
+        $Version = $Matches[1]
+    } else {
+        $Version = "1.0.0"
+    }
+}
+Write-Output "Building Clip $Version"
 
 $ErrorActionPreference = "Stop"
 
@@ -23,6 +34,10 @@ dotnet publish (Join-Path $root "src\Clip.Shell\Clip.Shell.csproj") `
     --self-contained true `
     -p:PublishSingleFile=false `
     -p:PublishReadyToRun=false `
+    -p:Version=$Version `
+    -p:AssemblyVersion=$Version `
+    -p:FileVersion=$Version `
+    -p:InformationalVersion=$Version `
     -o $publishDir
 
 # AssemblyName=Clip in Clip.Shell.csproj, so publish already produces Clip.exe + Clip.dll.
@@ -56,7 +71,7 @@ if (-not $NoInstaller) {
     }
     else {
         $issPath = Join-Path $root "installer\Clip.iss"
-        & $iscc $issPath | Out-Host
+        & $iscc "/DMyAppVersion=$Version" $issPath | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup compile failed (exit $LASTEXITCODE)."
         }

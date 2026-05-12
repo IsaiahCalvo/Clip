@@ -5,7 +5,9 @@
 ; %LOCALAPPDATA%\Clip on first run.
 
 #define MyAppName "Clip"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Isaiah Calvo"
 #define MyAppURL "https://github.com/IsaiahCalvo/Clip"
 #define MyAppExeName "Clip.exe"
@@ -36,7 +38,7 @@ SetupIconFile=..\assets\app-icons\clip-tile-light.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 CloseApplications=force
-RestartApplications=no
+RestartApplications=yes
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
