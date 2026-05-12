@@ -11,6 +11,11 @@
         Background="#1F1E1F"
         AllowsTransparency="False"
         Topmost="True"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        TextOptions.TextHintingMode="Fixed"
         Deactivated="OnDeactivated"
         KeyDown="OnWindowKeyDown">
     <Window.Resources>
@@ -65,11 +70,12 @@
 
         <Style x:Key="CleanTextBox" TargetType="TextBox">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Text}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
-            <Setter Property="CaretBrush" Value="{StaticResource Accent}"/>
-            <Setter Property="SelectionBrush" Value="#507988"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource Accent}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+            <Setter Property="SelectionOpacity" Value="0.7"/>
         </Style>
 
         <Style x:Key="FilterButton" TargetType="Button">
@@ -77,10 +83,11 @@
             <Setter Property="Padding" Value="10,0"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -89,7 +96,13 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{StaticResource Surface3}"/>
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoft}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
+                                <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
+                                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -100,12 +113,13 @@
         <Style x:Key="MiniButton" TargetType="Button">
             <Setter Property="Height" Value="26"/>
             <Setter Property="Padding" Value="12,0"/>
-            <Setter Property="BorderBrush" Value="{StaticResource SelectedBorder}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource SelectedBorder}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Background" Value="{StaticResource AccentSoft}"/>
-            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="Background" Value="{DynamicResource AccentSoft}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Text}"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -118,7 +132,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#31484F"/>
+                                <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
+                                <Setter TargetName="Root" Property="Opacity" Value="0.9"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -130,11 +148,11 @@
             <Setter Property="Width" Value="28"/>
             <Setter Property="Height" Value="28"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Foreground" Value="{StaticResource Muted2}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Muted2}"/>
         </Style>
 
         <Style x:Key="HotkeyText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource Muted2}"/>
+            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -145,7 +163,11 @@
     <Border x:Name="Shell"
             CornerRadius="14"
             Background="{StaticResource Bg}"
+            UseLayoutRounding="True"
             SnapsToDevicePixels="True"
+            TextOptions.TextFormattingMode="Display"
+            TextOptions.TextRenderingMode="ClearType"
+            TextOptions.TextHintingMode="Fixed"
             ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>
@@ -331,34 +353,25 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
                         <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
                             <TextBlock Text="Enter" Style="{StaticResource HotkeyText}"/>
                         </Border>
-                        <TextBlock Text="Paste" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                        <TextBlock Text="Paste" Foreground="{DynamicResource Muted}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" Margin="7,0,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
                         <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
                             <TextBlock Text="Ctrl+C" Style="{StaticResource HotkeyText}"/>
                         </Border>
-                        <TextBlock Text="Copy" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                        <TextBlock Text="Copy" Foreground="{DynamicResource Muted}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" Margin="7,0,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
                             <TextBlock Text="Ctrl+P" Style="{StaticResource HotkeyText}"/>
                         </Border>
-                        <TextBlock Text="Pin" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
+                        <TextBlock Text="Pin" Foreground="{DynamicResource Muted}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" Margin="7,0,0,0"/>
                     </StackPanel>
-                    <Button Grid.Column="4" Style="{StaticResource FilterButton}" Foreground="{StaticResource Muted}" Click="OnActionsClick">
-                        <StackPanel Orientation="Horizontal">
-                            <Border BorderBrush="{StaticResource Line2}" BorderThickness="1" CornerRadius="4" Padding="7,2" Background="{StaticResource Surface}">
-                                <TextBlock Text="Ctrl+K" Style="{StaticResource HotkeyText}"/>
-                            </Border>
-                            <TextBlock Text="Actions" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="7,0,0,0"/>
-                        </StackPanel>
-                    </Button>
                 </Grid>
             </Border>
 

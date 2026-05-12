@@ -61,7 +61,9 @@ public partial class App : System.Windows.Application
 
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("Open Clip", null, (_, _) => _window.ShowPalette());
+        menu.Items.Add("Paste latest item", null, (_, _) => _window.PasteLatestFromTray());
         menu.Items.Add("Save log snapshot", null, (_, _) => _window.WriteDebugSnapshot("tray"));
+        menu.Items.Add("Settings", null, (_, _) => _window.OpenSettingsFromTray());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
         _tray.ContextMenuStrip = menu;
 

@@ -15,6 +15,7 @@ It runs locally, opens with `Alt+V`, and keeps clipboard history on your own dev
 - Color swatches for copied hex colors.
 - Source app metadata and item information panel.
 - Local debug logs with `Ctrl+Shift+L`.
+- Public settings for theme, startup, updates, history limits, storage, hotkeys, paste format, and excluded apps.
 
 ## Requirements
 
@@ -73,7 +74,7 @@ Clip stores clipboard history locally under:
 %LOCALAPPDATA%\Clip\Clipboard History
 ```
 
-App settings and logs are stored under `%LOCALAPPDATA%\Clip`. Review `PRIVACY.md` before sharing logs or local app data.
+App settings, update state, app cache data, and logs are stored under `%LOCALAPPDATA%\Clip`. Review `PRIVACY.md` before sharing logs or local app data.
 
 ## Development
 

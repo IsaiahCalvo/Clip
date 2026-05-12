@@ -118,8 +118,18 @@ $source = '{{PowerShellString(extractFolder)}}'
 $target = '{{PowerShellString(installDirectory)}}'
 $pidToWait = {{processId}}
 Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue
+Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item -Path (Join-Path $source '*') -Destination $target -Recurse -Force
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+        Copy-Item -Path (Join-Path $source '*') -Destination $target -Recurse -Force
+        break
+    } catch {
+        if ($attempt -eq 3) { throw }
+        Start-Sleep -Milliseconds 750
+    }
+}
 Start-Process -FilePath (Join-Path $target 'Clip.exe')
 """;
             File.WriteAllText(scriptPath, script);
