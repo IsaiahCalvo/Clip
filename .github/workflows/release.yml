@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist, e.g. v1.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build portable app + installer
+        shell: pwsh
+        run: ./Publish-Clip.ps1
+
+      - name: Verify artifacts exist
+        shell: pwsh
+        run: |
+          $zip = "artifacts/publish/Clip-win-x64.zip"
+          $setup = "artifacts/publish/Clip-Setup.exe"
+          if (-not (Test-Path $zip))   { throw "Missing $zip" }
+          if (-not (Test-Path $setup)) { throw "Missing $setup" }
+          Get-Item $zip, $setup | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
+
+      # ── SignPath code signing (enable once your free OSS subscription is approved) ──
+      # 1. SignPath emails you: Organization ID, Project Slug, Signing Policy Slug, and an API token.
+      # 2. Add the API token as a GitHub Actions secret named SIGNPATH_API_TOKEN.
+      # 3. Fill in the env values below and uncomment this whole block.
+      #
+      # - name: Upload unsigned artifacts for SignPath
+      #   id: upload-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: clip-unsigned
+      #     path: |
+      #       artifacts/publish/Clip-Setup.exe
+      #       artifacts/publish/Clip-win-x64.zip
+      #
+      # - name: Submit to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: REPLACE_WITH_SIGNPATH_ORG_ID
+      #     project-slug: clip
+      #     signing-policy-slug: release-signing
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: artifacts/publish-signed
+      #
+      # - name: Replace local artifacts with signed copies
+      #   shell: pwsh
+      #   run: |
+      #     Copy-Item artifacts/publish-signed/Clip-Setup.exe artifacts/publish/Clip-Setup.exe -Force
+      #     Copy-Item artifacts/publish-signed/Clip-win-x64.zip artifacts/publish/Clip-win-x64.zip -Force
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: Clip ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/publish/Clip-Setup.exe
+            artifacts/publish/Clip-win-x64.zip
