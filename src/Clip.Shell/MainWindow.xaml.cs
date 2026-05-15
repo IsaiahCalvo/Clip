@@ -750,6 +750,7 @@ public partial class MainWindow : Window
     private int _previewToken;
     private bool _suppressDeactivate;
     private bool _updateCheckInProgress;
+    private string? _promptedUpdateVersion;
     private bool _itemsDirtySinceRender = true;
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
@@ -769,6 +770,7 @@ public partial class MainWindow : Window
     private string? _currentPreviewPdfPath;
     private ClipUpdateStatus _lastUpdateStatus = ClipUpdateStatus.NotChecked(ClipUpdateService.CurrentVersion);
     public bool KeepOpenForDebug { get; set; }
+    internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
 
@@ -919,6 +921,24 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(() => LoadItems(selectFirst: _selected is null, reason: "show-refresh"), System.Windows.Threading.DispatcherPriority.Background);
         }
+
+        PromptForKnownUpdate();
+    }
+
+    public void CheckForUpdatesFromTray()
+    {
+        _ = CheckForUpdatesAsync(showToastWhenCurrent: true, promptIfAvailable: true);
+    }
+
+    public void InstallKnownUpdateFromTray()
+    {
+        if (IsUpdateAvailable(_lastUpdateStatus))
+        {
+            _ = InstallUpdateAsync(_lastUpdateStatus);
+            return;
+        }
+
+        CheckForUpdatesFromTray();
     }
 
     private void ConcealPalette(string reason)
@@ -3331,7 +3351,7 @@ public partial class MainWindow : Window
         _ = CheckForUpdatesAsync(showToastWhenCurrent: true, updateStatus);
     }
 
-    private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null)
+    private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null, bool promptIfAvailable = false)
     {
         if (_updateCheckInProgress)
         {
@@ -3344,7 +3364,7 @@ public partial class MainWindow : Window
         {
             ShellLog.Info("update check started");
             var status = await _updates.CheckAsync();
-            await Dispatcher.InvokeAsync(async () =>
+            await Dispatcher.InvokeAsync(() =>
             {
                 _lastUpdateStatus = status;
                 updateStatus?.Invoke(status);
@@ -3353,9 +3373,9 @@ public partial class MainWindow : Window
                 if (status.State == "Update available")
                 {
                     ShowToast(status.Message);
-                    if (_settings.InstallUpdatesAutomatically)
+                    if (promptIfAvailable)
                     {
-                        await InstallUpdateAsync(status);
+                        PromptForKnownUpdate();
                     }
                 }
                 else if (showToastWhenCurrent)
@@ -3369,6 +3389,41 @@ public partial class MainWindow : Window
             _updateCheckInProgress = false;
         }
     }
+
+    private void PromptForKnownUpdate()
+    {
+        if (!IsUpdateAvailable(_lastUpdateStatus))
+        {
+            return;
+        }
+
+        var version = _lastUpdateStatus.LatestVersion ?? "latest";
+        if (string.Equals(_promptedUpdateVersion, version, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (Opacity == 0 || !IsHitTestVisible)
+        {
+            ShowPalette();
+            return;
+        }
+
+        _promptedUpdateVersion = version;
+        var result = System.Windows.MessageBox.Show(
+            this,
+            $"Clip {version} is available. Install it now?",
+            "Update available",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+        if (result == MessageBoxResult.Yes)
+        {
+            _ = InstallUpdateAsync(_lastUpdateStatus);
+        }
+    }
+
+    private static bool IsUpdateAvailable(ClipUpdateStatus status) =>
+        status.State == "Update available" && !string.IsNullOrWhiteSpace(status.DownloadUrl);
 
     private async Task InstallUpdateAsync(ClipUpdateStatus status)
     {
@@ -5816,7 +5871,6 @@ internal sealed class SettingsWindow : Window
         {
             panel.Children.Add(StartupRow());
             panel.Children.Add(UpdateCheckRow());
-            panel.Children.Add(AutoInstallUpdatesRow());
             panel.Children.Add(DefaultPasteFormatRow());
         }
 
@@ -5866,7 +5920,7 @@ internal sealed class SettingsWindow : Window
         {
             panel.Children.Add(Row("Version", ClipUpdateService.CurrentVersion));
             panel.Children.Add(Row("Updates", _settings.CheckForUpdatesOnStartup
-                ? (_settings.InstallUpdatesAutomatically ? "Checks and installs automatically" : "Checks automatically")
+                ? "Checks automatically"
                 : "Manual checks only"));
             panel.Children.Add(Row("Data folder", _settings.EffectiveClipboardFolderPath()));
             panel.Children.Add(Row("Update status", _updateStatus.Message));
@@ -6377,17 +6431,6 @@ internal sealed class SettingsWindow : Window
         });
 
         return ControlRow("Check for updates", "Look for new Clip releases when the app opens and while it runs.", toggle);
-    }
-
-    private Border AutoInstallUpdatesRow()
-    {
-        var toggle = ToggleButton(_settings.InstallUpdatesAutomatically, next =>
-        {
-            _settings.InstallUpdatesAutomatically = next;
-            _applyUpdateSettings(_settings.CheckForUpdatesOnStartup, _settings.InstallUpdatesAutomatically);
-        });
-
-        return ControlRow("Install updates automatically", "Download and open the installer when an update is available.", toggle);
     }
 
     private Border HistoryLimitRow()

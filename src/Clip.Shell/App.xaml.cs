@@ -7,6 +7,7 @@ public partial class App : System.Windows.Application
 {
     private MainWindow? _window;
     private System.Windows.Forms.NotifyIcon? _tray;
+    private System.Windows.Forms.ToolStripMenuItem? _updateMenuItem;
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
 
@@ -62,6 +63,20 @@ public partial class App : System.Windows.Application
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("Open Clip", null, (_, _) => _window.ShowPalette());
         menu.Items.Add("Paste latest item", null, (_, _) => _window.PasteLatestFromTray());
+        _updateMenuItem = new System.Windows.Forms.ToolStripMenuItem("Check for updates");
+        _updateMenuItem.Click += (_, _) =>
+        {
+            if (_window.LastUpdateStatus.State == "Update available" && !string.IsNullOrWhiteSpace(_window.LastUpdateStatus.DownloadUrl))
+            {
+                _window.InstallKnownUpdateFromTray();
+            }
+            else
+            {
+                _window.CheckForUpdatesFromTray();
+            }
+        };
+        menu.Opening += (_, _) => UpdateTrayUpdateItem();
+        menu.Items.Add(_updateMenuItem);
         menu.Items.Add("Save log snapshot", null, (_, _) => _window.WriteDebugSnapshot("tray"));
         menu.Items.Add("Settings", null, (_, _) => _window.OpenSettingsFromTray());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
@@ -104,5 +119,23 @@ public partial class App : System.Windows.Application
         }
 
         return System.Drawing.SystemIcons.Application;
+    }
+
+    private void UpdateTrayUpdateItem()
+    {
+        if (_window is null || _updateMenuItem is null)
+        {
+            return;
+        }
+
+        var status = _window.LastUpdateStatus;
+        if (status.State == "Update available" && !string.IsNullOrWhiteSpace(status.DownloadUrl))
+        {
+            _updateMenuItem.Text = $"Install latest update ({status.LatestVersion ?? "new version"} available)";
+        }
+        else
+        {
+            _updateMenuItem.Text = "Check for updates";
+        }
     }
 }
