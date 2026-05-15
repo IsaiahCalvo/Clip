@@ -2413,7 +2413,7 @@ public partial class MainWindow : Window
 
     private void EditText(ClipboardHistoryItem item)
     {
-        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
+        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("TextCursor"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
@@ -3532,6 +3532,7 @@ public partial class MainWindow : Window
         SetBrush("Muted2", useDark ? "#BBBBBB" : "#474747");
         SetBrush("Muted3", useDark ? "#777777" : "#6A6A6A");
         SetBrush("Accent", useDark ? "#8A9CCC" : "#3B5BDB");
+        SetBrush("TextCursor", useDark ? "#63D8FF" : "#005BFF");
         SetBrush("AccentSoft", useDark ? "#232A45" : "#E1E7FB");
         SetBrush("Selected", useDark ? "#324068" : "#C9D3F5");
         SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
@@ -3539,7 +3540,7 @@ public partial class MainWindow : Window
         Background = (WpfBrush)FindResource("Bg");
         HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
-        TextPreview.CaretBrush = (WpfBrush)FindResource("Accent");
+        TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
         if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
         if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
         RefreshChromeIcons();
@@ -7362,7 +7363,7 @@ internal sealed class TextEditWindow : Window
     private readonly System.Windows.Controls.TextBox _box = new();
     public string Value => _box.Text;
 
-    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder)
+    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush textCursor, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder)
     {
         Title = "Edit Text";
         Width = 640;
@@ -7373,6 +7374,11 @@ internal sealed class TextEditWindow : Window
         Background = background;
         Foreground = foreground;
         ShowInTaskbar = false;
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        TextOptions.SetTextHintingMode(this, TextHintingMode.Fixed);
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
 
         var editorBackground = surface;
@@ -7386,6 +7392,10 @@ internal sealed class TextEditWindow : Window
         _box.TextWrapping = TextWrapping.Wrap;
         _box.AcceptsReturn = true;
         _box.FocusVisualStyle = null;
+        _box.SnapsToDevicePixels = true;
+        TextOptions.SetTextFormattingMode(_box, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(_box, TextRenderingMode.ClearType);
+        TextOptions.SetTextHintingMode(_box, TextHintingMode.Fixed);
         _box.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
         _box.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         _box.Margin = new Thickness(0);
@@ -7395,6 +7405,7 @@ internal sealed class TextEditWindow : Window
         _box.BorderThickness = new Thickness(0);
         _box.FontFamily = new System.Windows.Media.FontFamily("JetBrains Mono, Cascadia Mono, Consolas");
         _box.FontSize = 13;
+        _box.CaretBrush = textCursor;
         _box.SelectionBrush = selectionBrush;
 
         var grid = new Grid { Background = background };

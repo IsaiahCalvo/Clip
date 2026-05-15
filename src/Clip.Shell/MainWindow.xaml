@@ -30,6 +30,7 @@
         <SolidColorBrush x:Key="Muted2" Color="#C7C1C7"/>
         <SolidColorBrush x:Key="Muted3" Color="#6B656B"/>
         <SolidColorBrush x:Key="Accent" Color="#8FC8D9"/>
+        <SolidColorBrush x:Key="TextCursor" Color="#63D8FF"/>
         <SolidColorBrush x:Key="AccentSoft" Color="#263941"/>
         <SolidColorBrush x:Key="Selected" Color="#27363B"/>
         <SolidColorBrush x:Key="SelectedBorder" Color="#56828E"/>
@@ -73,7 +74,7 @@
             <Setter Property="Foreground" Value="{DynamicResource Text}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
-            <Setter Property="CaretBrush" Value="{DynamicResource Accent}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource TextCursor}"/>
             <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
             <Setter Property="SelectionOpacity" Value="0.7"/>
         </Style>
