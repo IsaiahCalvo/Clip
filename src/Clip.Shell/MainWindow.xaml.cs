@@ -734,6 +734,7 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
     private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly System.Windows.Threading.DispatcherTimer _clipboardSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
+    private readonly System.Windows.Threading.DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(4) };
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
     private ClipboardHistoryItem? _pendingTextClipboardItem;
@@ -748,6 +749,7 @@ public partial class MainWindow : Window
     private string _fileFilter = "all";
     private int _previewToken;
     private bool _suppressDeactivate;
+    private bool _updateCheckInProgress;
     private bool _itemsDirtySinceRender = true;
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
@@ -809,6 +811,7 @@ public partial class MainWindow : Window
             _clipboardSettleTimer.Stop();
             SavePendingTextClipboardItem();
         };
+        _updateCheckTimer.Tick += (_, _) => _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
     }
 
     public void InitializeShell()
@@ -847,6 +850,7 @@ public partial class MainWindow : Window
             {
                 _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
             }
+            ApplyUpdateCheckSchedule();
 
             OpenWithWindow.WarmCacheAsync();
             ClipboardSharePayload.CleanupStaleTemporaryFiles();
@@ -856,6 +860,7 @@ public partial class MainWindow : Window
         {
             var hwnd = new WindowInteropHelper(this).Handle;
             _hotkeyRetryTimer.Stop();
+            _updateCheckTimer.Stop();
             if (_openHotkeyRegistered)
             {
                 var released = UnregisterHotKey(hwnd, OpenHotkeyId);
@@ -3302,8 +3307,23 @@ public partial class MainWindow : Window
         _settings.CheckForUpdatesOnStartup = checkOnStartup;
         _settings.InstallUpdatesAutomatically = autoInstall;
         _settings.Save();
+        ApplyUpdateCheckSchedule();
         ShellLog.Info($"update settings changed checkOnStartup={checkOnStartup} autoInstall={autoInstall}");
         ShowToast("Update settings saved");
+    }
+
+    private void ApplyUpdateCheckSchedule()
+    {
+        if (_settings.CheckForUpdatesOnStartup)
+        {
+            _updateCheckTimer.Start();
+            ShellLog.Info($"update check schedule active interval={_updateCheckTimer.Interval}");
+        }
+        else
+        {
+            _updateCheckTimer.Stop();
+            ShellLog.Info("update check schedule stopped");
+        }
     }
 
     private void CheckForUpdatesFromSettings(Action<ClipUpdateStatus> updateStatus)
@@ -3313,27 +3333,41 @@ public partial class MainWindow : Window
 
     private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null)
     {
-        ShellLog.Info("update check started");
-        var status = await _updates.CheckAsync();
-        await Dispatcher.InvokeAsync(async () =>
+        if (_updateCheckInProgress)
         {
-            _lastUpdateStatus = status;
-            updateStatus?.Invoke(status);
-            ShellLog.Info($"update check completed state={status.State} current={status.CurrentVersion} latest={status.LatestVersion ?? "none"} download={status.DownloadUrl ?? "none"}");
+            ShellLog.Info("update check skipped already running");
+            return;
+        }
 
-            if (status.State == "Update available")
+        _updateCheckInProgress = true;
+        try
+        {
+            ShellLog.Info("update check started");
+            var status = await _updates.CheckAsync();
+            await Dispatcher.InvokeAsync(async () =>
             {
-                ShowToast(status.Message);
-                if (_settings.InstallUpdatesAutomatically)
+                _lastUpdateStatus = status;
+                updateStatus?.Invoke(status);
+                ShellLog.Info($"update check completed state={status.State} current={status.CurrentVersion} latest={status.LatestVersion ?? "none"} download={status.DownloadUrl ?? "none"}");
+
+                if (status.State == "Update available")
                 {
-                    await InstallUpdateAsync(status);
+                    ShowToast(status.Message);
+                    if (_settings.InstallUpdatesAutomatically)
+                    {
+                        await InstallUpdateAsync(status);
+                    }
                 }
-            }
-            else if (showToastWhenCurrent)
-            {
-                ShowToast(status.Message);
-            }
-        });
+                else if (showToastWhenCurrent)
+                {
+                    ShowToast(status.Message);
+                }
+            });
+        }
+        finally
+        {
+            _updateCheckInProgress = false;
+        }
     }
 
     private async Task InstallUpdateAsync(ClipUpdateStatus status)
@@ -6342,7 +6376,7 @@ internal sealed class SettingsWindow : Window
             _applyUpdateSettings(_settings.CheckForUpdatesOnStartup, _settings.InstallUpdatesAutomatically);
         });
 
-        return ControlRow("Check for updates", "Look for new Clip releases when the app opens.", toggle);
+        return ControlRow("Check for updates", "Look for new Clip releases when the app opens and while it runs.", toggle);
     }
 
     private Border AutoInstallUpdatesRow()
