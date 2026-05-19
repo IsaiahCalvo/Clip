@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using Windows.Storage;
 using Microsoft.Win32;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -733,6 +734,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
     private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly System.Windows.Threading.DispatcherTimer _outsideClickTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly System.Windows.Threading.DispatcherTimer _clipboardSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
     private readonly System.Windows.Threading.DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(4) };
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
@@ -754,6 +756,10 @@ public partial class MainWindow : Window
     private bool _itemsDirtySinceRender = true;
     private bool _paletteRequested;
     private IntPtr _returnFocusHwnd;
+    private IntPtr _returnFocusChildHwnd;
+    private AutomationElement? _returnFocusElement;
+    private string _returnFocusElementSummary = "none";
+    private string? _returnFocusValueBefore;
     private ClipboardHistoryItem? _menuItem;
     private bool _expandedImagePanning;
     private System.Windows.Point _expandedImageLastPoint;
@@ -773,6 +779,7 @@ public partial class MainWindow : Window
     internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
+    internal event Action<string>? UserNotificationRequested;
 
     public MainWindow()
     {
@@ -808,6 +815,7 @@ public partial class MainWindow : Window
             Toast.Visibility = Visibility.Collapsed;
         };
         _hotkeyRetryTimer.Tick += (_, _) => EnsureHotkeyRegistered("retry");
+        _outsideClickTimer.Tick += (_, _) => HideIfMousePressedOutsidePalette();
         _clipboardSettleTimer.Tick += (_, _) =>
         {
             _clipboardSettleTimer.Stop();
@@ -899,7 +907,7 @@ public partial class MainWindow : Window
         var foreground = GetForegroundWindow();
         if (foreground != IntPtr.Zero && foreground != ownHwnd)
         {
-            _returnFocusHwnd = foreground;
+            CaptureReturnFocus(foreground);
         }
 
         if (!IsVisible)
@@ -913,8 +921,7 @@ public partial class MainWindow : Window
         UpdateLayout();
         Opacity = 1;
         IsHitTestVisible = true;
-        Activate();
-        SearchBox.Focus();
+        _outsideClickTimer.Start();
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender}");
 
         if (_itemsDirtySinceRender || _rows.Count == 0)
@@ -943,10 +950,39 @@ public partial class MainWindow : Window
 
     private void ConcealPalette(string reason)
     {
+        _outsideClickTimer.Stop();
         Opacity = 0;
         IsHitTestVisible = false;
         MoveOffscreen();
         ShellLog.Info($"palette concealed reason={reason}");
+    }
+
+    private void HideIfMousePressedOutsidePalette()
+    {
+        if (Opacity <= 0 || !IsHitTestVisible)
+        {
+            _outsideClickTimer.Stop();
+            return;
+        }
+
+        if (KeepOpenForDebug || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
+        {
+            return;
+        }
+
+        if (Forms.Control.MouseButtons == Forms.MouseButtons.None)
+        {
+            return;
+        }
+
+        var mouse = Forms.Control.MousePosition;
+        var point = PointFromScreen(new System.Windows.Point(mouse.X, mouse.Y));
+        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
+        if (!bounds.Contains(point))
+        {
+            ConcealPalette("outside-click");
+            ShellLog.Info("palette hidden on outside click");
+        }
     }
 
     private void MoveOffscreen()
@@ -2192,12 +2228,13 @@ public partial class MainWindow : Window
     private void PasteSelected()
     {
         if (_selected is null) return;
-        SetClipboard(_selected, _settings.DefaultPasteFormat);
+        var selected = _selected;
+        var payload = selected.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color
+            ? ClipboardPasteData.Create(selected, _settings.DefaultPasteFormat)
+            : null;
+        SetClipboard(selected, _settings.DefaultPasteFormat);
         ConcealPalette("paste");
-        if (_returnFocusHwnd != IntPtr.Zero)
-        {
-            SetForegroundWindow(_returnFocusHwnd);
-        }
+        RestoreReturnFocus();
 
         var actionKey = ClipAppOverride.ActionPaste;
         var overrideHotkey = ResolveOverrideHotkey(_returnFocusHwnd, actionKey);
@@ -2208,7 +2245,7 @@ public partial class MainWindow : Window
             pasteKeys = SendKeysFromGesture(overrideHotkey!);
             suspendHotkeys = true;
         }
-        else if (_selected.Kind == ClipboardItemKind.Image && AutoAltVForClaudeCli(_returnFocusHwnd))
+        else if (selected.Kind == ClipboardItemKind.Image && AutoAltVForClaudeCli(_returnFocusHwnd))
         {
             pasteKeys = "%v";
             suspendHotkeys = true;
@@ -2219,6 +2256,125 @@ public partial class MainWindow : Window
             suspendHotkeys = false;
         }
 
+        if (TryPasteDirectlyIntoExplorerSearch(selected, payload?.Text))
+        {
+            ShellLog.Info($"paste selected id={selected.Id} keys=uia-explorer-search action={actionKey} override={overrideHotkey ?? "none"}");
+            return;
+        }
+
+        SendPasteKeys(pasteKeys, suspendHotkeys);
+        var verified = VerifyPasteOrRetry(selected, pasteKeys, suspendHotkeys, payload?.Text);
+        ShellLog.Info($"paste selected id={selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"} verified={verified}");
+    }
+
+    private void CaptureReturnFocus(IntPtr foreground)
+    {
+        _returnFocusHwnd = foreground;
+        _returnFocusChildHwnd = FocusedChildWindow(foreground);
+        _returnFocusElement = FocusedAutomationElement();
+        _returnFocusElementSummary = AutomationSummary(_returnFocusElement);
+        _returnFocusValueBefore = AutomationValue(_returnFocusElement);
+        ShellLog.Info($"return focus captured hwnd={_returnFocusHwnd} child={_returnFocusChildHwnd} element={_returnFocusElementSummary} value={SafeLogValue(_returnFocusValueBefore)}");
+    }
+
+    private void RestoreReturnFocus()
+    {
+        if (_returnFocusHwnd == IntPtr.Zero || !IsWindow(_returnFocusHwnd))
+        {
+            ShellLog.Info("return focus skipped hwnd=0");
+            return;
+        }
+
+        var foregroundSet = SetForegroundWindow(_returnFocusHwnd);
+        var focusSet = false;
+        if (_returnFocusChildHwnd != IntPtr.Zero && IsWindow(_returnFocusChildHwnd))
+        {
+            var targetThread = GetWindowThreadProcessId(_returnFocusHwnd, out _);
+            var currentThread = GetCurrentThreadId();
+            var attached = targetThread != 0 && targetThread != currentThread && AttachThreadInput(currentThread, targetThread, true);
+            try
+            {
+                focusSet = SetFocus(_returnFocusChildHwnd) != IntPtr.Zero;
+            }
+            finally
+            {
+                if (attached)
+                {
+                    AttachThreadInput(currentThread, targetThread, false);
+                }
+            }
+        }
+
+        var automationFocusSet = SetAutomationFocus(_returnFocusElement);
+        ShellLog.Info($"return focus restored hwnd={_returnFocusHwnd} child={_returnFocusChildHwnd} foreground={foregroundSet} focus={focusSet} elementFocus={automationFocusSet} element={_returnFocusElementSummary}");
+    }
+
+    private bool TryPasteDirectlyIntoExplorerSearch(ClipboardHistoryItem item, string? text)
+    {
+        if (!IsFileExplorerSearchTarget(_returnFocusHwnd, _returnFocusElement))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (_returnFocusElement!.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) &&
+                pattern is ValuePattern valuePattern &&
+                !valuePattern.Current.IsReadOnly)
+            {
+                valuePattern.SetValue(text);
+                ShellLog.Info($"explorer search set through UIA chars={text.Length} element={_returnFocusElementSummary}");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"explorer search UIA paste failed element={_returnFocusElementSummary}");
+        }
+
+        return false;
+    }
+
+    private bool VerifyPasteOrRetry(ClipboardHistoryItem item, string pasteKeys, bool suspendHotkeys, string? expectedText)
+    {
+        if (!CanVerifyPasteTarget(_returnFocusElement, expectedText))
+        {
+            ShellLog.Info($"paste verify skipped id={item.Id} element={_returnFocusElementSummary}");
+            return true;
+        }
+
+        Thread.Sleep(180);
+        var afterFirst = AutomationValue(_returnFocusElement);
+        if (PasteLooksApplied(_returnFocusValueBefore, afterFirst, expectedText))
+        {
+            ShellLog.Info($"paste verify succeeded id={item.Id} attempt=1 before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterFirst)}");
+            return true;
+        }
+
+        ShellLog.Info($"paste verify retrying id={item.Id} before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterFirst)} element={_returnFocusElementSummary}");
+        RestoreReturnFocus();
+        SendPasteKeys(pasteKeys, suspendHotkeys);
+        Thread.Sleep(240);
+
+        var afterRetry = AutomationValue(_returnFocusElement);
+        if (PasteLooksApplied(afterFirst, afterRetry, expectedText) || PasteLooksApplied(_returnFocusValueBefore, afterRetry, expectedText))
+        {
+            ShellLog.Info($"paste verify succeeded id={item.Id} attempt=2 after={SafeLogValue(afterRetry)}");
+            return true;
+        }
+
+        NotifyPasteFailed();
+        ShellLog.Info($"paste verify failed id={item.Id} expected={SafeLogValue(expectedText)} before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterRetry)} element={_returnFocusElementSummary}");
+        return false;
+    }
+
+    private void SendPasteKeys(string pasteKeys, bool suspendHotkeys)
+    {
         if (suspendHotkeys)
         {
             SuspendOwnHotkeysForSyntheticPaste(() => Forms.SendKeys.SendWait(pasteKeys));
@@ -2227,7 +2383,13 @@ public partial class MainWindow : Window
         {
             Forms.SendKeys.SendWait(pasteKeys);
         }
-        ShellLog.Info($"paste selected id={_selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"}");
+    }
+
+    private void NotifyPasteFailed()
+    {
+        const string message = "Clip could not paste here. Press Ctrl+V manually.";
+        ShowToast(message);
+        UserNotificationRequested?.Invoke(message);
     }
 
     private string? ResolveOverrideHotkey(IntPtr hwnd, string actionKey)
@@ -3203,7 +3365,7 @@ public partial class MainWindow : Window
         var own = new WindowInteropHelper(this).Handle;
         if (foreground != IntPtr.Zero && foreground != own)
         {
-            _returnFocusHwnd = foreground;
+            CaptureReturnFocus(foreground);
         }
 
         var previous = _selected;
@@ -4482,12 +4644,204 @@ public partial class MainWindow : Window
         }
     }
 
+    private static IntPtr FocusedChildWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
+
+        var thread = GetWindowThreadProcessId(hwnd, out _);
+        if (thread == 0)
+        {
+            return IntPtr.Zero;
+        }
+
+        var info = new GuiThreadInfo { CbSize = Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(thread, ref info) ? info.HwndFocus : IntPtr.Zero;
+    }
+
+    private static AutomationElement? FocusedAutomationElement()
+    {
+        try
+        {
+            return AutomationElement.FocusedElement;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool SetAutomationFocus(AutomationElement? element)
+    {
+        if (element is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            element.SetFocus();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? AutomationValue(AutomationElement? element)
+    {
+        if (element is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) &&
+                pattern is ValuePattern valuePattern)
+            {
+                return valuePattern.Current.Value;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static bool CanVerifyPasteTarget(AutomationElement? element, string? expectedText)
+    {
+        if (element is null || string.IsNullOrEmpty(expectedText))
+        {
+            return false;
+        }
+
+        try
+        {
+            return element.Current.ControlType == ControlType.Edit &&
+                element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) &&
+                pattern is ValuePattern valuePattern &&
+                !valuePattern.Current.IsReadOnly;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool PasteLooksApplied(string? before, string? after, string? expectedText)
+    {
+        if (after is null || string.IsNullOrEmpty(expectedText))
+        {
+            return false;
+        }
+
+        if (!string.Equals(before, after, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return after.Contains(expectedText, StringComparison.Ordinal);
+    }
+
+    private static string AutomationSummary(AutomationElement? element)
+    {
+        if (element is null)
+        {
+            return "none";
+        }
+
+        try
+        {
+            var current = element.Current;
+            return $"type={current.ControlType?.ProgrammaticName ?? "unknown"} name={SafeLogValue(current.Name)} automationId={SafeLogValue(current.AutomationId)} hwnd={current.NativeWindowHandle}";
+        }
+        catch
+        {
+            return "unavailable";
+        }
+    }
+
+    private static bool IsFileExplorerSearchTarget(IntPtr hwnd, AutomationElement? element)
+    {
+        if (element is null || hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var processName = TryGetProcessNameForWindow(hwnd);
+        if (!string.Equals(processName, "explorer", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            var current = element.Current;
+            if (current.ControlType != ControlType.Edit)
+            {
+                return false;
+            }
+
+            var name = current.Name ?? string.Empty;
+            var automationId = current.AutomationId ?? string.Empty;
+            return name.Contains("Search", StringComparison.OrdinalIgnoreCase) ||
+                automationId.Contains("Search", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string SafeLogValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "-";
+        }
+
+        return value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        public int CbSize;
+        public int Flags;
+        public IntPtr HwndActive;
+        public IntPtr HwndFocus;
+        public IntPtr HwndCapture;
+        public IntPtr HwndMenuOwner;
+        public IntPtr HwndMoveSize;
+        public IntPtr HwndCaret;
+        public NativeRectangle CaretRect;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRectangle
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool AddClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo info);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)] private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern int GetWindowTextLength(IntPtr hWnd);

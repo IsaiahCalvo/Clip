@@ -58,6 +58,7 @@ public partial class App : System.Windows.Application
             Visible = true,
         };
         _window.AppIconChanged += preference => _tray.Icon = LoadTrayIcon(preference);
+        _window.UserNotificationRequested += message => _tray.ShowBalloonTip(3000, "Clip", message, System.Windows.Forms.ToolTipIcon.Warning);
         _tray.DoubleClick += (_, _) => _window.ShowPalette();
 
         var menu = new System.Windows.Forms.ContextMenuStrip();
