@@ -2350,7 +2350,7 @@ public partial class MainWindow : Window
 
         Thread.Sleep(180);
         var afterFirst = AutomationValue(_returnFocusElement);
-        if (PasteLooksApplied(_returnFocusValueBefore, afterFirst, expectedText))
+        if (PasteLooksApplied(_returnFocusValueBefore, afterFirst, expectedText) && PasteStillAppliedAfterSettle(afterFirst, expectedText))
         {
             ShellLog.Info($"paste verify succeeded id={item.Id} attempt=1 before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterFirst)}");
             return true;
@@ -2362,10 +2362,23 @@ public partial class MainWindow : Window
         Thread.Sleep(240);
 
         var afterRetry = AutomationValue(_returnFocusElement);
-        if (PasteLooksApplied(afterFirst, afterRetry, expectedText) || PasteLooksApplied(_returnFocusValueBefore, afterRetry, expectedText))
+        if ((PasteLooksApplied(afterFirst, afterRetry, expectedText) || PasteLooksApplied(_returnFocusValueBefore, afterRetry, expectedText)) &&
+            PasteStillAppliedAfterSettle(afterRetry, expectedText))
         {
             ShellLog.Info($"paste verify succeeded id={item.Id} attempt=2 after={SafeLogValue(afterRetry)}");
             return true;
+        }
+
+        if (TrySetAutomationValue(expectedText))
+        {
+            Thread.Sleep(240);
+            var afterDirectSet = AutomationValue(_returnFocusElement);
+            if (PasteLooksApplied(_returnFocusValueBefore, afterDirectSet, expectedText) &&
+                PasteStillAppliedAfterSettle(afterDirectSet, expectedText))
+            {
+                ShellLog.Info($"paste verify succeeded id={item.Id} attempt=uia-set after={SafeLogValue(afterDirectSet)}");
+                return true;
+            }
         }
 
         NotifyPasteFailed();
@@ -2373,8 +2386,61 @@ public partial class MainWindow : Window
         return false;
     }
 
+    private bool PasteStillAppliedAfterSettle(string? firstAppliedValue, string? expectedText)
+    {
+        Thread.Sleep(520);
+        var afterSettle = AutomationValue(_returnFocusElement);
+        var stable = PasteLooksApplied(firstAppliedValue, afterSettle, expectedText);
+        if (!stable)
+        {
+            ShellLog.Info($"paste verify unstable first={SafeLogValue(firstAppliedValue)} afterSettle={SafeLogValue(afterSettle)} element={_returnFocusElementSummary}");
+        }
+
+        return stable;
+    }
+
+    private bool TrySetAutomationValue(string? text)
+    {
+        if (_returnFocusElement is null || string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (_returnFocusElement.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) &&
+                pattern is ValuePattern valuePattern &&
+                !valuePattern.Current.IsReadOnly)
+            {
+                valuePattern.SetValue(text);
+                ShellLog.Info($"paste fallback set through UIA chars={text.Length} element={_returnFocusElementSummary}");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"paste fallback UIA set failed element={_returnFocusElementSummary}");
+        }
+
+        return false;
+    }
+
     private void SendPasteKeys(string pasteKeys, bool suspendHotkeys)
     {
+        if (pasteKeys == "^v")
+        {
+            if (suspendHotkeys)
+            {
+                SuspendOwnHotkeysForSyntheticPaste(SendCtrlV);
+            }
+            else
+            {
+                SendCtrlV();
+            }
+
+            return;
+        }
+
         if (suspendHotkeys)
         {
             SuspendOwnHotkeysForSyntheticPaste(() => Forms.SendKeys.SendWait(pasteKeys));
@@ -2383,6 +2449,38 @@ public partial class MainWindow : Window
         {
             Forms.SendKeys.SendWait(pasteKeys);
         }
+    }
+
+    private static void SendCtrlV()
+    {
+        var inputs = new[]
+        {
+            KeyboardInput(VirtualKeyControl, false),
+            KeyboardInput(VirtualKeyV, false),
+            KeyboardInput(VirtualKeyV, true),
+            KeyboardInput(VirtualKeyControl, true),
+        };
+
+        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+        {
+            Forms.SendKeys.SendWait("^v");
+        }
+    }
+
+    private static Input KeyboardInput(ushort virtualKey, bool keyUp)
+    {
+        return new Input
+        {
+            Type = InputKeyboard,
+            Union = new InputUnion
+            {
+                Keyboard = new KeyboardInputData
+                {
+                    VirtualKey = virtualKey,
+                    Flags = keyUp ? KeyEventKeyUp : 0,
+                },
+            },
+        };
     }
 
     private void NotifyPasteFailed()
@@ -4733,14 +4831,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private static bool PasteLooksApplied(string? before, string? after, string? expectedText)
+    internal static bool PasteLooksApplied(string? before, string? after, string? expectedText)
     {
         if (after is null || string.IsNullOrEmpty(expectedText))
         {
             return false;
         }
 
-        if (!string.Equals(before, after, StringComparison.Ordinal))
+        if (string.Equals(after, expectedText, StringComparison.Ordinal))
         {
             return true;
         }
@@ -4831,6 +4929,34 @@ public partial class MainWindow : Window
         public int Bottom;
     }
 
+    private const int InputKeyboard = 1;
+    private const uint KeyEventKeyUp = 0x0002;
+    private const ushort VirtualKeyControl = 0x11;
+    private const ushort VirtualKeyV = 0x56;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input
+    {
+        public int Type;
+        public InputUnion Union;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public KeyboardInputData Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeyboardInputData
+    {
+        public ushort VirtualKey;
+        public ushort Scan;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -4839,6 +4965,7 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo info);

@@ -66,4 +66,22 @@ public sealed class PasteFormatTests
         Assert.Equal("<b>Hello</b>", payload.Html);
         Assert.Equal("{\\rtf1 Hello}", payload.Rtf);
     }
+
+    [Fact]
+    public void PasteVerificationRequiresExpectedText()
+    {
+        Assert.False(MainWindow.PasteLooksApplied("Old", "Something else", "Hello"));
+    }
+
+    [Fact]
+    public void PasteVerificationAcceptsExactReplacement()
+    {
+        Assert.True(MainWindow.PasteLooksApplied("Old", "Hello", "Hello"));
+    }
+
+    [Fact]
+    public void PasteVerificationAcceptsInsertedText()
+    {
+        Assert.True(MainWindow.PasteLooksApplied("Old", "Old Hello", "Hello"));
+    }
 }
