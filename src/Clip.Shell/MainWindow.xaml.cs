@@ -755,6 +755,7 @@ public partial class MainWindow : Window
     private string? _promptedUpdateVersion;
     private bool _itemsDirtySinceRender = true;
     private bool _paletteRequested;
+    private bool _paletteNoActivate;
     private IntPtr _returnFocusHwnd;
     private IntPtr _returnFocusChildHwnd;
     private AutomationElement? _returnFocusElement;
@@ -910,6 +911,9 @@ public partial class MainWindow : Window
             CaptureReturnFocus(foreground);
         }
 
+        _paletteNoActivate = ShouldShowPaletteWithoutActivation(_returnFocusHwnd, _returnFocusElement);
+        ApplyNoActivatePaletteStyle(_paletteNoActivate);
+
         if (!IsVisible)
         {
             Show();
@@ -922,7 +926,7 @@ public partial class MainWindow : Window
         Opacity = 1;
         IsHitTestVisible = true;
         _outsideClickTimer.Start();
-        ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender}");
+        ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender} noActivate={_paletteNoActivate}");
 
         if (_itemsDirtySinceRender || _rows.Count == 0)
         {
@@ -1009,6 +1013,12 @@ public partial class MainWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == WmMouseActivate && _paletteNoActivate)
+        {
+            handled = true;
+            return new IntPtr(MouseActivateNoActivate);
+        }
+
         if (ExpandedImageOverlay.Visibility == Visibility.Visible && (msg == WmMouseWheel || msg == WmMouseHWheel))
         {
             var delta = WheelDelta(wParam);
@@ -4896,6 +4906,70 @@ public partial class MainWindow : Window
         }
     }
 
+    private static bool ShouldShowPaletteWithoutActivation(IntPtr hwnd, AutomationElement? element)
+    {
+        if (hwnd == IntPtr.Zero || element is null)
+        {
+            return false;
+        }
+
+        var processName = TryGetProcessNameForWindow(hwnd);
+        try
+        {
+            var current = element.Current;
+            return IsFocusSensitiveWebEdit(processName, current.ControlType, current.NativeWindowHandle, current.Name);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsFocusSensitiveWebEdit(string? processName, ControlType controlType, int nativeWindowHandle, string? name)
+    {
+        if (!string.Equals(processName, "chrome", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(processName, "msedge", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (nativeWindowHandle != 0)
+        {
+            return false;
+        }
+
+        if (controlType != ControlType.Edit && controlType != ControlType.Group)
+        {
+            return false;
+        }
+
+        var elementName = name ?? string.Empty;
+        return elementName.Contains("Search Google Earth", StringComparison.OrdinalIgnoreCase) ||
+            elementName.Contains("flt-text-editing", StringComparison.OrdinalIgnoreCase) ||
+            elementName.Contains("transparentTextEditing", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ApplyNoActivatePaletteStyle(bool enabled)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var style = GetWindowLongPtr(hwnd, WindowLongExStyle).ToInt64();
+        var nextStyle = enabled
+            ? style | WindowExNoActivate
+            : style & ~WindowExNoActivate;
+        if (nextStyle == style)
+        {
+            return;
+        }
+
+        SetWindowLongPtr(hwnd, WindowLongExStyle, new IntPtr(nextStyle));
+        ShellLog.Info($"palette no-activate style enabled={enabled}");
+    }
+
     private static string SafeLogValue(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -4930,6 +5004,10 @@ public partial class MainWindow : Window
     }
 
     private const int InputKeyboard = 1;
+    private const int WmMouseActivate = 0x0021;
+    private const int MouseActivateNoActivate = 3;
+    private const int WindowLongExStyle = -20;
+    private const long WindowExNoActivate = 0x08000000L;
     private const uint KeyEventKeyUp = 0x0002;
     private const ushort VirtualKeyControl = 0x11;
     private const ushort VirtualKeyV = 0x56;
@@ -4966,6 +5044,8 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)] private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)] private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr newLong);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo info);

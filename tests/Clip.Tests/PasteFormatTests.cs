@@ -84,4 +84,34 @@ public sealed class PasteFormatTests
     {
         Assert.True(MainWindow.PasteLooksApplied("Old", "Old Hello", "Hello"));
     }
+
+    [Fact]
+    public void GoogleEarthSearchUsesNoActivatePalette()
+    {
+        Assert.True(MainWindow.IsFocusSensitiveWebEdit(
+            "chrome",
+            System.Windows.Automation.ControlType.Edit,
+            0,
+            "Search Google Earth"));
+    }
+
+    [Fact]
+    public void NormalChromeEditDoesNotUseNoActivatePalette()
+    {
+        Assert.False(MainWindow.IsFocusSensitiveWebEdit(
+            "chrome",
+            System.Windows.Automation.ControlType.Edit,
+            0,
+            "Message"));
+    }
+
+    [Fact]
+    public void GoogleEarthFlutterTextGroupUsesNoActivatePalette()
+    {
+        Assert.True(MainWindow.IsFocusSensitiveWebEdit(
+            "chrome",
+            System.Windows.Automation.ControlType.Group,
+            0,
+            """<input tabindex="-1" placeholder="Search Google Earth" class="flt-text-editing transparentTextEditing">"""));
+    }
 }
