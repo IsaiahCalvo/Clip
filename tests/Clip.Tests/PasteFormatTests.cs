@@ -114,4 +114,14 @@ public sealed class PasteFormatTests
             0,
             """<input tabindex="-1" placeholder="Search Google Earth" class="flt-text-editing transparentTextEditing">"""));
     }
+
+    [Fact]
+    public void GoogleEarthSearchIsRecognizedForCommit()
+    {
+        Assert.True(MainWindow.IsGoogleEarthSearchElement(
+            "chrome",
+            System.Windows.Automation.ControlType.Edit,
+            0,
+            "Search Google Earth"));
+    }
 }

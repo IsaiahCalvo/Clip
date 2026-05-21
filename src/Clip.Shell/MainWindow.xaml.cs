@@ -761,6 +761,7 @@ public partial class MainWindow : Window
     private AutomationElement? _returnFocusElement;
     private string _returnFocusElementSummary = "none";
     private string? _returnFocusValueBefore;
+    private bool _returnFocusCommitsPasteWithEnter;
     private ClipboardHistoryItem? _menuItem;
     private bool _expandedImagePanning;
     private System.Windows.Point _expandedImageLastPoint;
@@ -2274,6 +2275,11 @@ public partial class MainWindow : Window
 
         SendPasteKeys(pasteKeys, suspendHotkeys);
         var verified = VerifyPasteOrRetry(selected, pasteKeys, suspendHotkeys, payload?.Text);
+        if (verified)
+        {
+            CommitPasteIfNeeded(payload?.Text, suspendHotkeys);
+        }
+
         ShellLog.Info($"paste selected id={selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"} verified={verified}");
     }
 
@@ -2284,6 +2290,7 @@ public partial class MainWindow : Window
         _returnFocusElement = FocusedAutomationElement();
         _returnFocusElementSummary = AutomationSummary(_returnFocusElement);
         _returnFocusValueBefore = AutomationValue(_returnFocusElement);
+        _returnFocusCommitsPasteWithEnter = ShouldCommitPasteWithEnter(_returnFocusHwnd, _returnFocusElement);
         ShellLog.Info($"return focus captured hwnd={_returnFocusHwnd} child={_returnFocusChildHwnd} element={_returnFocusElementSummary} value={SafeLogValue(_returnFocusValueBefore)}");
     }
 
@@ -2348,6 +2355,27 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    private void CommitPasteIfNeeded(string? expectedText, bool suspendHotkeys)
+    {
+        if (!_returnFocusCommitsPasteWithEnter || string.IsNullOrEmpty(expectedText))
+        {
+            return;
+        }
+
+        Thread.Sleep(80);
+        RestoreReturnFocus();
+        if (suspendHotkeys)
+        {
+            SuspendOwnHotkeysForSyntheticPaste(SendEnter);
+        }
+        else
+        {
+            SendEnter();
+        }
+
+        ShellLog.Info($"paste committed with Enter element={_returnFocusElementSummary}");
     }
 
     private bool VerifyPasteOrRetry(ClipboardHistoryItem item, string pasteKeys, bool suspendHotkeys, string? expectedText)
@@ -2474,6 +2502,20 @@ public partial class MainWindow : Window
         if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
         {
             Forms.SendKeys.SendWait("^v");
+        }
+    }
+
+    private static void SendEnter()
+    {
+        var inputs = new[]
+        {
+            KeyboardInput(VirtualKeyEnter, false),
+            KeyboardInput(VirtualKeyEnter, true),
+        };
+
+        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+        {
+            Forms.SendKeys.SendWait("{ENTER}");
         }
     }
 
@@ -4925,7 +4967,29 @@ public partial class MainWindow : Window
         }
     }
 
+    private static bool ShouldCommitPasteWithEnter(IntPtr hwnd, AutomationElement? element)
+    {
+        if (hwnd == IntPtr.Zero || element is null)
+        {
+            return false;
+        }
+
+        var processName = TryGetProcessNameForWindow(hwnd);
+        try
+        {
+            var current = element.Current;
+            return IsGoogleEarthSearchElement(processName, current.ControlType, current.NativeWindowHandle, current.Name);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     internal static bool IsFocusSensitiveWebEdit(string? processName, ControlType controlType, int nativeWindowHandle, string? name)
+        => IsGoogleEarthSearchElement(processName, controlType, nativeWindowHandle, name);
+
+    internal static bool IsGoogleEarthSearchElement(string? processName, ControlType controlType, int nativeWindowHandle, string? name)
     {
         if (!string.Equals(processName, "chrome", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(processName, "msedge", StringComparison.OrdinalIgnoreCase))
@@ -5010,6 +5074,7 @@ public partial class MainWindow : Window
     private const long WindowExNoActivate = 0x08000000L;
     private const uint KeyEventKeyUp = 0x0002;
     private const ushort VirtualKeyControl = 0x11;
+    private const ushort VirtualKeyEnter = 0x0D;
     private const ushort VirtualKeyV = 0x56;
 
     [StructLayout(LayoutKind.Sequential)]
