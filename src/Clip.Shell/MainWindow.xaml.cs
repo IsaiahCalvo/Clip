@@ -2388,6 +2388,12 @@ public partial class MainWindow : Window
 
         Thread.Sleep(180);
         var afterFirst = AutomationValue(_returnFocusElement);
+        if (_returnFocusCommitsPasteWithEnter && PasteLooksApplied(_returnFocusValueBefore, afterFirst, expectedText))
+        {
+            ShellLog.Info($"paste verify succeeded id={item.Id} attempt=1-commit before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterFirst)}");
+            return true;
+        }
+
         if (PasteLooksApplied(_returnFocusValueBefore, afterFirst, expectedText) && PasteStillAppliedAfterSettle(afterFirst, expectedText))
         {
             ShellLog.Info($"paste verify succeeded id={item.Id} attempt=1 before={SafeLogValue(_returnFocusValueBefore)} after={SafeLogValue(afterFirst)}");
@@ -2400,6 +2406,13 @@ public partial class MainWindow : Window
         Thread.Sleep(240);
 
         var afterRetry = AutomationValue(_returnFocusElement);
+        if (_returnFocusCommitsPasteWithEnter &&
+            (PasteLooksApplied(afterFirst, afterRetry, expectedText) || PasteLooksApplied(_returnFocusValueBefore, afterRetry, expectedText)))
+        {
+            ShellLog.Info($"paste verify succeeded id={item.Id} attempt=2-commit after={SafeLogValue(afterRetry)}");
+            return true;
+        }
+
         if ((PasteLooksApplied(afterFirst, afterRetry, expectedText) || PasteLooksApplied(_returnFocusValueBefore, afterRetry, expectedText)) &&
             PasteStillAppliedAfterSettle(afterRetry, expectedText))
         {
@@ -4916,6 +4929,26 @@ public partial class MainWindow : Window
         }
     }
 
+    private static string WindowTitle(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var length = Math.Max(GetWindowTextLength(hwnd), 0);
+            var title = new StringBuilder(length + 1);
+            GetWindowText(hwnd, title, title.Capacity);
+            return title.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     private static bool IsFileExplorerSearchTarget(IntPtr hwnd, AutomationElement? element)
     {
         if (element is null || hwnd == IntPtr.Zero)
@@ -4956,10 +4989,11 @@ public partial class MainWindow : Window
         }
 
         var processName = TryGetProcessNameForWindow(hwnd);
+        var windowTitle = WindowTitle(hwnd);
         try
         {
             var current = element.Current;
-            return IsFocusSensitiveWebEdit(processName, current.ControlType, current.NativeWindowHandle, current.Name);
+            return IsFocusSensitiveWebEdit(processName, current.ControlType, current.NativeWindowHandle, current.Name, windowTitle);
         }
         catch
         {
@@ -4975,10 +5009,11 @@ public partial class MainWindow : Window
         }
 
         var processName = TryGetProcessNameForWindow(hwnd);
+        var windowTitle = WindowTitle(hwnd);
         try
         {
             var current = element.Current;
-            return IsGoogleEarthSearchElement(processName, current.ControlType, current.NativeWindowHandle, current.Name);
+            return IsGoogleEarthSearchElement(processName, current.ControlType, current.NativeWindowHandle, current.Name, windowTitle);
         }
         catch
         {
@@ -4987,9 +5022,12 @@ public partial class MainWindow : Window
     }
 
     internal static bool IsFocusSensitiveWebEdit(string? processName, ControlType controlType, int nativeWindowHandle, string? name)
-        => IsGoogleEarthSearchElement(processName, controlType, nativeWindowHandle, name);
+        => IsGoogleEarthSearchElement(processName, controlType, nativeWindowHandle, name, "Google Earth");
 
-    internal static bool IsGoogleEarthSearchElement(string? processName, ControlType controlType, int nativeWindowHandle, string? name)
+    internal static bool IsFocusSensitiveWebEdit(string? processName, ControlType controlType, int nativeWindowHandle, string? name, string? windowTitle)
+        => IsGoogleEarthSearchElement(processName, controlType, nativeWindowHandle, name, windowTitle);
+
+    internal static bool IsGoogleEarthSearchElement(string? processName, ControlType controlType, int nativeWindowHandle, string? name, string? windowTitle = null)
     {
         if (!string.Equals(processName, "chrome", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(processName, "msedge", StringComparison.OrdinalIgnoreCase))
@@ -5009,6 +5047,8 @@ public partial class MainWindow : Window
 
         var elementName = name ?? string.Empty;
         return elementName.Contains("Search Google Earth", StringComparison.OrdinalIgnoreCase) ||
+            (string.Equals(elementName, "Search", StringComparison.OrdinalIgnoreCase) &&
+                (windowTitle ?? string.Empty).Contains("Google Earth", StringComparison.OrdinalIgnoreCase)) ||
             elementName.Contains("flt-text-editing", StringComparison.OrdinalIgnoreCase) ||
             elementName.Contains("transparentTextEditing", StringComparison.OrdinalIgnoreCase);
     }

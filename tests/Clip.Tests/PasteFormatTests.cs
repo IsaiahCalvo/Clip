@@ -124,4 +124,26 @@ public sealed class PasteFormatTests
             0,
             "Search Google Earth"));
     }
+
+    [Fact]
+    public void GoogleEarthGenericSearchNameIsRecognizedFromWindowTitle()
+    {
+        Assert.True(MainWindow.IsGoogleEarthSearchElement(
+            "chrome",
+            System.Windows.Automation.ControlType.Edit,
+            0,
+            "Search",
+            "Google Earth - Google Chrome"));
+    }
+
+    [Fact]
+    public void GenericSearchOutsideGoogleEarthIsNotRecognized()
+    {
+        Assert.False(MainWindow.IsGoogleEarthSearchElement(
+            "chrome",
+            System.Windows.Automation.ControlType.Edit,
+            0,
+            "Search",
+            "Google Search - Google Chrome"));
+    }
 }
