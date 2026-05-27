@@ -16,6 +16,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using Clip.Core;
 using Svg;
@@ -29,7 +30,10 @@ using WpfImage = System.Windows.Controls.Image;
 using WpfListBox = System.Windows.Controls.ListBox;
 using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfOrientation = System.Windows.Controls.Orientation;
+using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfTextBox = System.Windows.Controls.TextBox;
+using WpfPath = System.Windows.Shapes.Path;
+using WpfShape = System.Windows.Shapes.Shape;
 using WinDataPackageOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation;
 using WinDataRequestedEventArgs = Windows.ApplicationModel.DataTransfer.DataRequestedEventArgs;
 using WinDataTransferManager = Windows.ApplicationModel.DataTransfer.DataTransferManager;
@@ -727,6 +731,9 @@ public partial class MainWindow : Window
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
+    private static readonly Dictionary<string, ImageSource> SvgImageCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string> SvgTextCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object SvgCacheGate = new();
 
     private readonly ClipShellSettings _settings = ClipShellSettings.Load();
     private readonly ClipboardHistoryStore _store;
@@ -1471,6 +1478,112 @@ public partial class MainWindow : Window
         }
 
         ShellLog.Info($"render items reason={reason} rows={_rows.Count} selected={selectedId ?? "none"}");
+    }
+
+    private void RefreshClipboardManagerTextTheme()
+    {
+        RefreshClipboardManagerVisualTheme(ItemsHost);
+        RefreshInfoPanelTheme(refreshIcon: false);
+        UpdateFilterVisuals();
+        TitleText.Foreground = (WpfBrush)FindResource("Text");
+        SubTitleText.Foreground = (WpfBrush)FindResource("Muted");
+        RefreshClipboardManagerIconTheme();
+    }
+
+    private void RefreshClipboardManagerVisualTheme(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            switch (child)
+            {
+                case TextBlock text:
+                    text.Foreground = IsPrimaryClipboardText(text) ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
+                    break;
+                case Border { Tag: ClipboardHistoryItem rowItem } row when rowItem.Id == _selected?.Id:
+                    row.Background = (WpfBrush)FindResource("Selected");
+                    row.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
+                    break;
+            }
+
+            RefreshClipboardManagerVisualTheme(child);
+        }
+    }
+
+    private void RefreshClipboardManagerIconTheme()
+    {
+        RefreshClipboardManagerIcons(ItemsHost);
+        if (_selected is not null)
+        {
+            HeaderIcon.Source = IconFor(_selected, 96);
+        }
+    }
+
+    private void RefreshClipboardManagerIcons(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is WpfImage image && FindRowItem(image) is { } imageItem)
+            {
+                image.Source = IconFor(imageItem, 96);
+            }
+
+            RefreshClipboardManagerIcons(child);
+        }
+    }
+
+    private void RefreshInfoPanelTheme(bool refreshIcon = true)
+    {
+        RefreshInfoPanelTheme(InfoHost);
+        if (refreshIcon && _selected is not null)
+        {
+            HeaderIcon.Source = IconFor(_selected, 96);
+        }
+    }
+
+    private void RefreshInfoPanelTheme(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            switch (child)
+            {
+                case TextBlock text:
+                    text.Foreground = (WpfBrush)FindResource("Muted2");
+                    break;
+                case WpfTextBox box:
+                    box.Foreground = (WpfBrush)FindResource("Text");
+                    box.CaretBrush = (WpfBrush)FindResource("TextCursor");
+                    break;
+                case Border border when border.Height == 1:
+                    border.Background = (WpfBrush)FindResource("Line");
+                    break;
+            }
+
+            RefreshInfoPanelTheme(child);
+        }
+    }
+
+    private static ClipboardHistoryItem? FindRowItem(DependencyObject child)
+    {
+        var current = child;
+        while (VisualTreeHelper.GetParent(current) is { } parent)
+        {
+            if (parent is Border { Tag: ClipboardHistoryItem item })
+            {
+                return item;
+            }
+
+            current = parent;
+        }
+
+        return null;
+    }
+
+    private static bool IsPrimaryClipboardText(TextBlock text)
+    {
+        return text.FontWeight == FontWeights.SemiBold || text.FontSize >= 13;
     }
 
     private Border BuildRow(ClipboardHistoryItem item)
@@ -3549,7 +3662,7 @@ public partial class MainWindow : Window
         try
         {
             ShellLog.Info($"settings opening showPaletteOnClose={showPaletteOnClose}");
-            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
+            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
             {
                 Owner = this,
             };
@@ -3957,20 +4070,28 @@ public partial class MainWindow : Window
         TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
         if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
         if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
-        RefreshChromeIcons();
+        if (save)
+        {
+            Dispatcher.BeginInvoke(RefreshChromeIcons, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+        else
+        {
+            RefreshChromeIcons();
+        }
+
         ShellLog.Info($"theme applied preference={preference} dark={useDark}");
 
         if (save)
         {
-            _settings.Save();
-            RenderItems("theme");
-            if (_selected is not null)
+            Dispatcher.BeginInvoke(() =>
             {
-                RenderInfo(_selected);
-                RenderPreview(_selected);
-            }
-
-            ShowToast($"Theme set to {ThemeLabel(preference)}");
+                _settings.Save();
+                if (_selected is not null)
+                {
+                    RenderInfo(_selected);
+                    RenderPreview(_selected);
+                }
+            }, System.Windows.Threading.DispatcherPriority.ContextIdle);
         }
     }
 
@@ -4019,7 +4140,7 @@ public partial class MainWindow : Window
         return "#F2EFE9";
     }
 
-    private static bool IsWindowsDarkMode()
+    internal static bool IsWindowsDarkMode()
     {
         try
         {
@@ -4053,6 +4174,18 @@ public partial class MainWindow : Window
         ClipThemePreference.Dark => "Dark",
         _ => "System",
     };
+
+    internal static ClipThemePreference NextThemeTogglePreference(ClipThemePreference current, bool systemIsDark)
+    {
+        var currentlyDark = current switch
+        {
+            ClipThemePreference.Dark => true,
+            ClipThemePreference.Light => false,
+            _ => systemIsDark,
+        };
+
+        return currentlyDark ? ClipThemePreference.Light : ClipThemePreference.Dark;
+    }
 
     private static void UpdateInstalledShortcutIcons(string iconPath)
     {
@@ -4635,19 +4768,35 @@ public partial class MainWindow : Window
 
     private ImageSource RenderSvg(string fileName, int size, double scaleX = 1.0, string? color = null)
     {
+        var actualColor = color ?? BrushHex("Muted2");
+        var cacheKey = $"{fileName}|{size}|{scaleX:0.###}|{actualColor}";
+        lock (SvgCacheGate)
+        {
+            if (SvgImageCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
         var renderWidth = Math.Max(1, (int)Math.Round(size * scaleX));
         using var bitmap = new System.Drawing.Bitmap(Math.Max(size, renderWidth), size);
         using var graphics = System.Drawing.Graphics.FromImage(bitmap);
         graphics.Clear(System.Drawing.Color.Transparent);
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
         graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        var svg = ThemeSvg(File.ReadAllText(AssetIconPath(fileName)), color ?? BrushHex("Muted2"));
+        var svg = ThemeSvg(ReadSvgText(fileName), actualColor);
         var document = SvgDocument.FromSvg<SvgDocument>(svg);
         document.Width = renderWidth;
         document.Height = size;
         using var rendered = document.Draw(renderWidth, size);
         graphics.DrawImage(rendered, (bitmap.Width - renderWidth) / 2, 0, renderWidth, size);
-        return BitmapFromDrawingImage(bitmap);
+        var source = BitmapFromDrawingImage(bitmap);
+        lock (SvgCacheGate)
+        {
+            SvgImageCache[cacheKey] = source;
+        }
+
+        return source;
     }
 
     private ImageSource RenderGeneratedFileIcon(string ext, int size)
@@ -4704,6 +4853,21 @@ public partial class MainWindow : Window
     private static string ThemeSvg(string svg, string color)
     {
         return Regex.Replace(svg, @"#[0-9a-fA-F]{3,8}|rgb\([^)]+\)|black|#000", color, RegexOptions.IgnoreCase);
+    }
+
+    private static string ReadSvgText(string fileName)
+    {
+        lock (SvgCacheGate)
+        {
+            if (SvgTextCache.TryGetValue(fileName, out var cached))
+            {
+                return cached;
+            }
+
+            var svg = File.ReadAllText(AssetIconPath(fileName));
+            SvgTextCache[fileName] = svg;
+            return svg;
+        }
     }
 
     private static string AssetIconPath(string fileName)
@@ -6160,6 +6324,7 @@ internal sealed class SettingsWindow : Window
     private readonly ClipShellSettings _settings;
     private ClipUpdateStatus _updateStatus;
     private readonly Action<ClipThemePreference> _applyTheme;
+    private readonly Action _refreshClipboardManagerTextTheme;
     private readonly Action<AppIconPreference> _applyAppIcon;
     private readonly Action<bool> _applyRunAtStartup;
     private readonly Action<int?> _applyHistoryLimit;
@@ -6178,6 +6343,9 @@ internal sealed class SettingsWindow : Window
     private readonly Action _resetAllSettings;
     private readonly Func<SettingsPalette> _paletteProvider;
     private readonly ImageSource _dropdownIcon;
+    private readonly System.Windows.Threading.DispatcherTimer _themeApplyTimer = new(System.Windows.Threading.DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(16) };
+    private SettingsPalette? _paletteOverride;
+    private ThemeMorphIcon? _themeIcon;
     private Border? _root;
     private Grid? _header;
     private Border? _headerBorder;
@@ -6200,11 +6368,12 @@ internal sealed class SettingsWindow : Window
     private WpfBrush _selectedBorder = WpfBrushes.Transparent;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
         _applyTheme = applyTheme;
+        _refreshClipboardManagerTextTheme = refreshClipboardManagerTextTheme;
         _applyAppIcon = applyAppIcon;
         _applyRunAtStartup = applyRunAtStartup;
         _applyHistoryLimit = applyHistoryLimit;
@@ -6224,6 +6393,7 @@ internal sealed class SettingsWindow : Window
         _paletteProvider = paletteProvider;
         _dropdownIcon = dropdownIcon;
         ApplyPalette(_paletteProvider());
+        _themeApplyTimer.Tick += (_, _) => ApplyPendingTheme();
 
         Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(_muted));
         Title = "Clip Settings";
@@ -6331,19 +6501,8 @@ internal sealed class SettingsWindow : Window
         foreach (var page in new[] { "General", "History", "Shortcuts", "Privacy", "App Overrides", "Appearance", "About" })
         {
             var button = NavButton(page);
-            button.MouseEnter += (_, _) =>
-            {
-                button.Foreground = _text;
-                button.Background = _accentSoft;
-                button.BorderBrush = _selectedBorder;
-            };
-            button.MouseLeave += (_, _) =>
-            {
-                var active = string.Equals(_currentPage, page, StringComparison.OrdinalIgnoreCase);
-                button.Foreground = active ? _text : _muted;
-                button.Background = active ? _selected : WpfBrushes.Transparent;
-                button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
-            };
+            button.MouseEnter += (_, _) => ApplyNavButtonTheme(page, button);
+            button.MouseLeave += (_, _) => ApplyNavButtonTheme(page, button);
             button.Click += (_, _) => ShowPage(page);
             _nav[page] = button;
             sidebar.Children.Add(button);
@@ -6466,9 +6625,40 @@ internal sealed class SettingsWindow : Window
         _selectedBorder = palette.SelectedBorder;
     }
 
-    private void RefreshTheme()
+    private static SettingsPalette PaletteForTheme(ClipThemePreference preference)
     {
-        ApplyPalette(_paletteProvider());
+        var useDark = preference switch
+        {
+            ClipThemePreference.Light => false,
+            ClipThemePreference.Dark => true,
+            _ => MainWindow.IsWindowsDarkMode(),
+        };
+
+        return new SettingsPalette(
+            FrozenBrush(useDark ? "#1A1A1A" : "#F7F7F7"),
+            FrozenBrush(useDark ? "#212121" : "#FFFFFF"),
+            FrozenBrush(useDark ? "#272727" : "#EDEDED"),
+            FrozenBrush(useDark ? "#323232" : "#DCDCDC"),
+            FrozenBrush(useDark ? "#F1F1F1" : "#1A1A1A"),
+            FrozenBrush(useDark ? "#989898" : "#646464"),
+            FrozenBrush(useDark ? "#494949" : "#B8B8B8"),
+            FrozenBrush(useDark ? "#5A5A5A" : "#989898"),
+            FrozenBrush(useDark ? "#8A9CCC" : "#3B5BDB"),
+            FrozenBrush(useDark ? "#232A45" : "#E1E7FB"),
+            FrozenBrush(useDark ? "#324068" : "#C9D3F5"),
+            FrozenBrush(useDark ? "#6878A8" : "#5C7CFA"));
+    }
+
+    private static SolidColorBrush FrozenBrush(string hex)
+    {
+        var brush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+        brush.Freeze();
+        return brush;
+    }
+
+    private void RefreshTheme(bool rebuildPage = true)
+    {
+        ApplyPalette(_paletteOverride ?? _paletteProvider());
         Background = _bg;
         if (_root is not null)
         {
@@ -6514,19 +6704,18 @@ internal sealed class SettingsWindow : Window
             _contentScroll.Background = _surface;
         }
 
-        ShowPage(_currentPage);
+        RefreshNavigationTheme();
+
+        if (rebuildPage)
+        {
+            ShowPage(_currentPage);
+        }
     }
 
     private void ShowPage(string page)
     {
         _currentPage = page;
-        foreach (var (name, button) in _nav)
-        {
-            var active = string.Equals(name, page, StringComparison.OrdinalIgnoreCase);
-            button.Background = active ? _selected : WpfBrushes.Transparent;
-            button.Foreground = active ? _text : _muted;
-            button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
-        }
+        RefreshNavigationTheme();
 
         _content.Children.Clear();
         var panel = new StackPanel { Margin = new Thickness(24, 22, 24, 24) };
@@ -6604,6 +6793,30 @@ internal sealed class SettingsWindow : Window
         }
 
         _content.Children.Add(panel);
+    }
+
+    private void RefreshNavigationTheme()
+    {
+        foreach (var (name, button) in _nav)
+        {
+            ApplyNavButtonTheme(name, button);
+        }
+    }
+
+    private void ApplyNavButtonTheme(string page, WpfButton button)
+    {
+        var active = string.Equals(_currentPage, page, StringComparison.OrdinalIgnoreCase);
+        if (active)
+        {
+            button.Background = _selected;
+            button.Foreground = _text;
+            button.BorderBrush = _selectedBorder;
+            return;
+        }
+
+        button.Background = button.IsMouseOver ? _surface3 : WpfBrushes.Transparent;
+        button.Foreground = button.IsMouseOver ? _text : _muted;
+        button.BorderBrush = button.IsMouseOver ? _line2 : WpfBrushes.Transparent;
     }
 
     private FrameworkElement BuildPageHeader(string page)
@@ -6792,12 +7005,7 @@ internal sealed class SettingsWindow : Window
                 ("Duplicate handling", "Same content updates copy count"),
             },
             "Shortcuts" => [],
-            "Appearance" => new[]
-            {
-                ("Density", "Compact"),
-                ("Preview style", "Native when available"),
-                ("Accent", "Teal"),
-            },
+            "Appearance" => [],
             "Privacy" => [],
             "App Overrides" => [],
             "About" => [],
@@ -7638,17 +7846,8 @@ internal sealed class SettingsWindow : Window
         return ControlRow(
             "Theme",
             "Choose System, Light, or Dark.",
-            StyledDropdown(_settings.Theme.ToString(), new[] { "System", "Light", "Dark" }, selected =>
-            {
-                if (!Enum.TryParse<ClipThemePreference>(selected, out var theme) || theme == _settings.Theme)
-                {
-                    return;
-                }
-
-                _applyTheme(theme);
-                RefreshTheme();
-                ShellLog.Info($"settings theme changed theme={theme}");
-            }));
+            ThemeToggleDropdown(),
+            minHeight: 66);
     }
 
     private Border AppIconRow()
@@ -7656,16 +7855,505 @@ internal sealed class SettingsWindow : Window
         return ControlRow(
             "App icon",
             "Choose Light or Dark.",
-            StyledDropdown(_settings.AppIcon.ToString(), new[] { "Light", "Dark" }, selected =>
+            AppIconPicker());
+    }
+
+    private FrameworkElement ThemeToggleDropdown()
+    {
+        var host = new Grid { Width = 74, Height = 30 };
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
+
+        var toggle = AnimatedThemeToggle(_settings.Theme);
+        var themeIcon = (ThemeMorphIcon)toggle.Tag;
+        Grid.SetColumn(toggle, 0);
+        host.Children.Add(toggle);
+
+        var arrow = new WpfButton
+        {
+            Width = 28,
+            Height = 30,
+            Padding = new Thickness(0),
+            Background = _surface2,
+            BorderBrush = _line,
+            BorderThickness = new Thickness(1),
+            Content = new WpfImage { Source = _dropdownIcon, Width = 11, Height = 11 },
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Template = SubtleSettingsButtonTemplate(),
+            FocusVisualStyle = null,
+        };
+        arrow.MouseEnter += (_, _) => arrow.Background = _accentSoft;
+        arrow.MouseLeave += (_, _) => arrow.Background = _surface2;
+        Grid.SetColumn(arrow, 1);
+        host.Children.Add(arrow);
+
+        var optionHost = new StackPanel();
+        var popup = new Popup
+        {
+            PlacementTarget = host,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
             {
-                if (!Enum.TryParse<AppIconPreference>(selected, out var icon) || icon == _settings.AppIcon)
+                Background = _surface,
+                BorderBrush = _line,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(4),
+                MinWidth = 112,
+                Child = optionHost,
+            },
+        };
+
+        foreach (var item in new[] { "System", "Light", "Dark" })
+        {
+            optionHost.Children.Add(ThemeOptionRow(item, selected =>
+            {
+                ApplyThemeThroughToggle(selected, themeIcon);
+                var closeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) };
+                closeTimer.Tick += (_, _) =>
                 {
-                    return;
+                    closeTimer.Stop();
+                    popup.IsOpen = false;
+                };
+                closeTimer.Start();
+            }));
+        }
+
+        arrow.Click += (_, _) => popup.IsOpen = true;
+        return host;
+    }
+
+    private WpfButton AnimatedThemeToggle(ClipThemePreference current)
+    {
+        var dark = current switch
+        {
+            ClipThemePreference.Dark => true,
+            ClipThemePreference.Light => false,
+            _ => MainWindow.IsWindowsDarkMode(),
+        };
+
+        var icon = new ThemeMorphIcon(_text, dark ? 1 : 0)
+        {
+            Width = 26,
+            Height = 26,
+        };
+
+        var button = new WpfButton
+        {
+            Width = 42,
+            Height = 30,
+            Padding = new Thickness(7, 1, 7, 1),
+            Background = WpfBrushes.Transparent,
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Content = icon,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Template = SubtleSettingsButtonTemplate(),
+            FocusVisualStyle = null,
+            Tag = icon,
+        };
+        button.MouseEnter += (_, _) =>
+        {
+            button.BorderBrush = _line2;
+            button.Background = WpfBrushes.Transparent;
+            button.Opacity = 1;
+        };
+        button.MouseLeave += (_, _) =>
+        {
+            button.BorderBrush = WpfBrushes.Transparent;
+            button.Background = WpfBrushes.Transparent;
+            button.Opacity = 1;
+        };
+        button.PreviewMouseLeftButtonDown += (_, _) => button.Opacity = 0.72;
+        button.PreviewMouseLeftButtonUp += (_, _) => button.Opacity = 1;
+        button.Click += (_, _) =>
+        {
+            var next = MainWindow.NextThemeTogglePreference(PendingTheme ?? _settings.Theme, MainWindow.IsWindowsDarkMode());
+            AnimateAndApplyTheme(next, icon);
+        };
+        return button;
+    }
+
+    private ClipThemePreference? PendingTheme { get; set; }
+
+    private void ApplyThemeThroughToggle(ClipThemePreference theme, ThemeMorphIcon icon)
+    {
+        if (theme == _settings.Theme && PendingTheme is null)
+        {
+            return;
+        }
+
+        AnimateAndApplyTheme(theme, icon);
+    }
+
+    private void AnimateAndApplyTheme(ClipThemePreference theme, ThemeMorphIcon icon)
+    {
+        PendingTheme = theme;
+        _themeIcon = icon;
+        var dark = theme switch
+        {
+            ClipThemePreference.Dark => true,
+            ClipThemePreference.Light => false,
+            _ => MainWindow.IsWindowsDarkMode(),
+        };
+        icon.AnimateTo(
+            dark,
+            midway: () => { },
+            completed: () => { });
+
+        _themeApplyTimer.Stop();
+        _themeApplyTimer.Start();
+    }
+
+    private void ApplyPendingTheme()
+    {
+        _themeApplyTimer.Stop();
+        if (PendingTheme is not { } theme)
+        {
+            return;
+        }
+
+        ApplyThemeSelection(theme, refreshImmediately: false);
+        _paletteOverride = null;
+        RefreshTheme(rebuildPage: false);
+        RefreshVisibleSettingsContentTheme(_content);
+        _refreshClipboardManagerTextTheme();
+        _themeIcon?.SetInk(_text);
+        PendingTheme = null;
+        ShellLog.Info($"settings and main theme applied theme={theme}");
+    }
+
+    private sealed class ThemeMorphIcon : Grid
+    {
+        private SolidColorBrush _ink;
+        private readonly Grid _sun = new();
+        private readonly Grid _moon = new();
+        private readonly ScaleTransform _sunScale = new();
+        private readonly ScaleTransform _moonScale = new();
+        private readonly RotateTransform _sunRotate = new();
+        private readonly RotateTransform _moonRotate = new();
+
+        public ThemeMorphIcon(WpfBrush ink, double progress)
+        {
+            _ink = DetachedBrush(ink);
+            ClipToBounds = false;
+            SnapsToDevicePixels = true;
+            IsHitTestVisible = false;
+            BuildIcon(progress >= 0.5);
+        }
+
+        public void SetInk(WpfBrush ink)
+        {
+            _ink = DetachedBrush(ink);
+            ApplyInk(_sun);
+            ApplyInk(_moon);
+        }
+
+        public void AnimateTo(bool dark, Action midway, Action completed)
+        {
+            midway();
+            var duration = TimeSpan.FromMilliseconds(320);
+            Animate(_sun, OpacityProperty, dark ? 0 : 1, duration);
+            Animate(_moon, OpacityProperty, dark ? 1 : 0, duration, completed);
+            Animate(_sunScale, ScaleTransform.ScaleXProperty, dark ? 0.86 : 1, duration);
+            Animate(_sunScale, ScaleTransform.ScaleYProperty, dark ? 0.86 : 1, duration);
+            Animate(_moonScale, ScaleTransform.ScaleXProperty, dark ? 1 : 0.86, duration);
+            Animate(_moonScale, ScaleTransform.ScaleYProperty, dark ? 1 : 0.86, duration);
+            Animate(_sunRotate, RotateTransform.AngleProperty, dark ? 42 : 0, duration);
+            Animate(_moonRotate, RotateTransform.AngleProperty, dark ? 0 : -42, duration);
+        }
+
+        private void BuildIcon(bool dark)
+        {
+            Children.Clear();
+            BuildSun();
+            BuildMoon();
+            Children.Add(_sun);
+            Children.Add(_moon);
+            SetInitialState(dark);
+        }
+
+        private void BuildSun()
+        {
+            _sun.Width = 24;
+            _sun.Height = 24;
+            _sun.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+            _sun.VerticalAlignment = VerticalAlignment.Center;
+            _sun.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
+            _sun.RenderTransform = new TransformGroup { Children = { _sunScale, _sunRotate } };
+            _sun.Children.Add(new WpfEllipse
+            {
+                Width = 9.5,
+                Height = 9.5,
+                Fill = _ink,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            _sun.Children.Add(new WpfPath
+            {
+                Data = Geometry.Parse("M12,1 L12,3 M12,21 L12,23 M1,12 L3,12 M21,12 L23,12 M4.2,4.2 L5.7,5.7 M18.3,5.7 L19.8,4.2 M4.2,19.8 L5.7,18.3 M18.3,18.3 L19.8,19.8"),
+                Stroke = _ink,
+                StrokeThickness = 2,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Stretch = Stretch.None,
+            });
+        }
+
+        private void BuildMoon()
+        {
+            _moon.Width = 24;
+            _moon.Height = 24;
+            _moon.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+            _moon.VerticalAlignment = VerticalAlignment.Center;
+            _moon.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
+            _moon.RenderTransform = new TransformGroup { Children = { _moonScale, _moonRotate } };
+            _moon.Children.Add(new WpfPath
+            {
+                Data = Geometry.Parse("M21,12.8 A9,9 0 1 1 11.2,3 A7,7 0 1 0 21,12.8 Z"),
+                Fill = _ink,
+                Stretch = Stretch.None,
+            });
+        }
+
+        private void SetInitialState(bool dark)
+        {
+            _sun.Opacity = dark ? 0 : 1;
+            _moon.Opacity = dark ? 1 : 0;
+            _sunScale.ScaleX = _sunScale.ScaleY = dark ? 0.86 : 1;
+            _moonScale.ScaleX = _moonScale.ScaleY = dark ? 1 : 0.86;
+            _sunRotate.Angle = dark ? 42 : 0;
+            _moonRotate.Angle = dark ? 0 : -42;
+        }
+
+        private void ApplyInk(DependencyObject root)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is WpfShape shape)
+                {
+                    shape.Fill = shape.Fill is not null ? _ink : shape.Fill;
+                    shape.Stroke = shape.Stroke is not null ? _ink : shape.Stroke;
                 }
 
-                _applyAppIcon(icon);
-                ShellLog.Info($"settings app icon changed icon={icon}");
-            }));
+                ApplyInk(child);
+            }
+        }
+
+        private static void Animate(DependencyObject target, DependencyProperty property, double to, TimeSpan duration, Action? completed = null)
+        {
+            var animation = new DoubleAnimation
+            {
+                To = to,
+                Duration = new Duration(duration),
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+                FillBehavior = FillBehavior.HoldEnd,
+            };
+            if (completed is not null)
+            {
+                animation.Completed += (_, _) => completed();
+            }
+
+            if (target is UIElement element)
+            {
+                element.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+            }
+            else if (target is Animatable animatable)
+            {
+                animatable.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+            }
+        }
+
+        private static SolidColorBrush DetachedBrush(WpfBrush brush)
+        {
+            if (brush is SolidColorBrush solid)
+            {
+                var detached = new SolidColorBrush(solid.Color);
+                detached.Freeze();
+                return detached;
+            }
+
+            var fallback = new SolidColorBrush(Colors.White);
+            fallback.Freeze();
+            return fallback;
+        }
+    }
+
+    private void RefreshVisibleSettingsContentTheme(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            switch (child)
+            {
+                case TextBlock text:
+                    text.Foreground = IsPrimarySettingsText(text) ? _text : _muted;
+                    break;
+                case WpfButton button:
+                    button.Foreground = _text;
+                    if (button.Background != WpfBrushes.Transparent)
+                    {
+                        button.Background = _surface2;
+                    }
+                    if (button.BorderBrush != WpfBrushes.Transparent)
+                    {
+                        button.BorderBrush = _line;
+                    }
+                    break;
+                case Border border:
+                    if (border.BorderThickness != new Thickness(0))
+                    {
+                        border.BorderBrush = _line;
+                    }
+                    break;
+            }
+
+            RefreshVisibleSettingsContentTheme(child);
+        }
+    }
+
+    private static bool IsPrimarySettingsText(TextBlock text)
+    {
+        return text.FontWeight == FontWeights.SemiBold ||
+            text.FontWeight == FontWeights.Bold ||
+            text.FontSize >= 15 ||
+            string.Equals(text.Text, "Theme", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(text.Text, "App icon", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private Border ThemeOptionRow(string item, Action<ClipThemePreference> onSelected)
+    {
+        var row = new Border
+        {
+            CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(10, 7, 10, 7),
+            Background = WpfBrushes.Transparent,
+            BorderBrush = WpfBrushes.Transparent,
+            BorderThickness = new Thickness(1),
+        };
+        row.Child = new TextBlock
+        {
+            Text = item,
+            Foreground = string.Equals(item, _settings.Theme.ToString(), StringComparison.OrdinalIgnoreCase) ? _accent : _muted,
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+        };
+        row.MouseEnter += (_, _) =>
+        {
+            row.Background = _accentSoft;
+            row.BorderBrush = _selectedBorder;
+        };
+        row.MouseLeave += (_, _) =>
+        {
+            row.Background = WpfBrushes.Transparent;
+            row.BorderBrush = WpfBrushes.Transparent;
+        };
+        row.MouseLeftButtonDown += (_, e) =>
+        {
+            if (Enum.TryParse<ClipThemePreference>(item, out var theme))
+            {
+                onSelected(theme);
+            }
+
+            e.Handled = true;
+        };
+        return row;
+    }
+
+    private void ApplyThemeSelection(ClipThemePreference theme, bool refreshImmediately = true)
+    {
+        if (theme == _settings.Theme)
+        {
+            return;
+        }
+
+        _applyTheme(theme);
+        if (refreshImmediately)
+        {
+            RefreshTheme(rebuildPage: false);
+        }
+
+        ShellLog.Info($"settings theme changed theme={theme}");
+    }
+
+    private FrameworkElement AppIconPicker()
+    {
+        var host = new Grid { Width = 74, Height = 30 };
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var light = AppIconButton(AppIconPreference.Light);
+        var dark = AppIconButton(AppIconPreference.Dark);
+        Grid.SetColumn(light, 0);
+        Grid.SetColumn(dark, 2);
+        host.Children.Add(light);
+        host.Children.Add(dark);
+        return host;
+    }
+
+    private WpfButton AppIconButton(AppIconPreference preference)
+    {
+        var active = preference == _settings.AppIcon;
+        var button = new WpfButton
+        {
+            Width = 32,
+            Height = 30,
+            Padding = new Thickness(3),
+            Background = WpfBrushes.Transparent,
+            BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent,
+            BorderThickness = new Thickness(active ? 1 : 0),
+            Content = new WpfImage
+            {
+                Source = LoadAppIconImage(preference),
+                Width = 24,
+                Height = 24,
+                Stretch = Stretch.Uniform,
+                SnapsToDevicePixels = true,
+            },
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Template = SubtleSettingsButtonTemplate(),
+            FocusVisualStyle = null,
+            ToolTip = $"{preference} app icon",
+        };
+        RenderOptions.SetBitmapScalingMode(button, BitmapScalingMode.HighQuality);
+        button.MouseEnter += (_, _) => button.BorderBrush = _selectedBorder;
+        button.MouseLeave += (_, _) => button.BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent;
+        button.Click += (_, _) =>
+        {
+            if (preference == _settings.AppIcon)
+            {
+                return;
+            }
+
+            _applyAppIcon(preference);
+            ShellLog.Info($"settings app icon changed icon={preference}");
+            ShowPage(_currentPage);
+        };
+        return button;
+    }
+
+    private static ImageSource LoadAppIconImage(AppIconPreference preference)
+    {
+        var fileName = preference == AppIconPreference.Dark ? "clip-tile-dark.svg" : "clip-tile-light.svg";
+        var path = Path.Combine(AppContext.BaseDirectory, "assets", "app-icons", fileName);
+        if (!File.Exists(path))
+        {
+            path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "app-icons", fileName));
+        }
+
+        var document = SvgDocument.FromSvg<SvgDocument>(File.ReadAllText(path));
+        using var bitmap = new System.Drawing.Bitmap(64, 64);
+        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+        graphics.Clear(System.Drawing.Color.Transparent);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        using var rendered = document.Draw(64, 64);
+        graphics.DrawImage(rendered, 0, 0, 64, 64);
+        return MainWindow.BitmapFromDrawingImage(bitmap);
     }
 
     private WpfButton StyledDropdown(string selected, IReadOnlyList<string> items, Action<string> onSelected)
@@ -7820,6 +8508,7 @@ internal sealed class SettingsWindow : Window
             Text = hint,
             Foreground = _muted,
             FontSize = 12,
+            LineHeight = 16,
             Margin = new Thickness(0, 3, 0, 0),
             TextWrapping = TextWrapping.Wrap,
         });
