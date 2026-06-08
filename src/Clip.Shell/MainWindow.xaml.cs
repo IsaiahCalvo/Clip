@@ -933,6 +933,11 @@ public partial class MainWindow : Window
         UpdateLayout();
         Opacity = 1;
         IsHitTestVisible = true;
+        if (ShouldActivatePaletteWindow(_paletteNoActivate))
+        {
+            ActivatePaletteWindow(ownHwnd);
+        }
+
         _outsideClickTimer.Start();
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender} noActivate={_paletteNoActivate}");
 
@@ -942,6 +947,47 @@ public partial class MainWindow : Window
         }
 
         PromptForKnownUpdate();
+    }
+
+    internal static bool ShouldActivatePaletteWindow(bool noActivate) => !noActivate;
+
+    private void ActivatePaletteWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (IsIconic(hwnd))
+        {
+            ShowWindow(hwnd, ShowWindowRestore);
+        }
+        else
+        {
+            ShowWindow(hwnd, ShowWindowShow);
+        }
+
+        var foreground = GetForegroundWindow();
+        var currentThread = GetCurrentThreadId();
+        var foregroundThread = foreground != IntPtr.Zero ? GetWindowThreadProcessId(foreground, out _) : 0;
+        var attached = foregroundThread != 0 && foregroundThread != currentThread && AttachThreadInput(currentThread, foregroundThread, true);
+        try
+        {
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentThread, foregroundThread, false);
+            }
+        }
+
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SetWindowPosNoMove | SetWindowPosNoSize);
+        Activate();
+        SearchBox.Focus();
+        Keyboard.Focus(SearchBox);
     }
 
     public void CheckForUpdatesFromTray()
@@ -5276,10 +5322,15 @@ public partial class MainWindow : Window
     private const int MouseActivateNoActivate = 3;
     private const int WindowLongExStyle = -20;
     private const long WindowExNoActivate = 0x08000000L;
+    private const int ShowWindowShow = 5;
+    private const int ShowWindowRestore = 9;
+    private const uint SetWindowPosNoSize = 0x0001;
+    private const uint SetWindowPosNoMove = 0x0002;
     private const uint KeyEventKeyUp = 0x0002;
     private const ushort VirtualKeyControl = 0x11;
     private const ushort VirtualKeyEnter = 0x0D;
     private const ushort VirtualKeyV = 0x56;
+    private static readonly IntPtr HwndTopmost = new(-1);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Input
@@ -5310,8 +5361,12 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern IntPtr SetActiveWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)] private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)] private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr newLong);

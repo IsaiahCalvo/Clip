@@ -106,6 +106,13 @@ public sealed class PasteFormatTests
     }
 
     [Fact]
+    public void NormalPaletteOpenForcesActivation()
+    {
+        Assert.True(MainWindow.ShouldActivatePaletteWindow(noActivate: false));
+        Assert.False(MainWindow.ShouldActivatePaletteWindow(noActivate: true));
+    }
+
+    [Fact]
     public void GoogleEarthFlutterTextGroupUsesNoActivatePalette()
     {
         Assert.True(MainWindow.IsFocusSensitiveWebEdit(
