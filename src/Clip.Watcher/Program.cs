@@ -275,17 +275,20 @@ internal sealed class ClipboardWatcherForm : Form
     private const uint ModAlt = 0x0001;
     private const uint VkV = 0x56;
     private readonly ClipboardHistoryStore _store;
+    private readonly ClipboardHistoryImportService _historyImporter;
     private readonly NotifyIcon _trayIcon = new();
     private ClipboardPaletteForm? _palette;
     private bool _clipboardListenerRegistered;
     private bool _hotkeyRegistered;
     private bool _paletteLoadQueued;
+    private bool _historyImportInProgress;
     private string? _lastRealSourceName;
     private string? _lastRealSourcePath;
 
     public ClipboardWatcherForm(ClipboardHistoryStore store)
     {
         _store = store;
+        _historyImporter = new ClipboardHistoryImportService(_store, new WindowsClipboardHistorySource());
         ShowInTaskbar = false;
         WindowState = FormWindowState.Minimized;
         Opacity = 0;
@@ -304,6 +307,9 @@ internal sealed class ClipboardWatcherForm : Form
         {
             await Task.Delay(250);
             BeginInvokeIfAlive(CaptureCurrentClipboard);
+
+            await Task.Delay(150);
+            BeginInvokeIfAlive(() => _ = ImportWindowsClipboardHistoryAsync("startup", refreshPalette: false));
 
             await Task.Delay(500);
             BeginInvokeIfAlive(WarmPalette);
@@ -395,6 +401,7 @@ internal sealed class ClipboardWatcherForm : Form
                 _palette = new ClipboardPaletteForm(_store);
             }
 
+            _ = ImportWindowsClipboardHistoryAsync("show", refreshPalette: true);
             var wasVisible = _palette.Visible;
             _palette.ShowPaletteWindow();
             if (wasVisible)
@@ -423,6 +430,43 @@ internal sealed class ClipboardWatcherForm : Form
             }
 
             _palette = null;
+        }
+    }
+
+    private async Task ImportWindowsClipboardHistoryAsync(string reason, bool refreshPalette)
+    {
+        if (_historyImportInProgress)
+        {
+            return;
+        }
+
+        _historyImportInProgress = true;
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var imported = await _historyImporter.ImportAsync();
+            Program.LogDebug($"Windows history import reason={reason} imported={imported} elapsedMs={watch.ElapsedMilliseconds}");
+            if (imported <= 0 || !refreshPalette || _palette is not { IsDisposed: false })
+            {
+                return;
+            }
+
+            if (_palette.Visible)
+            {
+                QueuePaletteLoad(_palette);
+            }
+            else
+            {
+                _palette.LoadItems(refreshPreview: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogError(ex);
+        }
+        finally
+        {
+            _historyImportInProgress = false;
         }
     }
 
@@ -2433,7 +2477,13 @@ internal sealed class ClipboardPaletteForm : Form
         if (item.Kind == ClipboardItemKind.Files)
         {
             menu.Items.Add("Open With...", null, (_, _) => OpenWith(item));
+            menu.Items.Add("Show in File Explorer", null, (_, _) => ShowInFileExplorer(item));
             menu.Items.Add("Copy path", null, (_, _) => CopyPath(item));
+        }
+
+        if (item.Kind is not ClipboardItemKind.Files && ClipboardItemRevealTarget.GetPath(item) is not null)
+        {
+            menu.Items.Add("Show in File Explorer", null, (_, _) => ShowInFileExplorer(item));
         }
 
         menu.Items.Add("Save as File", null, (_, _) => SaveItem(item));
@@ -2739,6 +2789,22 @@ internal sealed class ClipboardPaletteForm : Form
             _keepOpenForModal = false;
             Show();
             Activate();
+        }
+    }
+
+    private void ShowInFileExplorer(ClipboardHistoryItem item)
+    {
+        try
+        {
+            if (!FileExplorerReveal.TryReveal(ClipboardItemRevealTarget.GetPath(item)))
+            {
+                ShowToast("Path not found");
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogError(ex);
+            ShowToast("Could not open File Explorer");
         }
     }
 

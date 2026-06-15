@@ -121,9 +121,9 @@ public sealed class ClipboardHistoryStore
             .ToList();
     }
 
-    public ClipboardHistoryItem AddOrUpdate(ClipboardHistoryItem item, int maxItems = 500)
+    public ClipboardHistoryItem AddOrUpdate(ClipboardHistoryItem item, int maxItems = 500, bool refreshCopiedAt = true)
     {
-        Enrich(item, refreshCopiedAt: true);
+        Enrich(item, refreshCopiedAt);
         PersistContentAsset(item);
         var items = GetItems().ToList();
         var duplicate = FindDuplicate(items, item);
@@ -163,6 +163,12 @@ public sealed class ClipboardHistoryStore
         Save(items);
         DeleteAssets(removed);
         return item;
+    }
+
+    public bool ContainsEquivalent(ClipboardHistoryItem item)
+    {
+        Enrich(item);
+        return FindDuplicate(GetItems(), item) is not null;
     }
 
     public int ApplyHistoryLimit(int maxItems)

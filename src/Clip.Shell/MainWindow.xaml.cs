@@ -737,6 +737,7 @@ public partial class MainWindow : Window
 
     private readonly ClipShellSettings _settings = ClipShellSettings.Load();
     private readonly ClipboardHistoryStore _store;
+    private readonly ClipboardHistoryImportService _historyImporter;
     private readonly ClipUpdateService _updates = new();
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
@@ -761,6 +762,7 @@ public partial class MainWindow : Window
     private bool _updateCheckInProgress;
     private string? _promptedUpdateVersion;
     private bool _itemsDirtySinceRender = true;
+    private bool _historyImportInProgress;
     private bool _paletteRequested;
     private bool _paletteNoActivate;
     private IntPtr _returnFocusHwnd;
@@ -793,6 +795,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath());
+        _historyImporter = new ClipboardHistoryImportService(_store, new WindowsClipboardHistorySource());
         InitializeComponent();
         RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Enabled);
         ApplyTheme(_settings.Theme, save: false);
@@ -849,6 +852,7 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
+            await ImportWindowsClipboardHistoryAsync("startup", refreshVisible: false);
             LoadItems(selectFirst: true, reason: "startup");
             MoveOffscreen();
             Opacity = 1;
@@ -946,6 +950,7 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(() => LoadItems(selectFirst: _selected is null, reason: "show-refresh"), System.Windows.Threading.DispatcherPriority.Background);
         }
 
+        _ = ImportWindowsClipboardHistoryAsync("show", refreshVisible: true);
         PromptForKnownUpdate();
     }
 
@@ -1484,6 +1489,39 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task ImportWindowsClipboardHistoryAsync(string reason, bool refreshVisible)
+    {
+        if (_historyImportInProgress)
+        {
+            return;
+        }
+
+        _historyImportInProgress = true;
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var imported = await _historyImporter.ImportAsync(EffectiveHistoryLimit());
+            if (imported > 0)
+            {
+                _itemsDirtySinceRender = true;
+                if (refreshVisible && IsVisible)
+                {
+                    _ = Dispatcher.BeginInvoke(new Action(() => LoadItems(selectFirst: _selected is null, reason: $"windows-history-{reason}")), System.Windows.Threading.DispatcherPriority.Background);
+                }
+            }
+
+            ShellLog.Info($"windows history import reason={reason} imported={imported} elapsedMs={watch.ElapsedMilliseconds}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"windows history import failed reason={reason}");
+        }
+        finally
+        {
+            _historyImportInProgress = false;
+        }
+    }
+
     private void RenderItems(string reason)
     {
         var selectedId = _selected?.Id;
@@ -1793,6 +1831,17 @@ public partial class MainWindow : Window
             actions.Add(MenuAction.Separator);
             actions.Add(new MenuAction("Open", () => OpenItem(item), true, shortcut: "Ctrl+O"));
             actions.Add(new MenuAction("Open With...", () => OpenWith(item)));
+        }
+
+        var revealPath = ClipboardItemRevealTarget.GetPath(item);
+        if (revealPath is not null)
+        {
+            if (item.Kind is not (ClipboardItemKind.Image or ClipboardItemKind.Files))
+            {
+                actions.Add(MenuAction.Separator);
+            }
+
+            actions.Add(new MenuAction("Show in File Explorer", () => ShowInFileExplorer(item)));
         }
 
         if (item.Kind == ClipboardItemKind.Files)
@@ -3067,6 +3116,26 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, $"open-with failed path={targetPath}");
             _suppressDeactivate = false;
             ShowToast("Open With failed. Log saved.");
+        }
+    }
+
+    private void ShowInFileExplorer(ClipboardHistoryItem item)
+    {
+        var path = ClipboardItemRevealTarget.GetPath(item);
+        try
+        {
+            if (!FileExplorerReveal.TryReveal(path))
+            {
+                ShowToast("Path not found");
+                return;
+            }
+
+            ShellLog.Info($"show in file explorer id={item.Id} path={path}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"show in file explorer failed id={item.Id} path={path}");
+            ShowToast("Could not open File Explorer");
         }
     }
 
