@@ -92,7 +92,11 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
             }
 
             var isPaste = command.Equals("paste", StringComparison.OrdinalIgnoreCase);
+            var isAppend = command.Equals("append", StringComparison.OrdinalIgnoreCase);
+            var isShare = command.Equals("share", StringComparison.OrdinalIgnoreCase);
             if (!isPaste &&
+                !isAppend &&
+                !isShare &&
                 !command.Equals("copy", StringComparison.OrdinalIgnoreCase) &&
                 !command.Equals("open", StringComparison.OrdinalIgnoreCase) &&
                 !command.Equals("reveal", StringComparison.OrdinalIgnoreCase))
@@ -110,6 +114,18 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
             if (isPaste)
             {
                 result = InvokePaste(item);
+                return true;
+            }
+
+            if (isAppend)
+            {
+                result = InvokeAppend(item);
+                return true;
+            }
+
+            if (isShare)
+            {
+                result = InvokeShare(item);
                 return true;
             }
 
@@ -183,6 +199,99 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
 
         // Dismiss so the palette closes and the OS restores focus to the prior app.
         return CommandResult.Dismiss();
+    }
+
+    private ICommandResult InvokeAppend(Clip.Core.ClipboardHistoryItem item)
+    {
+        var addition = string.IsNullOrEmpty(item.Text) ? item.Preview : item.Text;
+        if (string.IsNullOrEmpty(addition))
+        {
+            ShowError("There is nothing to append for this item.");
+            return CommandResult.KeepOpen();
+        }
+
+        // Read whatever text is currently on the clipboard and append this item's text to it,
+        // entirely in-process (no helper launch) so the action stays well under 50ms.
+        var existing = string.Empty;
+        try
+        {
+            var view = Clipboard.GetContent();
+            if (view.Contains(StandardDataFormats.Text))
+            {
+                existing = view.GetTextAsync().AsTask().GetAwaiter().GetResult() ?? string.Empty;
+            }
+        }
+        catch
+        {
+            existing = string.Empty;
+        }
+
+        var combined = string.IsNullOrEmpty(existing)
+            ? addition
+            : $"{existing}{Environment.NewLine}{addition}";
+
+        var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+        data.SetText(combined);
+        Clipboard.SetContent(data);
+        Clipboard.Flush();
+
+        new ToastStatusMessage(new StatusMessage
+        {
+            Message = "Appended to clipboard.",
+            State = MessageState.Success,
+        }).Show();
+
+        // Keep the palette open so the user can append several items before pasting.
+        return CommandResult.KeepOpen();
+    }
+
+    private ICommandResult InvokeShare(Clip.Core.ClipboardHistoryItem item)
+    {
+        ClipboardSharePayload payload;
+        try
+        {
+            payload = ClipboardSharePayload.Create(item);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            return CommandResult.KeepOpen();
+        }
+
+        // The Windows share sheet (DataTransferManager) requires a foreground HWND, which this
+        // windowless Command Palette extension does not own, so we share via the Blip target the
+        // standalone app integrates with. (Use "Open Clip.exe" for the full system share sheet.)
+        if (!BlipShareLaunchPlan.IsInstalled())
+        {
+            ShowError("Sharing from Command Palette needs the Blip app installed. Use \"Open Clip.exe\" to share other ways.");
+            return CommandResult.KeepOpen();
+        }
+
+        try
+        {
+            var plan = BlipShareLaunchPlan.Create(payload);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = BlipShareLaunchPlan.ExecutableName,
+                UseShellExecute = true,
+            };
+
+            foreach (var argument in plan.LaunchArguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            Process.Start(startInfo);
+
+            // Temporary text payloads are reclaimed by ClipboardSharePayload's stale-file sweep,
+            // so we must NOT delete them here (Blip may still be reading them).
+            return CommandResult.Dismiss();
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            return CommandResult.KeepOpen();
+        }
     }
 
     private static void ShowError(string message)

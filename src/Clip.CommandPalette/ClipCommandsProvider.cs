@@ -31,6 +31,11 @@ public sealed partial class ClipCommandsProvider : CommandProvider
                 Subtitle = "Search Clip clipboard history",
                 MoreCommands = historyPage.CreateContextCommands(),
             },
+            new CommandItem(new ClipPasteLatestCommand())
+            {
+                Title = "Paste latest Clip item",
+                Subtitle = "Paste the most recently copied item",
+            },
         ];
 
         return _commands;

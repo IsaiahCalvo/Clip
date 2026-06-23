@@ -332,7 +332,7 @@ public sealed record ClipboardHistoryListAction(
                 Id: "share",
                 Label: "Share",
                 Executable: string.Empty,
-                Arguments: [],
+                Arguments: ["share", item.Id],
                 RequiresFullItem: true));
         }
 

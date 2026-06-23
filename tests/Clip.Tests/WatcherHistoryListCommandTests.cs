@@ -241,7 +241,7 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
         Assert.Contains(listed.Actions, action =>
             action.Id == "share" &&
             action.Label == "Share" &&
-            action.Arguments.Count == 0 &&
+            action.Arguments.SequenceEqual(["share", item.Id]) &&
             action.RequiresFullItem);
     }
 
@@ -288,7 +288,7 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
         Assert.Contains(listed.Actions, action =>
             action.Id == "share" &&
             action.Executable == string.Empty &&
-            action.Arguments.Count == 0);
+            action.Arguments.SequenceEqual(["share", listed.Id]));
         Assert.DoesNotContain(listed.Actions, action => action.Id == "paste-plain");
         Assert.DoesNotContain(listed.Actions, action => action.Id == "append");
     }

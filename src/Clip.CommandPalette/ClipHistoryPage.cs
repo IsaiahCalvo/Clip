@@ -60,6 +60,11 @@ internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
             Title = "Check for Clip.exe updates",
             Icon = new IconInfo("\uE895"),
         },
+        new CommandContextItem(ClipShellActionCommand.SaveLogSnapshot())
+        {
+            Title = "Save log snapshot",
+            Icon = new IconInfo(""),
+        },
         new CommandContextItem(new ClipImportWindowsHistoryCommand(InvalidateItems))
         {
             Title = "Import Windows clipboard history",

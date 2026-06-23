@@ -23,6 +23,8 @@ internal sealed partial class ClipShellActionCommand : InvokableCommand
 
     public static ClipShellActionCommand CheckForUpdates() => new("Check for Clip.exe updates", "\uE895", "--tray-action=check-updates");
 
+    public static ClipShellActionCommand SaveLogSnapshot() => new("Save log snapshot", "\uE9F9", "--tray-action=save-log");
+
     public override ICommandResult Invoke()
     {
         var executable = ClipExecutableLocator.Resolve("Clip.exe");
