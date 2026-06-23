@@ -91,7 +91,9 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
                 return true;
             }
 
-            if (!command.Equals("copy", StringComparison.OrdinalIgnoreCase) &&
+            var isPaste = command.Equals("paste", StringComparison.OrdinalIgnoreCase);
+            if (!isPaste &&
+                !command.Equals("copy", StringComparison.OrdinalIgnoreCase) &&
                 !command.Equals("open", StringComparison.OrdinalIgnoreCase) &&
                 !command.Equals("reveal", StringComparison.OrdinalIgnoreCase))
             {
@@ -105,9 +107,15 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
                 return true;
             }
 
+            if (isPaste)
+            {
+                result = InvokePaste(item);
+                return true;
+            }
+
             if (command.Equals("copy", StringComparison.OrdinalIgnoreCase))
             {
-                ClipClipboardWriter.SetItem(item);
+                ClipClipboardWriter.SetItem(item, ClipSharedSettings.LoadDefaultPasteFormat());
                 result = CommandResult.Dismiss();
                 return true;
             }
@@ -133,6 +141,50 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
         }
     }
 
+    private ICommandResult InvokePaste(Clip.Core.ClipboardHistoryItem item)
+    {
+        // Honor the user's format preference: 'paste' uses the default, 'paste-plain' forces plain text.
+        var format = _action.Id.Equals("paste-plain", StringComparison.OrdinalIgnoreCase)
+            ? PasteFormatPreference.PlainText
+            : ClipSharedSettings.LoadDefaultPasteFormat();
+
+        // Set the clipboard in-process (fast, well under 50ms) so the correct format is delivered.
+        ClipClipboardWriter.SetItem(item, format);
+
+        // Hand the actual focus-restore + Ctrl+V injection to the proven Watcher path.
+        // It is fire-and-forget: the clipboard is already populated, so the Watcher only needs
+        // to restore focus to the prior app and synthesize the keystroke.
+        var executable = ClipExecutableLocator.Resolve(_action.Executable);
+        if (executable is null)
+        {
+            ShowError("Clip helper (Clip.Watcher.exe) was not found, so the paste keystroke could not be sent.");
+            return CommandResult.KeepOpen();
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(executable) ?? AppContext.BaseDirectory,
+            };
+
+            startInfo.ArgumentList.Add("paste");
+            startInfo.ArgumentList.Add(item.Id);
+
+            Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            ShowError(ex.Message);
+            return CommandResult.KeepOpen();
+        }
+
+        // Dismiss so the palette closes and the OS restores focus to the prior app.
+        return CommandResult.Dismiss();
+    }
+
     private static void ShowError(string message)
     {
         new ToastStatusMessage(new StatusMessage
@@ -144,6 +196,8 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
 
     private static string IconForAction(string actionId) => actionId switch
     {
+        "paste" => "\uE77F",
+        "paste-plain" => "\uE77F",
         "copy" => "\uE8C8",
         "rename" => "\uE8AC",
         "edit-text" => "\uE70F",
@@ -162,7 +216,7 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
 
 internal static class ClipClipboardWriter
 {
-    public static void SetItem(Clip.Core.ClipboardHistoryItem item)
+    public static void SetItem(Clip.Core.ClipboardHistoryItem item, PasteFormatPreference format = PasteFormatPreference.PlainText)
     {
         var data = new DataPackage
         {
@@ -171,8 +225,20 @@ internal static class ClipClipboardWriter
 
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
         {
-            var payload = ClipboardPasteData.Create(item, PasteFormatPreference.PlainText);
+            var effectiveFormat = format == PasteFormatPreference.OriginalFormatting && ClipboardPasteData.HasOriginalFormatting(item)
+                ? PasteFormatPreference.OriginalFormatting
+                : PasteFormatPreference.PlainText;
+            var payload = ClipboardPasteData.Create(item, effectiveFormat);
             data.SetText(payload.Text);
+            if (!string.IsNullOrWhiteSpace(payload.Html))
+            {
+                data.SetHtmlFormat(payload.Html);
+            }
+
+            if (!string.IsNullOrWhiteSpace(payload.Rtf))
+            {
+                data.SetRtf(payload.Rtf);
+            }
         }
         else if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
         {

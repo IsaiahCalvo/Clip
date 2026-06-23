@@ -172,6 +172,26 @@ public sealed record ClipboardHistoryListAction(
     {
         var actions = new List<ClipboardHistoryListAction>();
 
+        if (CanPaste(item))
+        {
+            actions.Add(new ClipboardHistoryListAction(
+                Id: "paste",
+                Label: "Paste",
+                Executable: "Clip.Watcher.exe",
+                Arguments: ["paste", item.Id],
+                RequiresFullItem: true));
+        }
+
+        if (CanPastePlain(item))
+        {
+            actions.Add(new ClipboardHistoryListAction(
+                Id: "paste-plain",
+                Label: "Paste as Plain Text",
+                Executable: "Clip.Watcher.exe",
+                Arguments: ["paste", item.Id],
+                RequiresFullItem: true));
+        }
+
         if (CanCopy(item))
         {
             actions.Add(new ClipboardHistoryListAction(
@@ -179,6 +199,16 @@ public sealed record ClipboardHistoryListAction(
                 Label: "Copy",
                 Executable: "Clip.Watcher.exe",
                 Arguments: ["copy", item.Id],
+                RequiresFullItem: true));
+        }
+
+        if (CanAppend(item))
+        {
+            actions.Add(new ClipboardHistoryListAction(
+                Id: "append",
+                Label: "Append to Clipboard",
+                Executable: "Clip.Watcher.exe",
+                Arguments: ["append", item.Id],
                 RequiresFullItem: true));
         }
 
@@ -277,7 +307,48 @@ public sealed record ClipboardHistoryListAction(
                 RequiresFullItem: true));
         }
 
+        if (CanShare(item))
+        {
+            actions.Add(new ClipboardHistoryListAction(
+                Id: "share",
+                Label: "Share",
+                Executable: string.Empty,
+                Arguments: [],
+                RequiresFullItem: true));
+        }
+
         return actions;
+    }
+
+    private static bool CanPaste(ClipboardHistoryItem item) => CanCopy(item);
+
+    private static bool CanPastePlain(ClipboardHistoryItem item) =>
+        item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color &&
+        CanCopy(item);
+
+    private static bool CanAppend(ClipboardHistoryItem item)
+    {
+        if (item.Kind is not (ClipboardItemKind.Text or ClipboardItemKind.Link))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrEmpty(item.Text) || !string.IsNullOrEmpty(item.Preview);
+    }
+
+    private static bool CanShare(ClipboardHistoryItem item)
+    {
+        if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
+        {
+            return !string.IsNullOrEmpty(item.Text) || !string.IsNullOrEmpty(item.Preview);
+        }
+
+        if (item.Kind == ClipboardItemKind.Image)
+        {
+            return !string.IsNullOrWhiteSpace(item.AssetPath);
+        }
+
+        return item.Kind == ClipboardItemKind.Files && item.FilePaths.Count > 0;
     }
 
     private static bool CanCopy(ClipboardHistoryItem item)

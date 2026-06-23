@@ -1,4 +1,4 @@
-using Clip.Core;
+﻿using Clip.Core;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using System.Text;
@@ -187,7 +187,16 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
 
     private ListItem CreateListItem(ClipboardHistoryListItem item, ClipboardHistoryStore store)
     {
-        var listItem = new ListItem(new ClipItemPreviewPage(item, store, InvalidateItems))
+        // Primary command (Enter) is Paste, mirroring the standalone app. When the item
+        // cannot be pasted (no paste action), fall back to opening the Preview page.
+        var pasteAction = item.Actions.FirstOrDefault(action =>
+            string.Equals(action.Id, "paste", StringComparison.Ordinal));
+        var previewPage = new ClipItemPreviewPage(item, store, InvalidateItems);
+        ICommand primaryCommand = pasteAction is not null
+            ? new ClipHistoryActionCommand(pasteAction, store, InvalidateItems)
+            : previewPage;
+
+        var listItem = new ListItem(primaryCommand)
         {
             Title = ClipText.TrimForDisplay(item.Title, 96),
             Subtitle = SubtitleFor(item),
@@ -197,13 +206,29 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
             Tags = CreateTags(item),
         };
 
-        var moreCommands = item.Actions
-            .Select(action => CreateContextCommand(action, item, store))
-            .ToArray();
+        var moreCommands = new List<IContextItem>();
 
-        if (moreCommands.Length > 0)
+        // Demote the full-screen Preview page to a secondary command. Skip it when it is
+        // already the primary command (i.e. no paste action available).
+        if (pasteAction is not null)
         {
-            listItem.MoreCommands = moreCommands;
+            moreCommands.Add(new CommandContextItem(previewPage)
+            {
+                Title = "Preview",
+                Icon = new IconInfo(""),
+            });
+        }
+
+        // Keep every item action (paste-plain, copy, open, reveal, pin, etc.) as a context
+        // command. The paste action that became the primary command is excluded to avoid a
+        // duplicate entry.
+        moreCommands.AddRange(item.Actions
+            .Where(action => !ReferenceEquals(action, pasteAction))
+            .Select(action => CreateContextCommand(action, item, store)));
+
+        if (moreCommands.Count > 0)
+        {
+            listItem.MoreCommands = moreCommands.ToArray();
         }
 
         return listItem;

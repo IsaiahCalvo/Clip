@@ -18,10 +18,20 @@ public enum ClipSharedAppIcon
 public readonly record struct ClipSharedSettingsSnapshot(
     ClipSharedOpenMode OpenMode,
     ClipSharedAppIcon AppIcon,
-    bool CheckForUpdatesOnStartup);
+    bool CheckForUpdatesOnStartup,
+    PasteFormatPreference DefaultPasteFormat,
+    int? HistoryLimit,
+    long? MaxItemSizeBytes,
+    string? ClipboardFolderPath);
 
 public static class ClipSharedSettings
 {
+    // Canonical defaults shared with Clip.Watcher.WatcherSettings (Program.cs:844-849)
+    // so every surface reads settings.json the same way.
+    public const int DefaultHistoryLimit = 500;
+    public const long DefaultMaxItemSizeBytes = 50L * 1024 * 1024;
+    public const PasteFormatPreference DefaultPasteFormat = PasteFormatPreference.PlainText;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -50,8 +60,19 @@ public static class ClipSharedSettings
         return new ClipSharedSettingsSnapshot(
             OpenMode: EnumValue(root, "OpenMode", ClipSharedOpenMode.Standalone),
             AppIcon: EnumValue(root, "AppIcon", ClipSharedAppIcon.Light),
-            CheckForUpdatesOnStartup: BoolValue(root, "CheckForUpdatesOnStartup", true));
+            CheckForUpdatesOnStartup: BoolValue(root, "CheckForUpdatesOnStartup", true),
+            DefaultPasteFormat: PasteFormatValue(root, "DefaultPasteFormat", DefaultPasteFormat),
+            HistoryLimit: NullableIntValue(root, "HistoryLimit", DefaultHistoryLimit),
+            MaxItemSizeBytes: NullableLongValue(root, "MaxItemSizeBytes", DefaultMaxItemSizeBytes),
+            ClipboardFolderPath: StringValue(root, "ClipboardFolderPath"));
     }
+
+    /// <summary>
+    /// Reads the user's preferred paste/copy format from settings.json
+    /// ("DefaultPasteFormat"). Defaults to <see cref="PasteFormatPreference.PlainText"/>
+    /// when the key is absent or invalid.
+    /// </summary>
+    public static PasteFormatPreference LoadDefaultPasteFormat() => Load().DefaultPasteFormat;
 
     public static void SetOpenMode(ClipSharedOpenMode mode)
     {
@@ -98,7 +119,14 @@ public static class ClipSharedSettings
     }
 
     private static ClipSharedSettingsSnapshot DefaultSnapshot() =>
-        new(ClipSharedOpenMode.Standalone, ClipSharedAppIcon.Light, true);
+        new(
+            ClipSharedOpenMode.Standalone,
+            ClipSharedAppIcon.Light,
+            true,
+            DefaultPasteFormat,
+            DefaultHistoryLimit,
+            DefaultMaxItemSizeBytes,
+            null);
 
     private static JsonObject ParseRootObject(string json)
     {
@@ -149,5 +177,59 @@ public static class ClipSharedSettings
             JsonValueKind.False => false,
             _ => defaultValue,
         };
+    }
+
+    private static PasteFormatPreference PasteFormatValue(JsonObject root, string name, PasteFormatPreference defaultValue)
+    {
+        if (!root.TryGetPropertyValue(name, out var node) || node is null)
+        {
+            return defaultValue;
+        }
+
+        if (node.GetValueKind() == JsonValueKind.Number && node.GetValue<int>() is var numeric)
+        {
+            return Enum.IsDefined(typeof(PasteFormatPreference), numeric)
+                ? (PasteFormatPreference)numeric
+                : defaultValue;
+        }
+
+        return node.GetValueKind() == JsonValueKind.String &&
+            Enum.TryParse<PasteFormatPreference>(node.GetValue<string>(), ignoreCase: true, out var parsed)
+                ? parsed
+                : defaultValue;
+    }
+
+    private static string? StringValue(JsonObject root, string name)
+    {
+        return root.TryGetPropertyValue(name, out var node) && node is not null && node.GetValueKind() == JsonValueKind.String
+            ? node.GetValue<string>()
+            : null;
+    }
+
+    // Mirrors Clip.Watcher.WatcherSettings.NullableIntProperty (Program.cs:988): an
+    // absent OR explicitly-null key falls back to the default.
+    private static int? NullableIntValue(JsonObject root, string name, int? defaultValue)
+    {
+        if (!root.TryGetPropertyValue(name, out var node) || node is null || node.GetValueKind() == JsonValueKind.Null)
+        {
+            return defaultValue;
+        }
+
+        return node.GetValueKind() == JsonValueKind.Number && node.AsValue().TryGetValue<int>(out var result)
+            ? result
+            : defaultValue;
+    }
+
+    // Mirrors Clip.Watcher.WatcherSettings.NullableLongProperty (Program.cs:998).
+    private static long? NullableLongValue(JsonObject root, string name, long? defaultValue)
+    {
+        if (!root.TryGetPropertyValue(name, out var node) || node is null || node.GetValueKind() == JsonValueKind.Null)
+        {
+            return defaultValue;
+        }
+
+        return node.GetValueKind() == JsonValueKind.Number && node.AsValue().TryGetValue<long>(out var result)
+            ? result
+            : defaultValue;
     }
 }

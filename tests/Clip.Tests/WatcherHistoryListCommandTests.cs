@@ -34,7 +34,12 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
         Assert.Equal(newer.Id, item.Id);
         Assert.Equal("Invoice", item.Title);
         Assert.True(item.HasOriginalFormatting);
-        Assert.Equal("copy", item.DefaultActionId);
+        Assert.Equal("paste", item.DefaultActionId);
+        var paste = item.Actions.First(action => action.Id == "paste");
+        Assert.Equal("Paste", paste.Label);
+        Assert.Equal("Clip.Watcher.exe", paste.Executable);
+        Assert.Equal(["paste", newer.Id], paste.Arguments);
+        Assert.True(paste.RequiresFullItem);
         var copy = item.Actions.First(action => action.Id == "copy");
         Assert.Equal("Copy", copy.Label);
         Assert.Equal("Clip.Watcher.exe", copy.Executable);
@@ -96,7 +101,17 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
         var result = ClipboardHistoryListCommand.Create(_store, ["list", "--json", "--limit", "1"]);
 
         var item = Assert.Single(result.Items);
-        Assert.Equal("copy", item.DefaultActionId);
+        Assert.Equal("paste", item.DefaultActionId);
+        Assert.Contains(item.Actions, action =>
+            action.Id == "paste" &&
+            action.Executable == "Clip.Watcher.exe" &&
+            action.Arguments.SequenceEqual(["paste", file.Id]) &&
+            action.RequiresFullItem);
+        Assert.Contains(item.Actions, action =>
+            action.Id == "share" &&
+            action.RequiresFullItem);
+        Assert.DoesNotContain(item.Actions, action => action.Id == "paste-plain");
+        Assert.DoesNotContain(item.Actions, action => action.Id == "append");
         Assert.Contains(item.Actions, action =>
             action.Id == "copy" &&
             action.Executable == "Clip.Watcher.exe" &&
@@ -180,6 +195,89 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
             action.Label == "Save as File" &&
             action.Arguments.SequenceEqual(["save", item.Id]) &&
             action.RequiresFullItem == true);
+    }
+
+    [Fact]
+    public void JsonListIncludesPasteAppendAndShareActionsForTextItems()
+    {
+        var item = TextItem("paste me");
+        _store.AddOrUpdate(item);
+
+        var result = ClipboardHistoryListCommand.Create(_store, ["list", "--json", "--limit", "1"]);
+
+        var listed = Assert.Single(result.Items);
+        Assert.Equal("paste", listed.DefaultActionId);
+        Assert.Contains(listed.Actions, action =>
+            action.Id == "paste" &&
+            action.Label == "Paste" &&
+            action.Executable == "Clip.Watcher.exe" &&
+            action.Arguments.SequenceEqual(["paste", item.Id]) &&
+            action.RequiresFullItem);
+        Assert.Contains(listed.Actions, action =>
+            action.Id == "paste-plain" &&
+            action.Label == "Paste as Plain Text" &&
+            action.Executable == "Clip.Watcher.exe" &&
+            action.Arguments.SequenceEqual(["paste", item.Id]) &&
+            action.RequiresFullItem);
+        Assert.Contains(listed.Actions, action =>
+            action.Id == "append" &&
+            action.Label == "Append to Clipboard" &&
+            action.Executable == "Clip.Watcher.exe" &&
+            action.Arguments.SequenceEqual(["append", item.Id]) &&
+            action.RequiresFullItem);
+        Assert.Contains(listed.Actions, action =>
+            action.Id == "share" &&
+            action.Label == "Share" &&
+            action.Arguments.Count == 0 &&
+            action.RequiresFullItem);
+    }
+
+    [Fact]
+    public void JsonListIncludesPastePlainButNotAppendForColorItems()
+    {
+        var item = new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Color,
+            Preview = "#FF0000",
+            Text = "#FF0000",
+            SourceApplication = "Test"
+        };
+        _store.AddOrUpdate(item);
+
+        var result = ClipboardHistoryListCommand.Create(_store, ["list", "--json", "--limit", "1"]);
+
+        var listed = Assert.Single(result.Items);
+        Assert.Contains(listed.Actions, action => action.Id == "paste");
+        Assert.Contains(listed.Actions, action => action.Id == "paste-plain");
+        Assert.DoesNotContain(listed.Actions, action => action.Id == "append");
+        Assert.DoesNotContain(listed.Actions, action => action.Id == "share");
+    }
+
+    [Fact]
+    public void JsonListIncludesShareButNotPastePlainOrAppendForImageItems()
+    {
+        Directory.CreateDirectory(_root);
+        var imagePath = Path.Combine(_root, "share.png");
+        File.WriteAllBytes(imagePath, [0x89, 0x50, 0x4E, 0x47]);
+        var image = new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Image,
+            Preview = "share.png",
+            AssetPath = imagePath,
+            SourceApplication = "Test"
+        };
+        _store.Save([image]);
+
+        var result = ClipboardHistoryListCommand.Create(_store, ["list", "--json", "--limit", "1"]);
+
+        var listed = Assert.Single(result.Items);
+        Assert.Contains(listed.Actions, action => action.Id == "paste");
+        Assert.Contains(listed.Actions, action =>
+            action.Id == "share" &&
+            action.Executable == string.Empty &&
+            action.Arguments.Count == 0);
+        Assert.DoesNotContain(listed.Actions, action => action.Id == "paste-plain");
+        Assert.DoesNotContain(listed.Actions, action => action.Id == "append");
     }
 
     [Fact]
