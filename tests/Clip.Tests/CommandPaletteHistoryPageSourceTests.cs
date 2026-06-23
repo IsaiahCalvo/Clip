@@ -278,6 +278,24 @@ public sealed class CommandPaletteHistoryPageSourceTests
         Assert.Contains(": IDisposable", watcher);
     }
 
+    [Fact]
+    public void HistoryPageExposesWindowsClipboardHistoryImportDelegatingToClipCommand()
+    {
+        var page = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
+        var import = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipImportWindowsHistoryCommand.cs"));
+
+        // The page surfaces the import as a page-level context command and refreshes the list after.
+        Assert.Contains("new ClipImportWindowsHistoryCommand(InvalidateItems)", page);
+
+        // The reader is the net8.0-windows WinRT helper the extension cannot load in-process, so the
+        // command delegates to Clip.Command.exe import-windows-history via ClipExecutableLocator,
+        // then invalidates the list and toasts the imported count.
+        Assert.Contains("ClipExecutableLocator.Resolve(\"Clip.Command.exe\")", import);
+        Assert.Contains("import-windows-history", import);
+        Assert.Contains("_afterImport()", import);
+        Assert.Contains("ToastStatusMessage", import);
+    }
+
     private static string RepoPath(params string[] parts)
     {
         var directory = AppContext.BaseDirectory;

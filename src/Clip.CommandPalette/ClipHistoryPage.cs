@@ -60,6 +60,11 @@ internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
             Title = "Check for Clip.exe updates",
             Icon = new IconInfo("\uE895"),
         },
+        new CommandContextItem(new ClipImportWindowsHistoryCommand(InvalidateItems))
+        {
+            Title = "Import Windows clipboard history",
+            Icon = new IconInfo("\uE896"),
+        },
         new CommandContextItem(new ClipClearHistoryCommand(_store, includePinned: false, InvalidateItems))
         {
             Title = "Clear unpinned history",
