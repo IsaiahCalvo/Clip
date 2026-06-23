@@ -5,15 +5,27 @@ using System.Text;
 
 namespace Clip.CommandPalette;
 
-internal sealed partial class ClipHistoryPage : DynamicListPage
+internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
 {
-    private const int Limit = 25;
+    // Cold-open paints only the first page so the list appears instantly; the page grows by
+    // PageIncrement as the user scrolls (LoadMore) or keeps searching, up to the user's
+    // configured HistoryLimit. The query stays native against the Core index and never loads
+    // item bodies, so a larger page is cheap.
+    private const int InitialPageSize = 25;
+    private const int PageIncrement = 25;
     private readonly Lazy<ClipboardHistoryStore> _store = new(() => ClipboardHistoryStore.OpenForCommandSurface());
     private readonly ClipHistoryFilters _filters;
     private string? _cachedSearchText;
     private string? _cachedFilterId;
     private DateTime _cachedIndexStampUtc;
+    private int _cachedPageSize;
     private IListItem[]? _cachedItems;
+    private int _pageSize = InitialPageSize;
+    private ClipHistoryWatcher? _watcher;
+    // Last store stamp the watcher acted on, so background noise (asset cleanup, swatch writes)
+    // that doesn't move the index stamp causes no visible list churn or selection loss while the
+    // user is reading.
+    private DateTime _watcherSeenStampUtc = DateTime.MinValue;
 
     public ClipHistoryPage()
     {
@@ -64,9 +76,28 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
     {
         if (!string.Equals(oldSearch, newSearch, StringComparison.Ordinal))
         {
+            // A new query starts cold: shrink back to the first page so search stays fast and
+            // the user pages into the (now re-filtered) results from the top.
+            _pageSize = InitialPageSize;
             _cachedItems = null;
         }
 
+        RaiseItemsChanged();
+    }
+
+    public override void LoadMore()
+    {
+        // Grow the requested page toward the user's HistoryLimit ceiling. If we are already at
+        // the ceiling, there is nothing more to load.
+        var ceiling = ClipboardHistoryListCommand.ResolveLimit(EffectiveHistoryLimit(), int.MaxValue);
+        if (_pageSize >= ceiling)
+        {
+            HasMoreItems = false;
+            return;
+        }
+
+        _pageSize = Math.Min(ceiling, _pageSize + PageIncrement);
+        _cachedItems = null;
         RaiseItemsChanged();
     }
 
@@ -77,19 +108,31 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
             var searchText = SearchText ?? string.Empty;
             var filterId = Filters?.CurrentFilterId ?? ClipboardHistoryListFilter.All;
             var store = _store.Value;
+            // Lazily start live updates only once the user actually opens the page, so the extension
+            // process stays idle until then and cold-open is never burdened by watcher setup.
+            EnsureWatcher(store);
             var indexStampUtc = CurrentIndexStampUtc(store, searchText);
+            var limit = ClipboardHistoryListCommand.ResolveLimit(EffectiveHistoryLimit(), _pageSize);
             if (_cachedItems is not null &&
                 string.Equals(_cachedSearchText, searchText, StringComparison.Ordinal) &&
                 string.Equals(_cachedFilterId, filterId, StringComparison.Ordinal) &&
+                _cachedPageSize == limit &&
                 _cachedIndexStampUtc == indexStampUtc)
             {
                 return _cachedItems;
             }
 
-            var result = ClipboardHistoryListCommand.Create(store, searchText, Limit);
+            var result = ClipboardHistoryListCommand.Create(store, searchText, limit);
+
+            // There may be more history beyond this page only when the store returned a full
+            // page (Count == limit) and we have not yet hit the user's HistoryLimit ceiling.
+            var ceiling = ClipboardHistoryListCommand.ResolveLimit(EffectiveHistoryLimit(), int.MaxValue);
+            HasMoreItems = result.Count >= limit && limit < ceiling;
+
             var items = CreateItems(result, store);
             _cachedSearchText = searchText;
             _cachedFilterId = filterId;
+            _cachedPageSize = limit;
             _cachedIndexStampUtc = CurrentIndexStampUtc(store, searchText);
             _cachedItems = items;
             return items;
@@ -109,8 +152,75 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
 
     private void InvalidateItems()
     {
+        // Mutations (pin/delete/clear/rename) and filter changes re-query from the first page so
+        // the refresh stays fast; the user can page back down with the scroll gesture.
+        _pageSize = InitialPageSize;
         _cachedItems = null;
         RaiseItemsChanged();
+    }
+
+    // Creates the single FileSystemWatcher on first page query (when the store is materialized so
+    // its content root + file paths are known). The watcher pushes store changes back as a
+    // stamp-gated invalidation so newly-copied items appear live. If the content root did not exist
+    // yet (first run before any capture), Rearm() re-attempts on subsequent queries.
+    private void EnsureWatcher(ClipboardHistoryStore store)
+    {
+        if (_watcher is null)
+        {
+            _watcher = new ClipHistoryWatcher(
+                store.ContentRootPath,
+                [store.HistoryFilePath, store.HistoryIndexFilePath, store.HistoryTopIndexFilePath],
+                InvalidateIfStoreChanged);
+        }
+        else
+        {
+            _watcher.Rearm();
+        }
+    }
+
+    // The watcher-driven refresh path. Unlike InvalidateItems (which hard-refreshes for explicit
+    // mutations), this only re-queries when the store's index/history stamp actually moved, so
+    // background writes that don't change visible history don't churn the list or drop the user's
+    // selection while they read. Uses the empty search text stamp (the top-index fast path) as the
+    // liveness signal; the next GetItems re-checks the real per-query stamp anyway.
+    private void InvalidateIfStoreChanged()
+    {
+        try
+        {
+            var stamp = CurrentIndexStampUtc(_store.Value, string.Empty);
+            if (stamp == _watcherSeenStampUtc)
+            {
+                return;
+            }
+
+            _watcherSeenStampUtc = stamp;
+        }
+        catch
+        {
+            // If the stamp can't be read (mid-write), fall through and let GetItems' own cache
+            // guard settle it on the next query.
+        }
+
+        InvalidateItems();
+    }
+
+    // Reads the user's configured history limit (the F1 ClipSharedSettings HistoryLimit; null =
+    // Unlimited) as the ceiling for incremental loading. The settings file is tiny and this is
+    // only consulted on GetItems/LoadMore, never on the per-item render path. Cached by the
+    // settings-file mtime so repeated paging does not re-read JSON.
+    private int? _cachedHistoryLimit = ClipSharedSettings.DefaultHistoryLimit;
+    private DateTime _cachedSettingsStampUtc = DateTime.MinValue;
+
+    private int? EffectiveHistoryLimit()
+    {
+        var stamp = LastWriteTimeUtcOrMin(ClipStoragePaths.SettingsPath);
+        if (stamp != _cachedSettingsStampUtc)
+        {
+            _cachedHistoryLimit = ClipSharedSettings.Load().HistoryLimit;
+            _cachedSettingsStampUtc = stamp;
+        }
+
+        return _cachedHistoryLimit;
     }
 
     private void Filters_PropChanged(object sender, IPropChangedEventArgs args)
@@ -120,8 +230,21 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
 
     private IListItem[] CreateItems(ClipboardHistoryListResult result, ClipboardHistoryStore store)
     {
+        // Refresh the dynamic file sub-kind entries from the Files items in this result set so
+        // the dropdown only offers kinds actually present, mirroring the standalone File pill.
+        var fileItems = result.Items
+            .Where(item => string.Equals(item.Kind, "Files", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        _filters.SetFileKinds(ClipboardHistoryFileKindFilter.DiscoverKinds(fileItems));
+
+        // The single shared dropdown carries one selection: a kind/pinned id, a date-recency id,
+        // or (when Files is active) a file sub-kind id. Every predicate short-circuits to true for
+        // the other dimensions' ids, so applying them together yields exactly the selected filter
+        // without needing multiple dropdowns.
         var visibleItems = result.Items
-            .Where(item => ClipboardHistoryListFilter.Matches(Filters?.CurrentFilterId, item))
+            .Where(item => ClipboardHistoryListFilter.Matches(Filters?.CurrentFilterId, item)
+                && ClipboardHistoryDateFilter.Matches(Filters?.CurrentFilterId, item)
+                && ClipboardHistoryFileKindFilter.Matches(Filters?.CurrentFilterId, item))
             .ToArray();
         var items = new List<IListItem>();
 
@@ -146,7 +269,20 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
 
         if (recentItems.Length > 0)
         {
-            items.AddRange(recentItems.Select(item => CreateListItem(item, store)));
+            // Group non-pinned items into time buckets (Today / Yesterday / This week / ...)
+            // and emit sections most-recent first, mirroring the standalone app.
+            var today = DateTime.Today;
+            var byBucket = recentItems
+                .GroupBy(item => ClipboardHistoryTimeBucket.KeyFor(item, today))
+                .ToDictionary(group => group.Key, group => group.ToArray());
+
+            foreach (var bucketKey in ClipboardHistoryTimeBucket.OrderedKeys)
+            {
+                if (byBucket.TryGetValue(bucketKey, out var bucketItems))
+                {
+                    items.AddRange(bucketItems.Select(item => CreateListItem(item, store)));
+                }
+            }
         }
 
         return items.ToArray();
@@ -235,7 +371,7 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
     }
 
     private static string SectionFor(ClipboardHistoryListItem item) =>
-        item.IsPinned ? "Pinned Items" : "Recent Items";
+        item.IsPinned ? "Pinned Items" : ClipboardHistoryTimeBucket.LabelFor(item);
 
     private CommandContextItem CreateContextCommand(ClipboardHistoryListAction action, ClipboardHistoryListItem item, ClipboardHistoryStore store)
     {
@@ -328,15 +464,6 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
         body.AppendLine("## Preview");
         body.AppendLine();
         body.AppendLine(IsPreviewableImage(item) ? ImageMarkdown(item.AssetPath!) : PreviewText(item));
-        body.AppendLine();
-        body.AppendLine("## Information");
-        body.AppendLine();
-        body.AppendLine("| Field | Value |");
-        body.AppendLine("| --- | --- |");
-        foreach (var row in DetailRows(item))
-        {
-            body.AppendLine($"| {EscapeMarkdownCell(row.Key)} | {EscapeMarkdownCell(row.Value)} |");
-        }
 
         return body.ToString().Trim();
     }
@@ -362,12 +489,6 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
         var preview = ClipText.TrimForDisplay(item.Preview, 2_000);
         return string.IsNullOrWhiteSpace(preview) ? "(No preview available)" : preview;
     }
-
-    private static string EscapeMarkdownCell(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("|", "\\|", StringComparison.Ordinal)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal);
 
     private static ITag[] CreateTags(ClipboardHistoryListItem item)
     {
@@ -443,6 +564,15 @@ internal sealed partial class ClipHistoryPage : DynamicListPage
         "reveal" => "\uEC50",
         _ => "\uE8A7",
     };
+
+    public void Dispose()
+    {
+        // FileSystemWatcher holds an OS handle. The SDK does not guarantee a Dispose call on the
+        // page (it is a long-lived COM singleton), but disposing here is correct hygiene and lets
+        // shutdown chain-dispose the watcher.
+        _watcher?.Dispose();
+        _watcher = null;
+    }
 
     private readonly record struct DetailRow(string Key, string Value);
 }

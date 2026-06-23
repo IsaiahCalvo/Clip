@@ -38,6 +38,23 @@ public sealed class CommandPaletteHistoryPageSourceTests
     }
 
     [Fact]
+    public void HistoryFiltersIntegrateDateEntriesIntoTheSingleNativeDropdown()
+    {
+        var page = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
+        var filters = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryFilters.cs"));
+
+        // Command Palette exposes one Filters dropdown, so date entries are grouped into it with a
+        // Separator rather than introducing a second dropdown.
+        Assert.Contains("new Separator()", filters);
+        Assert.Contains("Id = ClipboardHistoryDateFilter.Today", filters);
+        Assert.Contains("Id = ClipboardHistoryDateFilter.Week", filters);
+        Assert.Contains("Id = ClipboardHistoryDateFilter.Older", filters);
+
+        // The date predicate is applied alongside the kind predicate in CreateItems.
+        Assert.Contains("ClipboardHistoryDateFilter.Matches(Filters?.CurrentFilterId, item)", page);
+    }
+
+    [Fact]
     public void HistoryPageExposesQuickActionsWithoutAddingRootNoise()
     {
         var page = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
@@ -167,13 +184,38 @@ public sealed class CommandPaletteHistoryPageSourceTests
 
         Assert.Contains("SectionFor(item)", page);
         Assert.Contains("\"Pinned Items\"", page);
-        Assert.Contains("\"Recent Items\"", page);
+        Assert.Contains("ClipboardHistoryTimeBucket.LabelFor(item)", page);
+        Assert.Contains("ClipboardHistoryTimeBucket.OrderedKeys", page);
         Assert.DoesNotContain("CreateSectionHeader", page);
         Assert.Contains("## Preview", page);
         Assert.Contains("ImageMarkdown(item.AssetPath!)", page);
-        Assert.Contains("## Information", page);
-        Assert.Contains("| Field | Value |", page);
+        // The Information fields render solely via the native Metadata FactSet; the
+        // duplicate markdown "## Information" table was dropped (mirrors the standalone
+        // app's single Information panel).
+        Assert.DoesNotContain("## Information", page);
+        Assert.DoesNotContain("| Field | Value |", page);
         Assert.Contains("DetailsBody(item)", page);
+        Assert.Contains("Metadata = metadata.ToArray()", page);
+    }
+
+    [Fact]
+    public void HistoryPageLoadsIncrementallyCappedByUserHistoryLimit()
+    {
+        var page = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
+
+        // No hard-coded 25-item cap; the page grows via LoadMore toward the user's HistoryLimit.
+        Assert.DoesNotContain("const int Limit = 25", page);
+        Assert.Contains("public override void LoadMore()", page);
+        Assert.Contains("HasMoreItems", page);
+
+        // The ceiling comes from the F1 ClipSharedSettings HistoryLimit accessor, applied via
+        // the Core ResolveLimit helper, and the query stays native against the Core index.
+        Assert.Contains("ClipSharedSettings.Load().HistoryLimit", page);
+        Assert.Contains("ClipboardHistoryListCommand.ResolveLimit(EffectiveHistoryLimit()", page);
+        Assert.Contains("ClipboardHistoryListCommand.Create(store, searchText, limit)", page);
+
+        // Cold-open paints only the first page.
+        Assert.Contains("InitialPageSize = 25", page);
     }
 
     [Fact]
@@ -202,6 +244,38 @@ public sealed class CommandPaletteHistoryPageSourceTests
         Assert.Contains("forcePaletteSession: true", shell);
         Assert.Contains("if (_forcePaletteSession || _trayAction is not null)", shell);
         Assert.Contains("startInfo.ArgumentList.Add(\"--palette-session\")", shell);
+    }
+
+    [Fact]
+    public void HistoryPagePushesLiveUpdatesViaDebouncedFileSystemWatcher()
+    {
+        var page = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
+        var watcher = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryWatcher.cs"));
+
+        // The page owns a watcher, lazily started from GetItems (cold-open stays untouched), and
+        // disposes it.
+        Assert.Contains("ClipHistoryWatcher? _watcher", page);
+        Assert.Contains("EnsureWatcher(store)", page);
+        Assert.Contains("class ClipHistoryPage : DynamicListPage, IDisposable", page);
+        Assert.Contains("public void Dispose()", page);
+        Assert.Contains("_watcher?.Dispose()", page);
+
+        // Watcher-driven refresh is gated on the existing index stamp so background noise does not
+        // churn the list; explicit mutations still hard-refresh via InvalidateItems.
+        Assert.Contains("InvalidateIfStoreChanged", page);
+        Assert.Contains("CurrentIndexStampUtc(_store.Value, string.Empty)", page);
+        Assert.Contains("_watcherSeenStampUtc", page);
+
+        // The watcher watches the store's own file paths (not hardcoded), debounces the burst write
+        // sequence, and signals only (no file I/O on the callback thread).
+        Assert.Contains("store.HistoryFilePath", page);
+        Assert.Contains("store.HistoryIndexFilePath", page);
+        Assert.Contains("store.HistoryTopIndexFilePath", page);
+        Assert.Contains("new FileSystemWatcher", watcher);
+        Assert.Contains("DebounceMilliseconds", watcher);
+        Assert.Contains("_debounceTimer.Change(DebounceMilliseconds", watcher);
+        Assert.Contains("_watcher.EnableRaisingEvents = false", watcher);
+        Assert.Contains(": IDisposable", watcher);
     }
 
     private static string RepoPath(params string[] parts)

@@ -7,7 +7,26 @@ namespace Clip.Core;
 public static class ClipboardHistoryListCommand
 {
     public const int DefaultLimit = 25;
-    public const int MaximumLimit = 100;
+
+    // Upper bound on a single list query. Raised from 100 to cover the standalone app's
+    // largest finite history limit (1000) so a Command Palette user with a big history can
+    // page all the way to the bottom. Unlimited histories are still capped here per query;
+    // the page grows incrementally toward this ceiling rather than loading everything at once.
+    public const int MaximumLimit = 1000;
+
+    /// <summary>
+    /// Resolves the effective list limit for a surface that pages incrementally, clamping the
+    /// requested page size to the user's configured history limit (the F1
+    /// <see cref="ClipSharedSettings"/> HistoryLimit; <c>null</c> means Unlimited) and then to
+    /// <see cref="MaximumLimit"/>. Never returns less than 1.
+    /// </summary>
+    public static int ResolveLimit(int? historyLimit, int requested)
+    {
+        var ceiling = historyLimit is null
+            ? MaximumLimit
+            : Math.Clamp(historyLimit.Value, 1, MaximumLimit);
+        return Math.Clamp(requested, 1, ceiling);
+    }
 
     public static bool IsJsonRequest(string[] args) =>
         args.Skip(1).Any(arg => arg.Equals("--json", StringComparison.OrdinalIgnoreCase));

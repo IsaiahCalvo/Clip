@@ -75,12 +75,25 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
         var invoice = TextItem("extension invoice");
         _store.AddOrUpdate(invoice);
 
-        var result = ClipboardHistoryListCommand.Create(_store, query: "invoice", limit: 500);
+        var result = ClipboardHistoryListCommand.Create(_store, query: "invoice", limit: ClipboardHistoryListCommand.MaximumLimit + 5_000);
 
         var item = Assert.Single(result.Items);
         Assert.Equal("summary-search", result.Source);
         Assert.Equal(ClipboardHistoryListCommand.MaximumLimit, result.Limit);
         Assert.Equal(invoice.Id, item.Id);
+    }
+
+    [Theory]
+    [InlineData(null, 25, 25)]              // Unlimited setting: page size honored as-is.
+    [InlineData(null, 9_999, 1_000)]       // Unlimited setting: still capped at MaximumLimit per query.
+    [InlineData(500, 25, 25)]              // Default setting, small page: honored.
+    [InlineData(500, 999, 500)]           // Default setting: page cannot exceed the user's HistoryLimit.
+    [InlineData(100, 250, 100)]           // Smaller setting clamps the page to the user's ceiling.
+    [InlineData(1000, 5000, 1000)]        // Largest finite setting clamps to MaximumLimit.
+    [InlineData(500, 0, 1)]               // Never returns less than 1.
+    public void ResolveLimitClampsRequestedPageToHistoryLimitCeiling(int? historyLimit, int requested, int expected)
+    {
+        Assert.Equal(expected, ClipboardHistoryListCommand.ResolveLimit(historyLimit, requested));
     }
 
     [Fact]
