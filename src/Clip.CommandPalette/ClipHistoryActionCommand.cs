@@ -197,7 +197,9 @@ internal sealed partial class ClipHistoryActionCommand : InvokableCommand
     private static string IconForAction(string actionId) => actionId switch
     {
         "paste" => "\uE77F",
-        "paste-plain" => "\uE77F",
+        "paste-plain" => "\uE8A5",
+        "append" => "\uE710",
+        "share" => "\uE72D",
         "copy" => "\uE8C8",
         "rename" => "\uE8AC",
         "edit-text" => "\uE70F",

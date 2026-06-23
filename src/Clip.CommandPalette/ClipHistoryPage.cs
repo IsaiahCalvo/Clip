@@ -483,7 +483,14 @@ internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
     {
         if (item.FilePaths.Count > 0)
         {
-            return string.Join(Environment.NewLine, item.FilePaths.Select(path => ClipText.TrimForDisplay(path, 160)));
+            var paths = string.Join(Environment.NewLine, item.FilePaths.Select(path => ClipText.TrimForDisplay(path, 160)));
+            if (FilePreview.TryReadTextExcerpt(item.FilePaths, 2_000, out var excerpt))
+            {
+                // Show the path plus a fenced excerpt of the file's contents (markdown body).
+                return $"{paths}{Environment.NewLine}{Environment.NewLine}```{Environment.NewLine}{excerpt}{Environment.NewLine}```";
+            }
+
+            return paths;
         }
 
         var preview = ClipText.TrimForDisplay(item.Preview, 2_000);

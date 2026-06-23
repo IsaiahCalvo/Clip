@@ -29,17 +29,20 @@ matching panels (list + details/preview), ≤50ms per feature click. Reuse Clip.
 - _Carry-forward:_ promote StartupRegistration (Shell→Core) for P3/P4 run-at-startup; widen Watcher AppendText to accept Link;
   verify no palette code still assumes 'copy' as DefaultActionId (now 'paste'). Share is Id-only — palette dispatches in-process (P3).
 
-### Phase 2 — Browse & Preview parity  ⬜
-- [ ] G3 Time-bucket grouping (Today/Yesterday/This week/Month/Year/Older) via ListItem.Section
-- [ ] G9 Date filter dropdown
-- [ ] G8 File-kind sub-filter (pdf/word/excel/…)
-- [ ] G11 List limit / incremental load (raise 25 cap, respect HistoryLimit)
-- [ ] G10 Live updates while open (FileSystemWatcher → InvalidateItems)
-- [ ] G4 Rich file previews (text via TextFilePreviewReader; PDF/Office first-page PNG via shared renderer; lazy)
-- [ ] G13 Remove duplicate Information markdown table (native FactSet only)
-- [ ] G12 Full action set on preview card (rename/edit/delete/save/append/share/paste)
+### Phase 2 — Browse & Preview parity  ✅ — 285 tests green
+- [x] G3 Time-bucket grouping (Today/Yesterday/This week/Month/Year/Older) via ListItem.Section
+- [x] G9 Date filter dropdown
+- [x] G8 File-kind sub-filter (pdf/word/excel/…)
+- [x] G11 List limit / incremental load (raise 25 cap, respect HistoryLimit)
+- [x] G10 Live updates while open (FileSystemWatcher → InvalidateItems)
+- [x] G4 Rich file previews — TEXT files via Clip.Core FilePreview/TextFilePreviewReader (details + card). 
+      _Deferred:_ PDF/Office/Visio first-page thumbnails need a helper-renderer subproject → Phase 3 (G4b).
+- [x] G13 Remove duplicate Information markdown table (native FactSet only)
+- [x] G12 Full action set on preview card — Paste primary/Enter, destructive Delete, full set on preview page; icons added
+- _Note:_ Phase 2 done in two commits (part 1 = G3/G9/G8/G11/G10/G13; part 2 = G12/G4) due to a transient API outage mid-run.
 
 ### Phase 3 — Actions & Settings  ⬜
+- [ ] G4b PDF/Office/Visio first-page thumbnail previews (helper-renderer → temp PNG → file:// embed; lazy, cached)
 - [ ] G5 Append to clipboard
 - [ ] G6 Share (Windows share sheet + Blip)
 - [ ] G7 Open With… searchable app picker page

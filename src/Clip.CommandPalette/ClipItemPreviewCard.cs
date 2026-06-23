@@ -207,19 +207,31 @@ internal sealed partial class ClipItemPreviewCard : FormContent
 
     private static string BuildActions(ClipboardHistoryListItem listItem)
     {
-        var inlineActions = listItem.Actions
-            .Where(action => action.Id is "copy" or "pin" or "unpin" or "open" or "reveal")
-            .Take(4)
+        // Curated quick actions for the inline card, in priority order. Paste is listed
+        // first so it is the default action (Enter) on the preview, matching the list row
+        // and the standalone app. The full action set is reachable via the preview page's
+        // context commands (Ctrl+K). Delete is rendered with the destructive style.
+        string[] order = { "paste", "copy", "pin", "unpin", "open", "reveal", "delete" };
+
+        var inlineActions = order
+            .Select(id => listItem.Actions.FirstOrDefault(action =>
+                action.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+            .Where(action => action is not null)
             .Select(action =>
-                $$"""
+            {
+                var style = action!.Id.Equals("delete", StringComparison.OrdinalIgnoreCase)
+                    ? $"{Environment.NewLine}      \"style\": \"destructive\","
+                    : string.Empty;
+                return $$"""
     {
       "type": "Action.Submit",
-      "title": {{JsonString(action.Label)}},
+      "title": {{JsonString(action.Label)}},{{style}}
       "data": {
         "actionId": {{JsonString(action.Id)}}
       }
     }
-""");
+""";
+            });
 
         return string.Join($",{Environment.NewLine}", inlineActions);
     }
@@ -228,7 +240,13 @@ internal sealed partial class ClipItemPreviewCard : FormContent
     {
         if (fullItem.FilePaths.Count > 0)
         {
-            return string.Join(Environment.NewLine, fullItem.FilePaths);
+            var paths = string.Join(Environment.NewLine, fullItem.FilePaths);
+            if (FilePreview.TryReadTextExcerpt(fullItem.FilePaths, TextPreviewLimit, out var excerpt))
+            {
+                return $"{paths}{Environment.NewLine}{Environment.NewLine}{excerpt}";
+            }
+
+            return paths;
         }
 
         var text = fullItem.Text ?? fullItem.Preview ?? string.Empty;
