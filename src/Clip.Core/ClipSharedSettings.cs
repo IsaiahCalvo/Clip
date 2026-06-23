@@ -110,6 +110,54 @@ public static class ClipSharedSettings
         return root.ToJsonString(JsonOptions);
     }
 
+    public static void SetDefaultPasteFormat(PasteFormatPreference format)
+    {
+        Update(json => SetDefaultPasteFormatJson(json, format));
+    }
+
+    public static string SetDefaultPasteFormatJson(string json, PasteFormatPreference format)
+    {
+        var root = ParseRootObject(json);
+        root["DefaultPasteFormat"] = (int)format;
+        return root.ToJsonString(JsonOptions);
+    }
+
+    public static void SetHistoryLimit(int? limit)
+    {
+        Update(json => SetHistoryLimitJson(json, limit));
+    }
+
+    public static string SetHistoryLimitJson(string json, int? limit)
+    {
+        var root = ParseRootObject(json);
+        root["HistoryLimit"] = limit is null ? null : JsonValue.Create(limit.Value);
+        return root.ToJsonString(JsonOptions);
+    }
+
+    public static void SetMaxItemSizeBytes(long? bytes)
+    {
+        Update(json => SetMaxItemSizeBytesJson(json, bytes));
+    }
+
+    public static string SetMaxItemSizeBytesJson(string json, long? bytes)
+    {
+        var root = ParseRootObject(json);
+        root["MaxItemSizeBytes"] = bytes is null ? null : JsonValue.Create(bytes.Value);
+        return root.ToJsonString(JsonOptions);
+    }
+
+    public static void SetClipboardFolderPath(string? path)
+    {
+        Update(json => SetClipboardFolderPathJson(json, path));
+    }
+
+    public static string SetClipboardFolderPathJson(string json, string? path)
+    {
+        var root = ParseRootObject(json);
+        root["ClipboardFolderPath"] = string.IsNullOrWhiteSpace(path) ? null : path;
+        return root.ToJsonString(JsonOptions);
+    }
+
     private static void Update(Func<string, string> updateJson)
     {
         var path = ClipStoragePaths.SettingsPath;

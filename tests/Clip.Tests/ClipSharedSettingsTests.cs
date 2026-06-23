@@ -95,4 +95,51 @@ public sealed class ClipSharedSettingsTests
         Assert.Equal(ClipSharedSettings.DefaultHistoryLimit, settings.HistoryLimit);
         Assert.Equal(ClipSharedSettings.DefaultMaxItemSizeBytes, settings.MaxItemSizeBytes);
     }
+
+    [Fact]
+    public void SetDefaultPasteFormatJsonRoundTrips()
+    {
+        var json = ClipSharedSettings.SetDefaultPasteFormatJson("{}", PasteFormatPreference.OriginalFormatting);
+
+        Assert.Equal(PasteFormatPreference.OriginalFormatting, ClipSharedSettings.LoadFromJson(json).DefaultPasteFormat);
+    }
+
+    [Fact]
+    public void SetHistoryLimitJsonRoundTrips()
+    {
+        var json = ClipSharedSettings.SetHistoryLimitJson("{}", 1000);
+
+        Assert.Equal(1000, ClipSharedSettings.LoadFromJson(json).HistoryLimit);
+    }
+
+    [Fact]
+    public void SetMaxItemSizeBytesJsonRoundTrips()
+    {
+        var json = ClipSharedSettings.SetMaxItemSizeBytesJson("{}", 25L * 1024 * 1024);
+
+        Assert.Equal(25L * 1024 * 1024, ClipSharedSettings.LoadFromJson(json).MaxItemSizeBytes);
+    }
+
+    [Fact]
+    public void SetClipboardFolderPathJsonRoundTripsAndClears()
+    {
+        var set = ClipSharedSettings.SetClipboardFolderPathJson("{}", "D:\\Clips");
+        Assert.Equal("D:\\Clips", ClipSharedSettings.LoadFromJson(set).ClipboardFolderPath);
+
+        var cleared = ClipSharedSettings.SetClipboardFolderPathJson(set, "   ");
+        Assert.Null(ClipSharedSettings.LoadFromJson(cleared).ClipboardFolderPath);
+    }
+
+    [Fact]
+    public void WritersPreserveUnknownKeys()
+    {
+        var json = """{ "OpenMode": 1, "Privacy": { "ExcludedApps": ["foo.exe"] } }""";
+
+        var updated = ClipSharedSettings.SetHistoryLimitJson(json, 250);
+
+        Assert.Contains("Privacy", updated);
+        Assert.Contains("foo.exe", updated);
+        Assert.Equal(ClipSharedOpenMode.CommandPalette, ClipSharedSettings.LoadFromJson(updated).OpenMode);
+        Assert.Equal(250, ClipSharedSettings.LoadFromJson(updated).HistoryLimit);
+    }
 }

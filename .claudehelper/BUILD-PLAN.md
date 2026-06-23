@@ -41,15 +41,16 @@ matching panels (list + details/preview), ≤50ms per feature click. Reuse Clip.
 - [x] G12 Full action set on preview card — Paste primary/Enter, destructive Delete, full set on preview page; icons added
 - _Note:_ Phase 2 done in two commits (part 1 = G3/G9/G8/G11/G10/G13; part 2 = G12/G4) due to a transient API outage mid-run.
 
-### Phase 3 — Actions & Settings  ⬜
+### Phase 3 — Actions & Settings  🔄 (3a done; 3b remaining) — 286 tests green
+- [x] G5 Append to clipboard (in-process)
+- [x] G6 Share (Blip target; Windows share sheet is standalone-only — windowless extension can't host it)
+- [x] G15 Save debug-log snapshot / diagnostics command (delegate to Clip.exe --tray-action=save-log)
+- [x] G16 Trigger Windows clipboard-history import (delegate to Clip.Command import-windows-history)
+- [x] G19 "Paste latest item" top-level quick command
+- [ ] G14 Full in-palette settings (history limit, max item size, paste format, run-at-startup, data folder; promote StartupRegistration→Core)
+- [ ] G7 Open With… searchable app picker page (promote app-discovery→Core)
 - [ ] G4b PDF/Office/Visio first-page thumbnail previews (helper-renderer → temp PNG → file:// embed; lazy, cached)
-- [ ] G5 Append to clipboard
-- [ ] G6 Share (Windows share sheet + Blip)
-- [ ] G7 Open With… searchable app picker page
-- [ ] G14 Full in-palette settings (history limit, max item size, paste format, run-at-startup, data folder)
-- [ ] G15 Save debug-log snapshot / diagnostics command
-- [ ] G16 Trigger Windows clipboard-history import
-- [ ] G19 "Paste latest item" quick command
+- _Note:_ 3a finished by main agent (not workflow) during an Anthropic API 529 overload that kept killing spawned subagents.
 
 ### Phase 4 — UI fidelity + full verification  ⬜
 - [ ] Match panels/areas + native styling to standalone; crisp/consistent icons & tags
