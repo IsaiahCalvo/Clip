@@ -13,6 +13,7 @@ internal sealed partial class ClipSettingsPage : ContentPage
     private const string HistoryLimitKey = "historyLimit";
     private const string MaxItemSizeKey = "maxItemSizeMb";
     private const string DataFolderKey = "clipboardFolderPath";
+    private const string RunAtStartupKey = "runAtStartup";
     private const string StandaloneValue = "standalone";
     private const string CommandPaletteValue = "command-palette";
     private const string LightValue = "light";
@@ -114,6 +115,12 @@ internal sealed partial class ClipSettingsPage : ContentPage
             Description = "Where history is stored. Leave blank for the default. Takes effect after Clip restarts.",
         });
 
+        _settings.Add(new ToggleSetting(RunAtStartupKey, CurrentRunAtStartup())
+        {
+            Label = "Run Clip at startup",
+            Description = "Launch the lightweight Clip tray watcher when you sign in to Windows.",
+        });
+
         _settings.SettingsChanged += OnSettingsChanged;
     }
 
@@ -159,6 +166,37 @@ internal sealed partial class ClipSettingsPage : ContentPage
 
         var folder = _settings.GetSetting<string>(DataFolderKey);
         ClipSharedSettings.SetClipboardFolderPath(string.IsNullOrWhiteSpace(folder) ? null : folder.Trim());
+
+        ApplyRunAtStartup(_settings.GetSetting<bool>(RunAtStartupKey));
+    }
+
+    private static bool CurrentRunAtStartup()
+    {
+        try
+        {
+            return StartupRegistration.IsEnabled();
+        }
+        catch
+        {
+            return StartupRegistration.DefaultEnabled;
+        }
+    }
+
+    private static void ApplyRunAtStartup(bool enabled)
+    {
+        try
+        {
+            if (enabled == StartupRegistration.IsEnabled())
+            {
+                return;
+            }
+
+            StartupRegistration.SetEnabled(enabled);
+        }
+        catch
+        {
+            // Startup registration is best-effort; ignore registry/executable resolution failures.
+        }
     }
 
     private static string PasteFormatValue(PasteFormatPreference format) =>

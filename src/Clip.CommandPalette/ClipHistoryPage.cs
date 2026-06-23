@@ -372,6 +372,18 @@ internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
             .Where(action => !ReferenceEquals(action, pasteAction))
             .Select(action => CreateContextCommand(action, item, store)));
 
+        // For openable file-backed items (Image / Files / path-like Text) offer the searchable
+        // "Open with…" picker. Target is derived from the list item alone (no store hit) so the
+        // list render stays fast; the picker resolves apps lazily on a background task.
+        if (item.TryGetOpenWithTarget(out var openWithTarget))
+        {
+            moreCommands.Add(new CommandContextItem(new ClipOpenWithPage(item, store, openWithTarget))
+            {
+                Title = "Open with…",
+                Icon = new IconInfo("\uE8A7"),
+            });
+        }
+
         if (moreCommands.Count > 0)
         {
             listItem.MoreCommands = moreCommands.ToArray();
@@ -473,9 +485,47 @@ internal sealed partial class ClipHistoryPage : DynamicListPage, IDisposable
         var body = new StringBuilder();
         body.AppendLine("## Preview");
         body.AppendLine();
-        body.AppendLine(IsPreviewableImage(item) ? ImageMarkdown(item.AssetPath!) : PreviewText(item));
+
+        if (IsPreviewableImage(item))
+        {
+            body.AppendLine(ImageMarkdown(item.AssetPath!));
+        }
+        else if (TryDocumentThumbnailMarkdown(item, out var thumbnailMarkdown))
+        {
+            // A PDF/Office/Visio first-page thumbnail rendered by a prior preview is reused here as
+            // a file:// image. This path is render-free (cached lookup only) so it never blocks the
+            // list; the heavyweight first render happens lazily on the preview page.
+            body.AppendLine(thumbnailMarkdown);
+            body.AppendLine();
+            body.AppendLine(PreviewText(item));
+        }
+        else
+        {
+            body.AppendLine(PreviewText(item));
+        }
 
         return body.ToString().Trim();
+    }
+
+    // Render-free: only embeds a document thumbnail that has already been cached (e.g. by opening the
+    // preview page once). Returns false for non-documents or when no cached thumbnail exists yet, so
+    // the details pane falls back to the text/path preview without ever launching the renderer.
+    private static bool TryDocumentThumbnailMarkdown(ClipboardHistoryListItem item, out string markdown)
+    {
+        markdown = string.Empty;
+        if (!ClipDocumentThumbnail.IsRenderableDocument(item))
+        {
+            return false;
+        }
+
+        var cachedPng = ClipDocumentThumbnail.TryGetCachedThumbnailPng(item.FilePaths[0]);
+        if (cachedPng is null)
+        {
+            return false;
+        }
+
+        markdown = ImageMarkdown(cachedPng);
+        return true;
     }
 
     private static bool IsPreviewableImage(ClipboardHistoryListItem item) =>

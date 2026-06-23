@@ -144,6 +144,39 @@ public sealed record ClipboardHistoryListItem(
 {
     public string? AssetPath { get; init; }
 
+    // The path an "Open with…" picker should target for this row, derived from the lightweight
+    // list item alone (no store hit) so the list-render path stays fast. Returns true only for
+    // items that actually point at a file/folder on disk — Image (asset), Files (first path), and
+    // path-like Text. Links are intentionally excluded (a URL has no app picker), matching the
+    // standalone shell's "Open with" gating. The launch command re-resolves the authoritative
+    // target via ClipboardItemLaunchCommand.GetOpenTarget at invoke time.
+    public bool TryGetOpenWithTarget(out string targetPath)
+    {
+        targetPath = string.Empty;
+
+        // Only items that expose an "open" action are openable at all.
+        if (!Actions.Any(action => string.Equals(action.Id, "open", StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var candidate = Kind switch
+        {
+            nameof(ClipboardItemKind.Image) => AssetPath,
+            nameof(ClipboardItemKind.Files) => FilePaths.Count > 0 ? FilePaths[0] : null,
+            nameof(ClipboardItemKind.Text) => Preview,
+            _ => null,
+        };
+
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        targetPath = candidate;
+        return true;
+    }
+
     public static ClipboardHistoryListItem FromHistoryItem(ClipboardHistoryItem item)
     {
         var title = string.IsNullOrWhiteSpace(item.CustomTitle) ? item.Preview : item.CustomTitle;

@@ -18,7 +18,25 @@ internal sealed partial class ClipItemPreviewPage : ContentPage
         Name = "Preview";
         Title = ClipText.TrimForDisplay(item.Title, 96);
         Icon = new IconInfo(IconFor(item.Kind));
-        Commands = item.Actions.Select(CreateContextCommand).ToArray();
+        Commands = BuildCommands();
+    }
+
+    private IContextItem[] BuildCommands()
+    {
+        var commands = _item.Actions.Select(CreateContextCommand).ToList();
+
+        // Offer the searchable "Open with…" picker for openable file-backed items, matching the
+        // list row's MoreCommands. Target is derived from the lightweight list item (no store hit).
+        if (_item.TryGetOpenWithTarget(out var openWithTarget))
+        {
+            commands.Add(new CommandContextItem(new ClipOpenWithPage(_item, _store, openWithTarget))
+            {
+                Title = "Open with…",
+                Icon = new IconInfo("\uE8A7"),
+            });
+        }
+
+        return commands.ToArray();
     }
 
     public override IContent[] GetContent()
@@ -30,9 +48,21 @@ internal sealed partial class ClipItemPreviewPage : ContentPage
         }
 
         var card = new ClipItemPreviewCard(fullItem, _item, _store, _afterHistoryMutation);
-        return ClipImagePreviewContent.TryCreate(fullItem, out var imagePreview)
-            ? [imagePreview, card]
-            : [card];
+        if (ClipImagePreviewContent.TryCreate(fullItem, out var imagePreview))
+        {
+            return [imagePreview, card];
+        }
+
+        // For PDF/Office/Visio file items, render (and cache) a first-page thumbnail lazily here so
+        // it appears above the text-excerpt card. The render is delegated to the Watcher helper and
+        // never runs on cold-open or list render. The cached PNG is then reused by the list details
+        // pane on subsequent selections.
+        if (ClipImagePreviewContent.TryCreateDocumentThumbnail(fullItem, out var documentPreview))
+        {
+            return [documentPreview, card];
+        }
+
+        return [card];
     }
 
     private CommandContextItem CreateContextCommand(ClipboardHistoryListAction action)

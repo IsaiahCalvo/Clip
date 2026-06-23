@@ -71,6 +71,27 @@ Shell preview handlers are COM-based and can be fragile. They need careful clean
 9. Custom `.xlsx` preview grid for columns `A:S` and rows `1:35`.
 10. File/folder/icon fallback preview instead of metadata text in the preview pane.
 
+## Command Palette First-Page Thumbnails
+
+The Command Palette extension shows first-page IMAGE thumbnails for PDF / Office / Visio file
+items without taking any heavy PDF/Office dependency in the lean net9 extension:
+
+- `Clip.Watcher.exe preview-thumb <srcPath> <outPng>` renders the first page to a PNG, reusing the
+  standalone `PdfPreviewRenderer` (PDF via `pdftoppm`) and `StaticDocumentPreviewRenderer`
+  (Word/Excel/PowerPoint/Visio via Office/Visio COM). Exit codes: 0 rendered, 2 bad args /
+  unsupported type, 3 nothing rendered (tool/COM server unavailable).
+- `ClipDocumentThumbnail` (extension) calls that verb lazily on preview, caches the PNG under
+  `%TEMP%\Clip\PaletteThumbs` keyed by source path + last-write-time + size, and embeds it via the
+  same `file://` cmdpal image markdown used for image items.
+- The render runs only when the preview page is opened (`ClipItemPreviewPage.GetContent`), never on
+  cold-open or list render. The list details pane uses a render-free cached lookup so a thumbnail
+  produced by a prior preview is reused without ever launching the helper.
+- PDF thumbnails work end-to-end wherever `pdftoppm` is on PATH/LocalAppData. Office/Visio
+  thumbnails depend on the corresponding COM server (Word/Excel/PowerPoint/Visio) being installed;
+  when it is absent the helper returns 3 and the palette falls back to the text/path preview.
+- WebView2 live HTML preview is intentionally NOT hosted in the palette; HTML stays a text-excerpt
+  fallback.
+
 ## Remaining Polish
 
 - The picker UI works now, but it should be visually redesigned with the rest of Clip.

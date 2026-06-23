@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using Clip.Core;
 
 namespace Clip.Shell;
 
@@ -17,6 +18,8 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
         ShellLog.Configure(e.Args);
+        StartupRegistration.InfoLog = ShellLog.Info;
+        StartupRegistration.ErrorLog = ShellLog.Error;
         ShellLog.Info("app startup");
         var trayAction = DebugArgValue(e.Args, "--tray-action");
 

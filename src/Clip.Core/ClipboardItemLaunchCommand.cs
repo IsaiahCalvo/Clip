@@ -20,6 +20,10 @@ public static class ClipboardItemLaunchCommand
     public static ProcessStartInfo? CreateRevealStartInfo(ClipboardHistoryItem item) =>
         FileExplorerReveal.CreateStartInfo(ClipboardItemRevealTarget.GetPath(item));
 
+    // The path/URL this item would open. Surfaces are expected to use this to decide whether to
+    // offer an "Open with…" action (non-null) and to feed app discovery / recent-app tracking.
+    public static string? GetOpenTarget(ClipboardHistoryItem item) => OpenTarget(item);
+
     private static string? OpenTarget(ClipboardHistoryItem item)
     {
         if (item.Kind == ClipboardItemKind.Link &&
