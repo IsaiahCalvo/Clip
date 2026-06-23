@@ -261,26 +261,110 @@ public static class OpenWithAppLauncher
 
 internal static class ShortcutResolver
 {
+    private const int MaxPath = 260;
+    private const uint SlgpRawPath = 0x4;
+
     public static string? Resolve(string linkPath)
     {
+        IShellLinkW? link = null;
         try
         {
-            var shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType is null)
-            {
-                return null;
-            }
+            // Resolve .lnk targets through the explicitly-declared IShellLinkW + IPersistFile
+            // COM interfaces rather than the late-bound WScript.Shell `dynamic` object. The
+            // statically-typed interop is trim-safe: the trimmer keeps these interface
+            // declarations, whereas the old dynamic path relied on reflection metadata that
+            // the trimmer could remove from the shipped MSIX.
+            link = (IShellLinkW)new CShellLink();
+            ((IPersistFile)link).Load(linkPath, 0);
 
-            dynamic shell = Activator.CreateInstance(shellType)!;
-            dynamic shortcut = shell.CreateShortcut(linkPath);
-            string targetPath = shortcut.TargetPath;
-            return Environment.ExpandEnvironmentVariables(targetPath);
+            var builder = new StringBuilder(MaxPath);
+            link.GetPath(builder, builder.Capacity, IntPtr.Zero, SlgpRawPath);
+            var targetPath = builder.ToString();
+            return string.IsNullOrWhiteSpace(targetPath)
+                ? null
+                : Environment.ExpandEnvironmentVariables(targetPath);
         }
         catch
         {
             return null;
         }
+        finally
+        {
+            if (link is not null && Marshal.IsComObject(link))
+            {
+                Marshal.FinalReleaseComObject(link);
+            }
+        }
     }
+}
+
+[ComImport]
+[Guid("00021401-0000-0000-C000-000000000046")]
+internal class CShellLink;
+
+[ComImport]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+[Guid("000214F9-0000-0000-C000-000000000046")]
+internal interface IShellLinkW
+{
+    void GetPath(
+        [MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile,
+        int cch,
+        IntPtr pfd,
+        uint fFlags);
+
+    void GetIDList(out IntPtr ppidl);
+
+    void SetIDList(IntPtr pidl);
+
+    void GetDescription([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+
+    void GetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+
+    void GetArguments([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+
+    void GetHotkey(out short pwHotkey);
+
+    void SetHotkey(short wHotkey);
+
+    void GetShowCmd(out int piShowCmd);
+
+    void SetShowCmd(int iShowCmd);
+
+    void GetIconLocation([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+
+    void Resolve(IntPtr hwnd, uint fFlags);
+
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+}
+
+[ComImport]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+[Guid("0000010b-0000-0000-C000-000000000046")]
+internal interface IPersistFile
+{
+    void GetClassID(out Guid pClassID);
+
+    [PreserveSig]
+    int IsDirty();
+
+    void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+
+    void Save([MarshalAs(UnmanagedType.LPWStr)] string? pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+
+    void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string? pszFileName);
+
+    void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
 }
 
 internal sealed record PackagedAppInfo(string Name, string AppUserModelId);
@@ -319,7 +403,7 @@ internal static class PackagedAppDiscovery
                 return _cache = [];
             }
 
-            var items = JsonSerializer.Deserialize<List<StartAppJson>>(json) ?? [];
+            var items = JsonSerializer.Deserialize(json, OpenWithJsonContext.Default.ListStartAppJson) ?? [];
             _cache = items
                 .Where(item => !string.IsNullOrWhiteSpace(item.Name) && !string.IsNullOrWhiteSpace(item.AppID))
                 .Select(item => new PackagedAppInfo(item.Name!, item.AppID!))
@@ -332,7 +416,7 @@ internal static class PackagedAppDiscovery
         }
     }
 
-    private sealed class StartAppJson
+    internal sealed class StartAppJson
     {
         public string? Name { get; set; }
         public string? AppID { get; set; }
@@ -341,6 +425,12 @@ internal static class PackagedAppDiscovery
 
 internal static class PackagedAppLauncher
 {
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2050:COM marshalling correctness cannot be guaranteed after trimming",
+        Justification = "The COM interfaces (IShellItem, IShellItemArray) used by SHCreateItemFromParsingName and " +
+            "SHCreateShellItemArrayFromShellItem are explicitly declared in this assembly as [ComImport] interfaces, " +
+            "so the trimmer cannot remove their members. The interop is statically typed and provably safe under trimming.")]
     public static void OpenFile(string appUserModelId, string path)
     {
         if (!File.Exists(path) && !Directory.Exists(path))

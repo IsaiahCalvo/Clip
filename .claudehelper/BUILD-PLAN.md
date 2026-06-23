@@ -47,10 +47,10 @@ matching panels (list + details/preview), ≤50ms per feature click. Reuse Clip.
 - [x] G15 Save debug-log snapshot / diagnostics command (delegate to Clip.exe --tray-action=save-log)
 - [x] G16 Trigger Windows clipboard-history import (delegate to Clip.Command import-windows-history)
 - [x] G19 "Paste latest item" top-level quick command
-- [ ] G14 Full in-palette settings (history limit, max item size, paste format, run-at-startup, data folder; promote StartupRegistration→Core)
-- [ ] G7 Open With… searchable app picker page (promote app-discovery→Core)
-- [ ] G4b PDF/Office/Visio first-page thumbnail previews (helper-renderer → temp PNG → file:// embed; lazy, cached)
-- _Note:_ 3a finished by main agent (not workflow) during an Anthropic API 529 overload that kept killing spawned subagents.
+- [x] G14 Full in-palette settings (paste format, history limit, max item size, data folder, run-at-startup; StartupRegistration promoted Shell→Core)
+- [x] G7 Open With… searchable app picker page (OpenWithAppDiscovery+OpenWithRecentStore promoted to Core; ClipOpenWithPage)
+- [x] G4b PDF/Office/Visio first-page thumbnails (Clip.Watcher `preview-thumb` verb; lazy + cached PNG embed)
+- _Notes:_ 3a + G14-settings finished by main agent during an Anthropic API 529 overload that kept killing subagents; rest via workflow once it recovered. Clip.Core retargeted net8.0→net8.0-windows10.0.19041.0 for Open-With (Registry/Assoc/COM).
 
 ### Phase 4 — UI fidelity + full verification  ⬜
 - [ ] Match panels/areas + native styling to standalone; crisp/consistent icons & tags

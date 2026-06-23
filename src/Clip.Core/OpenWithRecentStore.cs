@@ -22,7 +22,7 @@ public static class OpenWithRecentStore
                 return [];
             }
 
-            var data = JsonSerializer.Deserialize<Dictionary<string, List<RecentApp>>>(File.ReadAllText(StorePath)) ?? [];
+            var data = JsonSerializer.Deserialize(File.ReadAllText(StorePath), OpenWithJsonContext.Default.DictionaryStringListRecentApp) ?? [];
             return data.TryGetValue(ExtensionKey(targetPath), out var recent)
                 ? recent
                     .Where(app => !string.IsNullOrWhiteSpace(app.AppUserModelId) || (!string.IsNullOrWhiteSpace(app.ExecutablePath) && File.Exists(app.ExecutablePath)))
@@ -47,7 +47,7 @@ public static class OpenWithRecentStore
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
             var data = File.Exists(StorePath)
-                ? JsonSerializer.Deserialize<Dictionary<string, List<RecentApp>>>(File.ReadAllText(StorePath)) ?? []
+                ? JsonSerializer.Deserialize(File.ReadAllText(StorePath), OpenWithJsonContext.Default.DictionaryStringListRecentApp) ?? []
                 : [];
             var key = ExtensionKey(targetPath);
             if (!data.TryGetValue(key, out var recent))
@@ -64,7 +64,7 @@ public static class OpenWithRecentStore
                 recent.RemoveRange(8, recent.Count - 8);
             }
 
-            File.WriteAllText(StorePath, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(StorePath, JsonSerializer.Serialize(data, OpenWithJsonContext.Default.DictionaryStringListRecentApp));
         }
         catch
         {
@@ -77,7 +77,7 @@ public static class OpenWithRecentStore
         return Directory.Exists(targetPath) ? "<folder>" : Path.GetExtension(targetPath).ToLowerInvariant();
     }
 
-    private sealed record RecentApp(string Name, string? ExecutablePath, string? AppUserModelId)
+    internal sealed record RecentApp(string Name, string? ExecutablePath, string? AppUserModelId)
     {
         public string AppKey => AppUserModelId ?? ExecutablePath ?? string.Empty;
     }
