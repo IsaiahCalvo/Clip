@@ -11,6 +11,9 @@
 #define MyAppPublisher "Isaiah Calvo"
 #define MyAppURL "https://github.com/IsaiahCalvo/Clip"
 #define MyAppExeName "Clip.exe"
+#define MyAppHostExeName "Clip.Watcher.exe"
+#define MyAppLauncherExeName "Clip.Launcher.exe"
+#define MyAppHostArgs "watch"
 
 [Setup]
 AppId={{B5A7C821-94E1-4D2F-B0C8-8F0B16B6C0D4}
@@ -53,16 +56,55 @@ Name: "startupentry"; Description: "Launch {#MyAppName} when I sign in to Window
 [Files]
 Source: "..\artifacts\publish\Clip-win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\Clip.exe.WebView2"
+Type: filesandordirs; Name: "{app}\Clip.Watcher.exe.WebView2"
+Type: filesandordirs; Name: "{app}\cs"
+Type: filesandordirs; Name: "{app}\de"
+Type: filesandordirs; Name: "{app}\es"
+Type: filesandordirs; Name: "{app}\fr"
+Type: filesandordirs; Name: "{app}\it"
+Type: filesandordirs; Name: "{app}\ja"
+Type: filesandordirs; Name: "{app}\ko"
+Type: filesandordirs; Name: "{app}\pl"
+Type: filesandordirs; Name: "{app}\pt-BR"
+Type: filesandordirs; Name: "{app}\ru"
+Type: filesandordirs; Name: "{app}\tr"
+Type: filesandordirs; Name: "{app}\zh-Hans"
+Type: filesandordirs; Name: "{app}\zh-Hant"
+Type: files; Name: "{app}\Clip.Launcher.deps.json"
+Type: files; Name: "{app}\Clip.Launcher.dll"
+Type: files; Name: "{app}\Clip.Launcher.runtimeconfig.json"
+Type: files; Name: "{app}\clretwrc.dll"
+Type: files; Name: "{app}\createdump.exe"
+Type: files; Name: "{app}\Microsoft.DiaSymReader.Native.amd64.dll"
+Type: files; Name: "{app}\Microsoft.VisualBasic*.dll"
+Type: files; Name: "{app}\mscordaccore*.dll"
+Type: files; Name: "{app}\mscordbi.dll"
+Type: files; Name: "{app}\PresentationFramework*.dll"
+Type: files; Name: "{app}\PresentationUI.dll"
+Type: files; Name: "{app}\ReachFramework.dll"
+Type: files; Name: "{app}\System.Design.dll"
+Type: files; Name: "{app}\System.Diagnostics.EventLog*.dll"
+Type: files; Name: "{app}\System.DirectoryServices.dll"
+Type: files; Name: "{app}\System.Drawing.Design.dll"
+Type: files; Name: "{app}\System.Linq.Parallel.dll"
+Type: files; Name: "{app}\System.Printing.dll"
+Type: files; Name: "{app}\System.ServiceModel.Web.dll"
+Type: files; Name: "{app}\System.ServiceProcess.dll"
+Type: files; Name: "{app}\System.Web*.dll"
+Type: files; Name: "{app}\System.Windows.Forms.Design*.dll"
+
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Clip"; ValueData: """{app}\{#MyAppExeName}"""; Tasks: startupentry; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Clip"; ValueData: """{app}\{#MyAppHostExeName}"" {#MyAppHostArgs}"; Tasks: startupentry; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppLauncherExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

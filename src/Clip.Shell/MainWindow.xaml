@@ -1,7 +1,6 @@
 ﻿<Window x:Class="Clip.Shell.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Clip"
         Width="880"
         Height="560"
@@ -366,6 +365,7 @@
                                   HorizontalScrollBarVisibility="Disabled"
                                   ClipToBounds="True"
                                   Padding="0,0,0,8"
+                                  ScrollChanged="OnListScrollChanged"
                                   PreviewMouseWheel="OnListWheel">
                         <StackPanel x:Name="ItemsHost" ClipToBounds="True"/>
                     </ScrollViewer>
@@ -417,7 +417,6 @@
                                         ToolTip="Expand image">
                                     <Image x:Name="ExpandImageIcon" Width="15" Height="15" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
                                 </Button>
-                                <wv2:WebView2 x:Name="HtmlPreview" Visibility="Collapsed"/>
                                 <StackPanel x:Name="PlaceholderPreview" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <Image x:Name="PlaceholderIcon" Width="128" Height="128" Stretch="Uniform" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
                                     <TextBlock x:Name="PlaceholderText" Foreground="{DynamicResource Muted}" FontSize="13" TextAlignment="Center" Margin="0,14,0,0" TextWrapping="Wrap" MaxWidth="360"/>

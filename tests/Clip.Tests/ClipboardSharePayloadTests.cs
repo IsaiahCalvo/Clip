@@ -60,6 +60,48 @@ public sealed class ClipboardSharePayloadTests : IDisposable
         Assert.False(payload.HasTemporaryFiles);
     }
 
+    [Fact]
+    public void CleanupStaleTemporaryFilesIfDueSkipsWhenRecentlyRun()
+    {
+        Directory.CreateDirectory(_root);
+        var staleFile = Path.Combine(_root, "clip-stale.txt");
+        File.WriteAllText(staleFile, "old");
+        File.SetLastWriteTime(staleFile, DateTime.Now.AddDays(-2));
+        var marker = Path.Combine(_root, ".clip-share-cleanup");
+        File.WriteAllText(marker, "recent");
+        File.SetLastWriteTime(marker, DateTime.Now);
+
+        var ran = ClipboardSharePayload.CleanupStaleTemporaryFilesIfDue(_root);
+
+        Assert.False(ran);
+        Assert.True(File.Exists(staleFile));
+    }
+
+    [Fact]
+    public void CleanupStaleTemporaryFilesIfDueDeletesOldFilesWhenDue()
+    {
+        Directory.CreateDirectory(_root);
+        var now = new DateTimeOffset(2026, 6, 19, 12, 0, 0, TimeSpan.Zero);
+        var staleFile = Path.Combine(_root, "clip-stale.txt");
+        File.WriteAllText(staleFile, "old");
+        File.SetLastWriteTime(staleFile, now.AddDays(-2).LocalDateTime);
+        var marker = Path.Combine(_root, ".clip-share-cleanup");
+        File.WriteAllText(marker, "old-marker");
+        File.SetLastWriteTime(marker, now.AddDays(-2).LocalDateTime);
+
+        var ran = ClipboardSharePayload.CleanupStaleTemporaryFilesIfDue(_root, now: now);
+
+        Assert.True(ran);
+        Assert.False(File.Exists(staleFile));
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public void CleanupStaleTemporaryFilesIfDueReturnsFalseWhenRootIsMissing()
+    {
+        Assert.False(ClipboardSharePayload.CleanupStaleTemporaryFilesIfDue(_root));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

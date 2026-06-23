@@ -1,3 +1,4 @@
+using Clip.Core;
 using Clip.Shell;
 
 namespace Clip.Tests;

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
@@ -6,7 +7,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Windows.Storage;
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Automation;
@@ -19,24 +19,22 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using Clip.Core;
+using Microsoft.Web.WebView2.Core;
 using Svg;
 using DrawingImage = System.Drawing.Image;
 using Forms = System.Windows.Forms;
 using WpfBrush = System.Windows.Media.Brush;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
-using WpfWebView2 = Microsoft.Web.WebView2.Wpf.WebView2;
 using WpfImage = System.Windows.Controls.Image;
 using WpfListBox = System.Windows.Controls.ListBox;
 using WpfListBoxItem = System.Windows.Controls.ListBoxItem;
 using WpfOrientation = System.Windows.Controls.Orientation;
+using WpfPen = System.Windows.Media.Pen;
 using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfTextBox = System.Windows.Controls.TextBox;
 using WpfPath = System.Windows.Shapes.Path;
 using WpfShape = System.Windows.Shapes.Shape;
-using WinDataPackageOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation;
-using WinDataRequestedEventArgs = Windows.ApplicationModel.DataTransfer.DataRequestedEventArgs;
-using WinDataTransferManager = Windows.ApplicationModel.DataTransfer.DataTransferManager;
 using WatcherAppChoice = Clip.Watcher.AppChoice;
 using WatcherAppDiscovery = Clip.Watcher.AppDiscovery;
 using WatcherAppLauncher = Clip.Watcher.AppLauncher;
@@ -61,10 +59,10 @@ internal enum AppIconPreference
     Dark,
 }
 
-internal enum PasteFormatPreference
+internal enum ClipOpenMode
 {
-    PlainText,
-    OriginalFormatting,
+    Standalone,
+    CommandPalette,
 }
 
 internal sealed class ClipShellSettings
@@ -74,6 +72,7 @@ internal sealed class ClipShellSettings
 
     public ClipThemePreference Theme { get; set; } = ClipThemePreference.System;
     public AppIconPreference AppIcon { get; set; } = AppIconPreference.Light;
+    public ClipOpenMode OpenMode { get; set; } = ClipOpenMode.Standalone;
     public PasteFormatPreference DefaultPasteFormat { get; set; } = PasteFormatPreference.PlainText;
     public int? HistoryLimit { get; set; } = 500;
     public long? MaxItemSizeBytes { get; set; } = 50L * 1024 * 1024;
@@ -104,6 +103,7 @@ internal sealed class ClipShellSettings
     {
         Theme = ClipThemePreference.System;
         AppIcon = AppIconPreference.Light;
+        OpenMode = ClipOpenMode.Standalone;
         DefaultPasteFormat = PasteFormatPreference.PlainText;
         HistoryLimit = 500;
         MaxItemSizeBytes = 50L * 1024 * 1024;
@@ -175,7 +175,7 @@ internal sealed class ClipShellSettings
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(SettingsPath, json);
-            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon} historyLimit={HistoryLimit?.ToString() ?? "Unlimited"} maxItemSize={ClipItemSizeLimit.MaxItemSizeLabel(MaxItemSizeBytes)} updateCheck={CheckForUpdatesOnStartup} autoInstall={InstallUpdatesAutomatically} clipboardFolder={EffectiveClipboardFolderPath()} openHotkey={Hotkeys.OpenClip} debugHotkey={Hotkeys.SaveDebugLog} excludedApps={Privacy.ExcludedApps.Count}");
+            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon} openMode={OpenMode} historyLimit={HistoryLimit?.ToString() ?? "Unlimited"} maxItemSize={ClipItemSizeLimit.MaxItemSizeLabel(MaxItemSizeBytes)} updateCheck={CheckForUpdatesOnStartup} autoInstall={InstallUpdatesAutomatically} clipboardFolder={EffectiveClipboardFolderPath()} openHotkey={Hotkeys.OpenClip} debugHotkey={Hotkeys.SaveDebugLog} excludedApps={Privacy.ExcludedApps.Count}");
         }
         catch (Exception ex)
         {
@@ -436,30 +436,6 @@ internal sealed class ClipExcludedApp
     }
 }
 
-internal sealed record ClipboardPastePayload(string Text, string? Html, string? Rtf);
-
-internal static class ClipboardPasteData
-{
-    public static bool HasOriginalFormatting(ClipboardHistoryItem item)
-    {
-        return !string.IsNullOrWhiteSpace(item.HtmlText) || !string.IsNullOrWhiteSpace(item.RtfText);
-    }
-
-    public static ClipboardPastePayload Create(ClipboardHistoryItem item, PasteFormatPreference preference)
-    {
-        var text = item.Text ?? item.Preview ?? string.Empty;
-        if (preference != PasteFormatPreference.OriginalFormatting)
-        {
-            return new ClipboardPastePayload(text, null, null);
-        }
-
-        return new ClipboardPastePayload(
-            text,
-            string.IsNullOrWhiteSpace(item.HtmlText) ? null : item.HtmlText,
-            string.IsNullOrWhiteSpace(item.RtfText) ? null : item.RtfText);
-    }
-}
-
 internal sealed class ClipHotkeySettings
 {
     public string OpenClip { get; set; } = ClipHotkeyDefaults.OpenClip;
@@ -646,6 +622,8 @@ internal static class StartupRegistration
     public const bool DefaultEnabled = true;
     internal const string RunValueName = "Clip";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string WatcherExecutableName = "Clip.Watcher.exe";
+    private const string WatcherArguments = "watch";
 
     public static bool IsEnabled() => IsEnabled(RunValueName);
 
@@ -675,12 +653,44 @@ internal static class StartupRegistration
 
         if (enabled)
         {
-            key.SetValue(valueName, Quote(executablePath), RegistryValueKind.String);
+            key.SetValue(valueName, StartupCommandFor(executablePath), RegistryValueKind.String);
             return;
         }
 
         key.DeleteValue(valueName, throwOnMissingValue: false);
         afterDisable?.Invoke();
+    }
+
+    public static bool MigrateToLightweightHostIfNeeded() => MigrateToLightweightHostIfNeeded(RunValueName, CurrentExecutablePath());
+
+    internal static bool MigrateToLightweightHostIfNeeded(string valueName, string executablePath)
+    {
+        var current = CurrentValue(valueName);
+        if (string.IsNullOrWhiteSpace(current) ||
+            current.Contains(WatcherExecutableName, StringComparison.OrdinalIgnoreCase) ||
+            !IsLegacyClipStartupValue(current))
+        {
+            return false;
+        }
+
+        var migrationSource = StartupExecutablePath(current) ?? executablePath;
+        var desired = StartupCommandFor(migrationSource);
+        if (!desired.Contains(WatcherExecutableName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(current, desired, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
+        if (key is null)
+        {
+            return false;
+        }
+
+        key.SetValue(valueName, desired, RegistryValueKind.String);
+        RemoveLegacyStartupShortcut();
+            ShellLog.Info($"startup migrated to headless watcher value={desired}");
+        return true;
     }
 
     private static string CurrentExecutablePath()
@@ -701,7 +711,61 @@ internal static class StartupRegistration
         throw new InvalidOperationException("Could not find Clip executable path.");
     }
 
+    private static string StartupCommandFor(string executablePath)
+    {
+        var watcherPath = WatcherPathFor(executablePath);
+        if (!string.IsNullOrWhiteSpace(watcherPath))
+        {
+            return $"{Quote(watcherPath)} {WatcherArguments}";
+        }
+
+        return Quote(executablePath);
+    }
+
+    private static string? WatcherPathFor(string executablePath)
+    {
+        if (Path.GetFileName(executablePath).Equals(WatcherExecutableName, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(executablePath))
+        {
+            return executablePath;
+        }
+
+        var folder = Path.GetDirectoryName(executablePath);
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            return null;
+        }
+
+        var siblingWatcher = Path.Combine(folder, WatcherExecutableName);
+        return File.Exists(siblingWatcher) ? siblingWatcher : null;
+    }
+
     private static string Quote(string path) => $"\"{path}\"";
+
+    private static string? StartupExecutablePath(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        if (trimmed[0] == '"')
+        {
+            var endQuote = trimmed.IndexOf('"', 1);
+            return endQuote > 1 ? trimmed[1..endQuote] : null;
+        }
+
+        var firstSpace = trimmed.IndexOf(' ');
+        return firstSpace > 0 ? trimmed[..firstSpace] : trimmed;
+    }
+
+    private static bool IsLegacyClipStartupValue(string value)
+    {
+        return value.Contains("Clip.exe", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Clip.Shell.exe", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Start-Clip.ps1", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static void RemoveLegacyStartupShortcut()
     {
@@ -726,31 +790,62 @@ public partial class MainWindow : Window
     private const int OpenHotkeyId = 0x4350;
     private const int DebugLogHotkeyId = 0x4351;
     private const int OpenOverrideHotkeyId = 0x4352;
+    private const int ErrorHotkeyAlreadyRegistered = 1409;
     private const int WmHotkey = 0x0312;
     private const int WmClipboardUpdate = 0x031D;
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
+    private const int RowIconDecodePixels = 48;
+    private const int PreviewImageDecodePixels = 900;
+    private const int MaxCachedRasterImages = 256;
+    private const int TextPreviewCharacterLimit = 80_000;
+    private const int InitialRenderEntryBatch = 3;
+    private const int DeferredRenderEntryBatch = 36;
+    private const int InitialSummaryFirstPaintLimit = 8;
+    private const int DebugOpenSurfaceMaxAttempts = 80;
+    private const long SummaryPreloadMaximumBytes = 2L * 1024 * 1024;
+    private static readonly TimeSpan WindowsHistoryImportMinimumInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan WindowsHistoryImportAfterShowDelay = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ClipboardDuplicateBurstWindow = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan PaletteSessionKeepAlive = TimeSpan.FromSeconds(60);
     private static readonly Dictionary<string, ImageSource> SvgImageCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, string> SvgTextCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object SvgCacheGate = new();
+    private static readonly Dictionary<string, ImageSource> RasterImageCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object RasterImageCacheGate = new();
+    private static readonly ConcurrentDictionary<string, Style> ThinScrollBarStyleCache = new(StringComparer.OrdinalIgnoreCase);
+    private static System.Drawing.Rectangle _cachedMouseScreenWorkingArea;
+    private static bool _hasCachedMouseScreenWorkingArea;
 
     private readonly ClipShellSettings _settings = ClipShellSettings.Load();
     private readonly ClipboardHistoryStore _store;
-    private readonly ClipboardHistoryImportService _historyImporter;
+    private readonly PeriodicWorkThrottle _windowsHistoryImportThrottle = new(WindowsHistoryImportMinimumInterval);
+    private readonly ClipboardCaptureBurstGate _clipboardCaptureBurstGate = new(ClipboardDuplicateBurstWindow);
+    private readonly SemaphoreSlim _clipboardPersistGate = new(1, 1);
+    private readonly object _clipboardPersistTasksGate = new();
+    private readonly List<Task> _clipboardPersistTasks = [];
     private readonly ClipUpdateService _updates = new();
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
     private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly System.Windows.Threading.DispatcherTimer _outsideClickTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly System.Windows.Threading.DispatcherTimer _clipboardSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
+    private readonly System.Windows.Threading.DispatcherTimer _startupUpdateCheckTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly System.Windows.Threading.DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(4) };
+    private readonly System.Windows.Threading.DispatcherTimer _searchTimer = new() { Interval = TimeSpan.FromMilliseconds(45) };
+    private readonly System.Windows.Threading.DispatcherTimer _historyPreloadTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly System.Windows.Threading.DispatcherTimer _paletteSessionExitTimer = new() { Interval = PaletteSessionKeepAlive };
+    private bool _settingsCachesWarmed;
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
     private ClipboardHistoryItem? _pendingTextClipboardItem;
+    private uint _lastClipboardSequenceNumber;
     private HwndSource? _source;
     private bool _openHotkeyRegistered;
     private bool _debugLogHotkeyRegistered;
+    private bool _openHotkeyUnavailable;
+    private bool _debugLogHotkeyUnavailable;
     private bool _openOverrideRegistered;
     private string? _activeOpenOverrideApp;
     private string? _activeOpenOverrideHotkey;
@@ -762,15 +857,38 @@ public partial class MainWindow : Window
     private bool _updateCheckInProgress;
     private string? _promptedUpdateVersion;
     private bool _itemsDirtySinceRender = true;
+    private bool _historySummariesPreloaded;
+    private bool _historyPreloadInProgress;
     private bool _historyImportInProgress;
+    private Task<(IReadOnlyList<ClipboardHistoryItem> Items, long QueryElapsedMs)>? _recentFirstPaintPreloadTask;
     private bool _paletteRequested;
+    private bool _paletteOpen;
     private bool _paletteNoActivate;
+    private bool _palettePositionReady;
+    private System.Drawing.Rectangle _palettePositionWorkingArea;
+    private double _palettePositionWidth;
+    private double _palettePositionHeight;
+    private bool _paletteSessionExitRequested;
+    private bool _isClosing;
+    private bool _chromeIconsReady;
+    private bool _appHeaderIconReady;
+    private int _renderGeneration;
+    private int _loadGeneration;
+    private System.Windows.Threading.DispatcherOperation? _backgroundFullRefreshOperation;
+    private IReadOnlyList<(string? Header, ClipboardHistoryItem? Item)> _deferredRenderEntries = [];
+    private int _deferredRenderIndex;
+    private int _deferredRenderGeneration;
+    private string _deferredRenderReason = string.Empty;
+    private Stopwatch? _deferredRenderWatch;
+    private string? _debugOpenSurface;
+    private int _debugOpenSurfaceAttempts;
     private IntPtr _returnFocusHwnd;
     private IntPtr _returnFocusChildHwnd;
     private AutomationElement? _returnFocusElement;
     private string _returnFocusElementSummary = "none";
     private string? _returnFocusValueBefore;
     private bool _returnFocusCommitsPasteWithEnter;
+    private bool _returnFocusCouldNeedNoActivate;
     private ClipboardHistoryItem? _menuItem;
     private bool _expandedImagePanning;
     private System.Windows.Point _expandedImageLastPoint;
@@ -783,10 +901,29 @@ public partial class MainWindow : Window
     private Rect _expandedRestoreBounds;
     private CornerRadius _expandedRestoreCornerRadius;
     private bool _expandedWindowResized;
+    private Border? _inlineModalOverlay;
+    private Border? _settingsOverlay;
+    private SettingsWindow? _hostedSettings;
+    private bool _settingsOverlayKeepPaletteOnClose;
+    private Border? _prewarmedSettingsOverlay;
+    private SettingsWindow? _prewarmedSettings;
+    private bool _prewarmedSettingsReady;
+    private bool _settingsPrewarmQueued;
+    private bool _windowsHistoryImportAfterShowQueued;
+    private FrameworkElement? _htmlPreview;
+    private Action<System.Drawing.Color>? _setHtmlPreviewBackground;
     private string? _currentPreviewImagePath;
     private string? _currentPreviewPdfPath;
     private ClipUpdateStatus _lastUpdateStatus = ClipUpdateStatus.NotChecked(ClipUpdateService.CurrentVersion);
     public bool KeepOpenForDebug { get; set; }
+    public string? DebugInitialSearch { get; set; }
+    public int? DebugAutoConcealMs { get; set; }
+    public bool DebugOpenSettings { get; set; }
+    public string? DebugOpenSurface { get; set; }
+    public string? TrayStartupAction { get; set; }
+    public bool PaletteSessionMode { get; set; }
+    public bool PaletteSessionStartHidden { get; set; }
+    public bool KeepWarmSession { get; set; }
     internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
@@ -794,14 +931,11 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath());
-        _historyImporter = new ClipboardHistoryImportService(_store, new WindowsClipboardHistorySource());
+        _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath(), enableLoadMaintenance: false);
         InitializeComponent();
         RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Enabled);
         ApplyTheme(_settings.Theme, save: false);
-        ApplyAppIcon(_settings.AppIcon, save: false);
         Opacity = 0;
-        RefreshChromeIcons();
         TitleText.Cursor = System.Windows.Input.Cursors.IBeam;
         TitleText.ToolTip = "Double-click to rename";
         TitleText.MouseLeftButtonDown += OnTitleTextMouseLeftButtonDown;
@@ -833,7 +967,26 @@ public partial class MainWindow : Window
             _clipboardSettleTimer.Stop();
             SavePendingTextClipboardItem();
         };
+        _startupUpdateCheckTimer.Tick += (_, _) =>
+        {
+            _startupUpdateCheckTimer.Stop();
+            if (_settings.CheckForUpdatesOnStartup)
+            {
+                _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
+            }
+        };
         _updateCheckTimer.Tick += (_, _) => _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
+        _searchTimer.Tick += (_, _) =>
+        {
+            _searchTimer.Stop();
+            QueueLoadItems(selectFirst: false, reason: "search");
+        };
+        _historyPreloadTimer.Tick += (_, _) =>
+        {
+            _historyPreloadTimer.Stop();
+            PreloadHistorySummariesIfCheap();
+        };
+        _paletteSessionExitTimer.Tick += (_, _) => ExitPaletteSessionIfIdle();
     }
 
     public void InitializeShell()
@@ -844,45 +997,81 @@ public partial class MainWindow : Window
             _source?.AddHook(WndProc);
             var hwnd = new WindowInteropHelper(this).Handle;
             ApplyRoundedWindowCorners(hwnd);
-            var hotkey = EnsureHotkeyRegistered("startup");
-            var listener = AddClipboardFormatListener(hwnd);
-            InstallForegroundHook();
-            ShellLog.Info($"window initialized hwnd={hwnd} hotkey={hotkey} listener={listener} win32={Marshal.GetLastWin32Error()}");
+            _lastClipboardSequenceNumber = GetClipboardSequenceNumber();
+            var hotkey = false;
+            var listener = false;
+            if (!PaletteSessionMode)
+            {
+                hotkey = EnsureHotkeyRegistered("startup");
+                listener = AddClipboardFormatListener(hwnd);
+                InstallForegroundHook();
+            }
+
+            ShellLog.Info($"window initialized hwnd={hwnd} session={PaletteSessionMode} hotkey={hotkey} listener={listener} clipboardSequence={_lastClipboardSequenceNumber} win32={Marshal.GetLastWin32Error()}");
         };
 
         Loaded += async (_, _) =>
         {
-            await ImportWindowsClipboardHistoryAsync("startup", refreshVisible: false);
-            LoadItems(selectFirst: true, reason: "startup");
+            var showAfterPreRender =
+                _paletteRequested ||
+                (PaletteSessionMode && !PaletteSessionStartHidden) ||
+                !string.IsNullOrWhiteSpace(DebugOpenSurface) ||
+                (KeepOpenForDebug && !DebugOpenSettings);
+            if (showAfterPreRender || (PaletteSessionMode && KeepWarmSession))
+            {
+                StartRecentFirstPaintPreload();
+            }
+
             MoveOffscreen();
             Opacity = 1;
-            UpdateLayout();
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
-            if (_paletteRequested || KeepOpenForDebug)
-            {
-                ShowPalette();
-            }
-            else
-            {
-                ConcealPalette("startup");
-            }
+            ConcealPalette("startup");
+            WarmMouseScreenCache();
+            PositionOnMouseScreen(log: false);
 
             ShellLog.Info("window pre-rendered while hidden");
-            _ = WarmHtmlPreviewAsync();
-            if (_settings.CheckForUpdatesOnStartup)
+            if (showAfterPreRender)
             {
-                _ = CheckForUpdatesAsync(showToastWhenCurrent: false);
+                _ = Dispatcher.BeginInvoke(new Action(() => ShowPalette()), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             }
-            ApplyUpdateCheckSchedule();
 
-            OpenWithWindow.WarmCacheAsync();
-            ClipboardSharePayload.CleanupStaleTemporaryFiles();
+            if (!string.IsNullOrWhiteSpace(TrayStartupAction))
+            {
+                _ = Dispatcher.BeginInvoke(new Action(RunTrayStartupAction), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
+
+            if (!PaletteSessionMode && _settings.CheckForUpdatesOnStartup)
+            {
+                _startupUpdateCheckTimer.Start();
+            }
+
+            if (!PaletteSessionMode)
+            {
+                ApplyUpdateCheckSchedule();
+                if (DebugOpenSettings)
+                {
+                    WarmSettingsCachesSoon();
+                    PrewarmHostedSettingsSoon();
+                }
+
+                _ = Task.Run(() => ClipboardSharePayload.CleanupStaleTemporaryFilesIfDue());
+            }
+
+            if (DebugOpenSettings && !PaletteSessionMode)
+            {
+                _ = Dispatcher.BeginInvoke(new Action(OpenSettingsForDebug), System.Windows.Threading.DispatcherPriority.SystemIdle);
+            }
         };
 
         Closing += (_, _) =>
         {
+            _isClosing = true;
             var hwnd = new WindowInteropHelper(this).Handle;
             _hotkeyRetryTimer.Stop();
+            _searchTimer.Stop();
+            _historyPreloadTimer.Stop();
+            _paletteSessionExitTimer.Stop();
+            _startupUpdateCheckTimer.Stop();
             _updateCheckTimer.Stop();
             if (_openHotkeyRegistered)
             {
@@ -904,17 +1093,135 @@ public partial class MainWindow : Window
                 _openOverrideRegistered = false;
             }
 
-            UninstallForegroundHook();
-            RemoveClipboardFormatListener(hwnd);
+            FlushPendingClipboardPersists();
+            if (!PaletteSessionMode)
+            {
+                UninstallForegroundHook();
+                RemoveClipboardFormatListener(hwnd);
+            }
+
             ShellLog.Info("window closing");
         };
 
         Show();
     }
 
-    public void ShowPalette()
+    private void WarmSettingsCachesSoon()
     {
+        if (_settingsCachesWarmed)
+        {
+            return;
+        }
+
+        _settingsCachesWarmed = true;
+        _ = Dispatcher.BeginInvoke(
+            new Action(SettingsWindow.WarmCaches),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    private void PrewarmHostedSettingsSoon()
+    {
+        if (_settingsPrewarmQueued ||
+            _prewarmedSettingsOverlay is not null ||
+            PaletteSessionMode ||
+            _isClosing ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        _settingsPrewarmQueued = true;
+        _ = Dispatcher.BeginInvoke(
+            new Action(PrewarmHostedSettings),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    private void PrewarmHostedSettings()
+    {
+        _settingsPrewarmQueued = false;
+        if (_isClosing ||
+            _settingsOverlay is not null ||
+            _prewarmedSettingsOverlay is not null ||
+            _paletteOpen ||
+            Opacity > 0 ||
+            IsHitTestVisible ||
+            Shell.Child is not Grid host)
+        {
+            return;
+        }
+
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            var settings = CreateSettingsWindow();
+            var overlay = CreateHostedSettingsOverlay(settings);
+            overlay.Opacity = 0;
+            overlay.IsHitTestVisible = false;
+            host.Children.Add(overlay);
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _prewarmedSettings = settings;
+                _prewarmedSettingsOverlay = overlay;
+                _prewarmedSettingsReady = true;
+                ShellLog.Info($"settings prewarmed elapsedMs={watch.ElapsedMilliseconds}");
+                SchedulePrewarmedSettingsExpiry(overlay);
+            }), System.Windows.Threading.DispatcherPriority.Render);
+        }
+        catch (Exception ex)
+        {
+            ClearPrewarmedHostedSettings();
+            ShellLog.Error(ex, "settings prewarm failed");
+        }
+    }
+
+    private void ClearPrewarmedHostedSettings()
+    {
+        if (_prewarmedSettingsOverlay?.Parent is System.Windows.Controls.Panel parent)
+        {
+            parent.Children.Remove(_prewarmedSettingsOverlay);
+        }
+
+        _prewarmedSettingsOverlay = null;
+        _prewarmedSettings = null;
+        _prewarmedSettingsReady = false;
+        _settingsPrewarmQueued = false;
+    }
+
+    private void SchedulePrewarmedSettingsExpiry(Border overlay)
+    {
+        _ = Task.Delay(TimeSpan.FromSeconds(2.5)).ContinueWith(_task =>
+        {
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_settingsOverlay is null &&
+                    ReferenceEquals(_prewarmedSettingsOverlay, overlay) &&
+                    !_paletteOpen &&
+                    Opacity == 0)
+                {
+                    ClearPrewarmedHostedSettings();
+                    ShellLog.Info("settings prewarm cleared reason=idle");
+                }
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
+
+    public void ShowPalette(bool loadItems = true)
+    {
+        if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
         _paletteRequested = true;
+        _paletteOpen = true;
+        _paletteSessionExitTimer.Stop();
         var watch = Stopwatch.StartNew();
         var ownHwnd = new WindowInteropHelper(this).Handle;
         var foreground = GetForegroundWindow();
@@ -923,7 +1230,7 @@ public partial class MainWindow : Window
             CaptureReturnFocus(foreground);
         }
 
-        _paletteNoActivate = ShouldShowPaletteWithoutActivation(_returnFocusHwnd, _returnFocusElement);
+        _paletteNoActivate = _returnFocusCouldNeedNoActivate && ShouldShowPaletteWithoutActivation(_returnFocusHwnd, _returnFocusElement);
         ApplyNoActivatePaletteStyle(_paletteNoActivate);
 
         if (!IsVisible)
@@ -934,27 +1241,289 @@ public partial class MainWindow : Window
         Opacity = 0;
         IsHitTestVisible = false;
         PositionOnMouseScreen();
-        UpdateLayout();
+        EnsureAppHeaderIcon();
+        EnsureChromeIcons();
         Opacity = 1;
         IsHitTestVisible = true;
         if (ShouldActivatePaletteWindow(_paletteNoActivate))
         {
-            ActivatePaletteWindow(ownHwnd);
+            _ = Dispatcher.BeginInvoke(new Action(() => ActivatePaletteWindow(ownHwnd)), System.Windows.Threading.DispatcherPriority.Input);
         }
 
         _outsideClickTimer.Start();
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender} noActivate={_paletteNoActivate}");
 
-        if (_itemsDirtySinceRender || _rows.Count == 0)
+        if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
         {
-            Dispatcher.BeginInvoke(() => LoadItems(selectFirst: _selected is null, reason: "show-refresh"), System.Windows.Threading.DispatcherPriority.Background);
+            QueueLoadItems(selectFirst: _selected is null, reason: "show-refresh");
         }
 
-        _ = ImportWindowsClipboardHistoryAsync("show", refreshVisible: true);
-        PromptForKnownUpdate();
+        if (loadItems)
+        {
+            ScheduleDebugInitialSearch();
+            ScheduleDebugOpenSurface();
+        }
+
+        if (loadItems && !PaletteSessionMode)
+        {
+            QueueWindowsHistoryImportAfterShow();
+            PromptForKnownUpdate();
+        }
+
+        if (loadItems)
+        {
+            ScheduleDebugAutoConceal();
+        }
     }
 
+    public void HandleExternalShowPaletteSignal()
+    {
+        var action = TrayActionRequest.Consume();
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            ShowPalette();
+            return;
+        }
+
+        RunTrayAction(action);
+    }
+
+    private void RunTrayStartupAction()
+    {
+        var action = TrayStartupAction;
+        TrayStartupAction = null;
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            RunTrayAction(action);
+        }
+    }
+
+    private void RunTrayAction(string action)
+    {
+        switch (NormalizeTrayAction(action))
+        {
+            case "settings":
+                ShowPalette();
+                OpenSettingsFromTray();
+                break;
+            case "check-updates":
+                ShowPalette();
+                CheckForUpdatesFromTray();
+                break;
+            case "save-log":
+                WriteDebugSnapshot("tray");
+                ShowToast("Log snapshot saved");
+                break;
+            default:
+                ShowPalette();
+                break;
+        }
+    }
+
+    private static string NormalizeTrayAction(string action) =>
+        action.Trim().ToLowerInvariant();
+
     internal static bool ShouldActivatePaletteWindow(bool noActivate) => !noActivate;
+
+    private void QueueWindowsHistoryImportAfterShow()
+    {
+        if (_windowsHistoryImportAfterShowQueued)
+        {
+            return;
+        }
+
+        _windowsHistoryImportAfterShowQueued = true;
+        _ = Task.Delay(WindowsHistoryImportAfterShowDelay).ContinueWith(_ =>
+        {
+            if (_isClosing)
+            {
+                return;
+            }
+
+            Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    _windowsHistoryImportAfterShowQueued = false;
+                    if (_isClosing || !_paletteOpen)
+                    {
+                        return;
+                    }
+
+                    _ = ImportWindowsClipboardHistoryAsync("show", refreshVisible: true);
+                }),
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }, TaskScheduler.Default);
+    }
+
+    private void ScheduleDebugInitialSearch()
+    {
+        if (string.IsNullOrWhiteSpace(DebugInitialSearch))
+        {
+            return;
+        }
+
+        var text = DebugInitialSearch;
+        DebugInitialSearch = null;
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            SearchBox.Text = text;
+            SearchBox.CaretIndex = SearchBox.Text.Length;
+            SearchBox.Focus();
+            Keyboard.Focus(SearchBox);
+            _searchTimer.Stop();
+            QueueLoadItems(selectFirst: false, reason: "search");
+            ShellLog.Info($"debug search applied queryLength={text.Length}");
+        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    private void ScheduleDebugOpenSurface()
+    {
+        if (string.IsNullOrWhiteSpace(DebugOpenSurface))
+        {
+            return;
+        }
+
+        _debugOpenSurface = DebugOpenSurface.Trim();
+        DebugOpenSurface = null;
+        _debugOpenSurfaceAttempts = 0;
+        QueueDebugOpenSurface();
+    }
+
+    private void QueueDebugOpenSurface(int delayMs = 40)
+    {
+        if (delayMs <= 0)
+        {
+            _ = Dispatcher.BeginInvoke(new Action(TryOpenDebugSurface), System.Windows.Threading.DispatcherPriority.ContextIdle);
+            return;
+        }
+
+        _ = Task.Delay(delayMs).ContinueWith(_ =>
+        {
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            Dispatcher.BeginInvoke(new Action(TryOpenDebugSurface), System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }, TaskScheduler.Default);
+    }
+
+    private void TryOpenDebugSurface()
+    {
+        if (string.IsNullOrWhiteSpace(_debugOpenSurface) || _isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        var surface = NormalizeDebugSurface(_debugOpenSurface);
+        var item = FindDebugSurfaceItem(surface);
+        if (item is null)
+        {
+            if (++_debugOpenSurfaceAttempts < DebugOpenSurfaceMaxAttempts)
+            {
+                QueueDebugOpenSurface();
+                return;
+            }
+
+            ShellLog.Info($"debug surface skipped surface={_debugOpenSurface} reason=no-item");
+            _debugOpenSurface = null;
+            return;
+        }
+
+        _debugOpenSurface = null;
+        ShellLog.Info($"debug surface opening surface={surface} item={item.Id}");
+        switch (surface)
+        {
+            case "rename":
+                RenameItem(item);
+                break;
+            case "edit-text":
+                EditText(item);
+                break;
+            case "open-with":
+                OpenWith(item);
+                break;
+            default:
+                ShellLog.Info($"debug surface skipped surface={surface} reason=unknown");
+                break;
+        }
+    }
+
+    private ClipboardHistoryItem? FindDebugSurfaceItem(string surface)
+    {
+        foreach (var item in DebugSurfaceCandidates())
+        {
+            var fullItem = _store.GetItem(item.Id) ?? item;
+            if (surface switch
+                {
+                    "edit-text" => fullItem.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link,
+                    "open-with" => HasOpenWithTarget(fullItem),
+                    _ => true,
+                })
+            {
+                return fullItem;
+            }
+        }
+
+        return null;
+    }
+
+    private IEnumerable<ClipboardHistoryItem> DebugSurfaceCandidates()
+    {
+        if (_selected is not null)
+        {
+            yield return _selected;
+        }
+
+        foreach (var item in _allItems)
+        {
+            if (_selected is null || !string.Equals(item.Id, _selected.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return item;
+            }
+        }
+    }
+
+    private static string NormalizeDebugSurface(string surface)
+    {
+        return surface.Trim().ToLowerInvariant() switch
+        {
+            "edit" or "text" or "edit-text" => "edit-text",
+            "open" or "openwith" or "open-with" => "open-with",
+            "rename" => "rename",
+            var normalized => normalized,
+        };
+    }
+
+    private static bool HasOpenWithTarget(ClipboardHistoryItem item)
+    {
+        var targetPath = item.Kind == ClipboardItemKind.Image ? item.AssetPath : item.FilePaths.FirstOrDefault();
+        return !string.IsNullOrWhiteSpace(targetPath) && (File.Exists(targetPath) || Directory.Exists(targetPath));
+    }
+
+    private void ScheduleDebugAutoConceal()
+    {
+        if (DebugAutoConcealMs is not int delayMs || delayMs <= 0)
+        {
+            return;
+        }
+
+        DebugAutoConcealMs = null;
+        _ = Task.Delay(delayMs).ContinueWith(_ =>
+        {
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            Dispatcher.BeginInvoke(new Action(() => ConcealPalette("debug-auto-conceal")), System.Windows.Threading.DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
 
     private void ActivatePaletteWindow(IntPtr hwnd)
     {
@@ -1014,10 +1583,60 @@ public partial class MainWindow : Window
     private void ConcealPalette(string reason)
     {
         _outsideClickTimer.Stop();
+        _paletteOpen = false;
         Opacity = 0;
         IsHitTestVisible = false;
         MoveOffscreen();
         ShellLog.Info($"palette concealed reason={reason}");
+        if (PaletteSessionMode && KeepWarmSession)
+        {
+            _paletteSessionExitTimer.Stop();
+            ShellLog.Info($"palette session kept resident reason={reason}");
+            return;
+        }
+
+        if (PaletteSessionMode && !string.Equals(reason, "startup", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_paletteSessionExitRequested || _isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            if (string.Equals(reason, "debug-auto-conceal", StringComparison.OrdinalIgnoreCase))
+            {
+                ExitPaletteSession(reason);
+                return;
+            }
+
+            _paletteSessionExitTimer.Stop();
+            _paletteSessionExitTimer.Start();
+            ShellLog.Info($"palette session kept warm reason={reason} keepAliveMs={(int)PaletteSessionKeepAlive.TotalMilliseconds}");
+        }
+        else if (PaletteSessionMode && string.Equals(reason, "startup", StringComparison.OrdinalIgnoreCase))
+        {
+            _paletteSessionExitTimer.Stop();
+            _paletteSessionExitTimer.Start();
+            ShellLog.Info($"palette session startup guard keepAliveMs={(int)PaletteSessionKeepAlive.TotalMilliseconds}");
+        }
+    }
+
+    private void ExitPaletteSessionIfIdle()
+    {
+        _paletteSessionExitTimer.Stop();
+        if (!PaletteSessionMode || KeepWarmSession || _paletteOpen || _isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        ExitPaletteSession("idle-timeout");
+    }
+
+    private void ExitPaletteSession(string reason)
+    {
+        _paletteSessionExitRequested = true;
+        _paletteSessionExitTimer.Stop();
+        ShellLog.Info($"palette session exiting reason={reason}");
+        _ = Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current.Shutdown()), System.Windows.Threading.DispatcherPriority.Background);
     }
 
     private void HideIfMousePressedOutsidePalette()
@@ -1056,19 +1675,20 @@ public partial class MainWindow : Window
 
     public void WriteDebugSnapshot(string reason = "hotkey")
     {
-        ShellLog.Info("=== Snapshot ===");
-        ShellLog.Info($"reason={reason} visible={IsVisible} selected={_selected?.Id ?? "none"} kind={_selected?.Kind.ToString() ?? "none"} filter={_kindFilter} date={_dateFilter} file={_fileFilter}");
-        ShellLog.Info($"items all={_allItems.Count} renderedRows={_rows.Count} search={SearchBox.Text}");
+        ShellLog.Snapshot("=== Snapshot ===");
+        ShellLog.Snapshot($"reason={reason} visible={IsVisible} paletteOpen={_paletteOpen} selected={_selected?.Id ?? "none"} kind={_selected?.Kind.ToString() ?? "none"} filter={_kindFilter} date={_dateFilter} file={_fileFilter}");
+        ShellLog.Snapshot($"items all={_allItems.Count} renderedRows={_rows.Count} search={SearchBox.Text}");
         if (_selected is not null)
         {
-            ShellLog.Info($"selected preview={_selected.Preview} pinned={_selected.IsPinned} source={_selected.SourceApplication} path={_selected.SourceApplicationPath}");
+            ShellLog.Snapshot($"selected preview={_selected.Preview} pinned={_selected.IsPinned} source={_selected.SourceApplication} path={_selected.SourceApplicationPath}");
         }
 
-            ShellLog.Info($"scroll listV={ListScroll.VerticalOffset}/{ListScroll.ScrollableHeight} listH={ListScroll.HorizontalOffset}/{ListScroll.ScrollableWidth} info={InfoScroll.VerticalOffset}/{InfoScroll.ScrollableHeight}");
-            ShellLog.Info($"ui popupOpen={ActionMenuPopup.IsOpen} rows={ItemsHost.Children.Count} infoRows={InfoHost.Children.Count}");
-            ShellLog.Info("=== End Snapshot ===");
-            ShowToast("Clip log saved");
-        }
+        ShellLog.Snapshot($"scroll listV={ListScroll.VerticalOffset}/{ListScroll.ScrollableHeight} listH={ListScroll.HorizontalOffset}/{ListScroll.ScrollableWidth} info={InfoScroll.VerticalOffset}/{InfoScroll.ScrollableHeight}");
+        ShellLog.Snapshot($"ui popupOpen={ActionMenuPopup.IsOpen} rows={ItemsHost.Children.Count} infoRows={InfoHost.Children.Count}");
+        ShellLog.Snapshot("=== End Snapshot ===");
+        ShellLog.Flush();
+        ShowToast("Clip log saved");
+    }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -1116,10 +1736,35 @@ public partial class MainWindow : Window
         }
         else if (msg == WmClipboardUpdate)
         {
+            if (ShouldSkipClipboardSequence())
+            {
+                handled = true;
+                return IntPtr.Zero;
+            }
+
             CaptureClipboard();
+            handled = true;
         }
 
         return IntPtr.Zero;
+    }
+
+    private bool ShouldSkipClipboardSequence()
+    {
+        var sequence = GetClipboardSequenceNumber();
+        if (sequence == 0)
+        {
+            return false;
+        }
+
+        if (sequence == _lastClipboardSequenceNumber)
+        {
+            ShellLog.Info($"clipboard skipped duplicate sequence={sequence}");
+            return true;
+        }
+
+        _lastClipboardSequenceNumber = sequence;
+        return false;
     }
 
     private bool EnsureHotkeyRegistered(string reason)
@@ -1137,10 +1782,36 @@ public partial class MainWindow : Window
             return false;
         }
 
-        _openHotkeyRegistered = RegisterConfiguredHotkey(hwnd, OpenHotkeyId, _settings.Hotkeys.OpenClip, ClipHotkeyDefaults.OpenClip, "open", reason);
-        _debugLogHotkeyRegistered = RegisterConfiguredHotkey(hwnd, DebugLogHotkeyId, _settings.Hotkeys.SaveDebugLog, ClipHotkeyDefaults.SaveDebugLog, "debug-log", reason);
+        if (!_openHotkeyRegistered && !_openHotkeyUnavailable)
+        {
+            _openHotkeyRegistered = RegisterConfiguredHotkey(
+                hwnd,
+                OpenHotkeyId,
+                _settings.Hotkeys.OpenClip,
+                ClipHotkeyDefaults.OpenClip,
+                "open",
+                reason,
+                out _openHotkeyUnavailable);
+        }
+
+        if (!_debugLogHotkeyRegistered && !_debugLogHotkeyUnavailable)
+        {
+            _debugLogHotkeyRegistered = RegisterConfiguredHotkey(
+                hwnd,
+                DebugLogHotkeyId,
+                _settings.Hotkeys.SaveDebugLog,
+                ClipHotkeyDefaults.SaveDebugLog,
+                "debug-log",
+                reason,
+                out _debugLogHotkeyUnavailable);
+        }
 
         if (_openHotkeyRegistered && _debugLogHotkeyRegistered)
+        {
+            _hotkeyRetryTimer.Stop();
+        }
+        else if ((_openHotkeyUnavailable || _openHotkeyRegistered) &&
+            (_debugLogHotkeyUnavailable || _debugLogHotkeyRegistered))
         {
             _hotkeyRetryTimer.Stop();
         }
@@ -1217,6 +1888,7 @@ public partial class MainWindow : Window
             {
                 UnregisterHotKey(mainHwnd, OpenHotkeyId);
                 _openHotkeyRegistered = false;
+                _openHotkeyUnavailable = false;
             }
             if (ClipHotkeyGesture.TryParseGlobal(match.Hotkey, out var gesture))
             {
@@ -1243,7 +1915,7 @@ public partial class MainWindow : Window
                 _activeOpenOverrideHotkey = null;
                 ShellLog.Info("open override cleared");
             }
-            if (!_openHotkeyRegistered)
+            if (!_openHotkeyRegistered && !_openHotkeyUnavailable)
             {
                 EnsureHotkeyRegistered("foreground-default");
             }
@@ -1253,8 +1925,9 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
     [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
-    private static bool RegisterConfiguredHotkey(IntPtr hwnd, int id, string configured, string fallback, string name, string reason)
+    private static bool RegisterConfiguredHotkey(IntPtr hwnd, int id, string configured, string fallback, string name, string reason, out bool unavailable)
     {
+        unavailable = false;
         if (!ClipHotkeyGesture.TryParseGlobal(configured, out var gesture) && !ClipHotkeyGesture.TryParseGlobal(fallback, out gesture))
         {
             ShellLog.Info($"hotkey register skipped name={name} configured={configured} reason={reason}");
@@ -1263,6 +1936,7 @@ public partial class MainWindow : Window
 
         var registered = RegisterHotKey(hwnd, id, gesture.WinModifiers, gesture.VirtualKey);
         var win32 = Marshal.GetLastWin32Error();
+        unavailable = !registered && win32 == ErrorHotkeyAlreadyRegistered;
         ShellLog.Info($"hotkey register name={name} key={gesture.DisplayText} reason={reason} registered={registered} hwnd={hwnd} win32={win32}");
         return registered;
     }
@@ -1287,6 +1961,7 @@ public partial class MainWindow : Window
                     Kind = ClipboardItemKind.Files,
                     FilePaths = files,
                     Preview = files.Count == 1 ? Path.GetFileName(files[0]) : $"{files.Count} files",
+                    ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
                     SourceApplication = source.Name,
                     SourceApplicationPath = source.Path,
                 };
@@ -1296,28 +1971,16 @@ public partial class MainWindow : Window
                 var image = System.Windows.Clipboard.GetImage();
                 if (image is not null)
                 {
-                    var path = _store.NewAssetFilePath(".png");
-                    using var file = File.Create(path);
-                    var encoder = new PngBitmapEncoder();
-                    encoder.Frames.Add(BitmapFrame.Create(image));
-                    encoder.Save(file);
-                    item = new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Image,
-                        AssetPath = path,
-                        Preview = $"Image {image.PixelWidth} x {image.PixelHeight}",
-                        ImageWidth = image.PixelWidth,
-                        ImageHeight = image.PixelHeight,
-                        SourceApplication = source.Name,
-                        SourceApplicationPath = source.Path,
-                    };
+                    QueueImageClipboardCapture(image, source);
+                    return;
                 }
             }
             else if (System.Windows.Clipboard.ContainsText())
             {
                 var text = System.Windows.Clipboard.GetText();
-                var htmlText = ClipboardTextOrNull(System.Windows.TextDataFormat.Html);
-                var rtfText = ClipboardTextOrNull(System.Windows.TextDataFormat.Rtf);
+                var captureRichText = _settings.DefaultPasteFormat == PasteFormatPreference.OriginalFormatting;
+                var htmlText = captureRichText ? ClipboardTextOrNull(System.Windows.TextDataFormat.Html) : null;
+                var rtfText = captureRichText ? ClipboardTextOrNull(System.Windows.TextDataFormat.Rtf) : null;
                 if (TryNormalizeColorText(text, source.Name, out var colorHex))
                 {
                     item = new ClipboardHistoryItem
@@ -1373,7 +2036,32 @@ public partial class MainWindow : Window
         }
 
         DropPendingTextClipboardItem("replaced-before-settle");
-        SaveClipboardItem(item, "clipboard-live");
+        if (ShouldSkipDuplicateClipboardBurst(item))
+        {
+            return;
+        }
+
+        QueueClipboardItemSave(item, "clipboard-live");
+    }
+
+    private bool ShouldSkipDuplicateClipboardBurst(ClipboardHistoryItem item)
+    {
+        var fingerprint = ClipboardFingerprint(item);
+        if (!_clipboardCaptureBurstGate.ShouldSkip(fingerprint, DateTimeOffset.UtcNow))
+        {
+            return false;
+        }
+
+        DeleteUnsavedCaptureAsset(item);
+        ShellLog.Info($"clipboard skipped duplicate burst kind={item.Kind} source={item.SourceApplication} preview={item.Preview}");
+        return true;
+    }
+
+    private static string? ClipboardFingerprint(ClipboardHistoryItem item)
+    {
+        return string.IsNullOrWhiteSpace(item.ContentHash)
+            ? null
+            : $"{item.Kind}:{item.ContentHash}";
     }
 
     private void SavePendingTextClipboardItem()
@@ -1391,7 +2079,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        SaveClipboardItem(pending, "clipboard-live");
+        QueueClipboardItemSave(pending, "clipboard-live");
     }
 
     private void DropPendingTextClipboardItem(string reason)
@@ -1406,7 +2094,7 @@ public partial class MainWindow : Window
         _clipboardSettleTimer.Stop();
     }
 
-    private void SaveClipboardItem(ClipboardHistoryItem item, string renderReason)
+    private void QueueClipboardItemSave(ClipboardHistoryItem item, string renderReason)
     {
         if (!ClipItemSizeLimit.Allows(item, _settings.MaxItemSizeBytes))
         {
@@ -1417,16 +2105,253 @@ public partial class MainWindow : Window
             return;
         }
 
-        var saved = _store.AddOrUpdate(item, EffectiveHistoryLimit());
+        var maxItems = EffectiveHistoryLimit();
+        var persist = PersistClipboardItemAsync(item, maxItems);
+        TrackClipboardPersist(persist);
+        _ = persist.ContinueWith(task =>
+        {
+            if (task.IsFaulted)
+            {
+                DeleteUnsavedCaptureAsset(item);
+                ShellLog.Error(task.Exception?.GetBaseException() ?? new InvalidOperationException("clipboard persist failed"), "clipboard persist failed");
+                return;
+            }
+
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            _ = Dispatcher.BeginInvoke(new Action(() => ApplySavedClipboardItem(task.Result, renderReason)), System.Windows.Threading.DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
+
+    private async Task<ClipboardHistoryItem> PersistClipboardItemAsync(ClipboardHistoryItem item, int maxItems)
+    {
+        await _clipboardPersistGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() => _store.AddOrUpdate(item, maxItems)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _clipboardPersistGate.Release();
+        }
+    }
+
+    private void ApplySavedClipboardItem(ClipboardHistoryItem saved, string renderReason)
+    {
         ShellLog.Info($"clipboard captured id={saved.Id} kind={saved.Kind} source={saved.SourceApplication} preview={saved.Preview}");
-        _allItems = _store.QueryItems();
-        if (IsVisible)
+        ClearRecentFirstPaintPreload();
+        _allItems = _store.QueryItemSummaries();
+        _historySummariesPreloaded = string.IsNullOrWhiteSpace(SearchBox.Text);
+        if (_paletteOpen)
         {
             RenderItems(reason: renderReason);
         }
         else
         {
             _itemsDirtySinceRender = true;
+        }
+    }
+
+    private void PreloadHistorySummariesIfCheap()
+    {
+        if (_historySummariesPreloaded || _historyPreloadInProgress || _paletteOpen || !CanPreloadHistorySummaries())
+        {
+            return;
+        }
+
+        _historyPreloadInProgress = true;
+        var watch = Stopwatch.StartNew();
+        _ = Task.Run(() => _store.QueryItemSummaries()).ContinueWith(task =>
+        {
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _historyPreloadInProgress = false;
+                if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                    return;
+                }
+
+                if (task.IsFaulted)
+                {
+                    ShellLog.Error(task.Exception?.GetBaseException() ?? new InvalidOperationException("history preload failed"), "history preload failed");
+                    return;
+                }
+
+                if (_paletteOpen || !string.IsNullOrWhiteSpace(SearchBox.Text))
+                {
+                    return;
+                }
+
+                _allItems = task.Result;
+                _historySummariesPreloaded = true;
+                _itemsDirtySinceRender = true;
+                ShellLog.Info($"history summaries preloaded count={_allItems.Count} elapsedMs={watch.ElapsedMilliseconds}");
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
+
+    private void StartRecentFirstPaintPreload()
+    {
+        if (_recentFirstPaintPreloadTask is not null || !_store.HasCurrentRecentSummaryIndex())
+        {
+            return;
+        }
+
+        _recentFirstPaintPreloadTask = Task.Run(() =>
+        {
+            var queryWatch = Stopwatch.StartNew();
+            var items = _store.QueryRecentItemSummaries(InitialSummaryFirstPaintLimit);
+            return ((IReadOnlyList<ClipboardHistoryItem>)items, queryWatch.ElapsedMilliseconds);
+        });
+    }
+
+    private void ClearRecentFirstPaintPreload()
+    {
+        _recentFirstPaintPreloadTask = null;
+    }
+
+    private bool CanPreloadHistorySummaries()
+    {
+        try
+        {
+            if (!_store.HasCurrentSummaryIndex() || !File.Exists(_store.HistoryIndexFilePath))
+            {
+                return false;
+            }
+
+            return new FileInfo(_store.HistoryIndexFilePath).Length <= SummaryPreloadMaximumBytes;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void QueueImageClipboardCapture(BitmapSource image, (string? Name, string? Path) source)
+    {
+        var capturedAt = DateTimeOffset.Now;
+        var width = image.PixelWidth;
+        var height = image.PixelHeight;
+        var path = _store.NewAssetFilePath(".png");
+
+        if (!image.IsFrozen && image.CanFreeze)
+        {
+            image.Freeze();
+        }
+
+        if (!image.IsFrozen)
+        {
+            try
+            {
+                CaptureClipboardItem(CreateImageClipboardItem(image, path, width, height, source, capturedAt));
+            }
+            catch (Exception ex)
+            {
+                DeleteCaptureFile(path);
+                ShellLog.Error(ex, "clipboard image capture failed");
+            }
+
+            return;
+        }
+
+        _ = Task.Run(() => CreateImageClipboardItem(image, path, width, height, source, capturedAt)).ContinueWith(task =>
+        {
+            if (task.IsFaulted)
+            {
+                DeleteCaptureFile(path);
+                ShellLog.Error(task.Exception?.GetBaseException() ?? new InvalidOperationException("clipboard image capture failed"), "clipboard image capture failed");
+                return;
+            }
+
+            if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                DeleteCaptureFile(path);
+                return;
+            }
+
+            _ = Dispatcher.BeginInvoke(new Action(() => CaptureClipboardItem(task.Result)), System.Windows.Threading.DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
+
+    private static ClipboardHistoryItem CreateImageClipboardItem(BitmapSource image, string path, int width, int height, (string? Name, string? Path) source, DateTimeOffset capturedAt)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(image));
+        using (var file = File.Create(path))
+        {
+            encoder.Save(file);
+        }
+
+        return new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Image,
+            AssetPath = path,
+            Preview = $"Image {width} x {height}",
+            ContentHash = HashFile(path),
+            ImageWidth = width,
+            ImageHeight = height,
+            SourceApplication = source.Name,
+            SourceApplicationPath = source.Path,
+            CreatedAt = capturedAt,
+            LastUsedAt = capturedAt,
+            FirstCopiedAt = capturedAt,
+            LastCopiedAt = capturedAt,
+        };
+    }
+
+    private void TrackClipboardPersist(Task task)
+    {
+        lock (_clipboardPersistTasksGate)
+        {
+            _clipboardPersistTasks.Add(task);
+        }
+
+        _ = task.ContinueWith(completed =>
+        {
+            lock (_clipboardPersistTasksGate)
+            {
+                _clipboardPersistTasks.Remove(completed);
+            }
+        }, TaskScheduler.Default);
+    }
+
+    private void FlushPendingClipboardPersists()
+    {
+        Task[] pending;
+        lock (_clipboardPersistTasksGate)
+        {
+            pending = _clipboardPersistTasks.Where(task => !task.IsCompleted).ToArray();
+        }
+
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Task.WaitAll(pending, TimeSpan.FromSeconds(2));
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "clipboard persist flush failed");
+        }
+    }
+
+    private static void DeleteCaptureFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -1466,18 +2391,246 @@ public partial class MainWindow : Window
         }
     }
 
+    private void QueueLoadItems(bool selectFirst, string reason)
+    {
+        var generation = ++_loadGeneration;
+        var query = SearchBox.Text;
+        var totalWatch = Stopwatch.StartNew();
+        var isSearch = string.Equals(reason, "search", StringComparison.OrdinalIgnoreCase);
+        if (isSearch)
+        {
+            CancelBackgroundFullSummaryRefresh(reason);
+        }
+
+        if (string.IsNullOrWhiteSpace(query) && _historySummariesPreloaded)
+        {
+            try
+            {
+                var visibleItems = RenderItems(reason);
+                _itemsDirtySinceRender = false;
+                SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: true);
+
+                ShellLog.Info($"load items reason={reason} count={_allItems.Count} queryElapsedMs=0 elapsedMs={totalWatch.ElapsedMilliseconds} preloaded=True");
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Error(ex, $"load preloaded items failed reason={reason}");
+            }
+
+            return;
+        }
+
+        if (ShouldUseRecentSummaryFirstPaint(query, reason))
+        {
+            try
+            {
+                var preloaded = false;
+                long queryElapsedMs;
+                var preloadTask = _recentFirstPaintPreloadTask;
+                if (preloadTask is { IsCompletedSuccessfully: true })
+                {
+                    _allItems = preloadTask.Result.Items;
+                    queryElapsedMs = preloadTask.Result.QueryElapsedMs;
+                    preloaded = true;
+                    ClearRecentFirstPaintPreload();
+                }
+                else
+                {
+                    var queryWatch = Stopwatch.StartNew();
+                    _allItems = _store.QueryRecentItemSummaries(InitialSummaryFirstPaintLimit);
+                    queryElapsedMs = queryWatch.ElapsedMilliseconds;
+                }
+
+                var visibleItems = RenderItems(reason);
+                _itemsDirtySinceRender = true;
+                SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: true);
+
+                ShellLog.Info($"load items reason={reason} count={_allItems.Count} queryElapsedMs={queryElapsedMs} elapsedMs={totalWatch.ElapsedMilliseconds} recent=True preloaded={preloaded}");
+                QueueFullSummaryRefreshAfterFirstPaint(generation, selectFirst);
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Error(ex, $"load recent items failed reason={reason}");
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(query) && _store.HasCurrentSummaryIndex())
+        {
+            try
+            {
+                var queryWatch = Stopwatch.StartNew();
+                _allItems = _store.QueryItemSummaries();
+                _historySummariesPreloaded = true;
+                var queryElapsedMs = queryWatch.ElapsedMilliseconds;
+                var visibleItems = RenderItems(reason);
+                _itemsDirtySinceRender = false;
+                SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: true);
+
+                ShellLog.Info($"load items reason={reason} count={_allItems.Count} queryElapsedMs={queryElapsedMs} elapsedMs={totalWatch.ElapsedMilliseconds} inline=True");
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Error(ex, $"load items failed reason={reason}");
+            }
+
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            var queryWatch = Stopwatch.StartNew();
+            var items = _store.QueryItemSummaries(query);
+            return (Items: items, QueryElapsedMs: queryWatch.ElapsedMilliseconds);
+        }).ContinueWith(task =>
+        {
+            var dispatcherPriority = isSearch
+                ? System.Windows.Threading.DispatcherPriority.Send
+                : System.Windows.Threading.DispatcherPriority.Background;
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (generation != _loadGeneration)
+                {
+                    ShellLog.Info($"load items canceled reason={reason} generation={generation}");
+                    return;
+                }
+
+                if (task.IsFaulted)
+                {
+                    ShellLog.Error(task.Exception?.GetBaseException() ?? new InvalidOperationException("load items failed"), $"load items failed reason={reason}");
+                    return;
+                }
+
+                _allItems = task.Result.Items;
+                _historySummariesPreloaded = string.IsNullOrWhiteSpace(query);
+                var visibleItems = RenderItems(reason);
+                _itemsDirtySinceRender = false;
+                SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: false);
+
+                ShellLog.Info($"load items reason={reason} count={_allItems.Count} queryElapsedMs={task.Result.QueryElapsedMs} elapsedMs={totalWatch.ElapsedMilliseconds}");
+            }), dispatcherPriority);
+        });
+    }
+
+    private void CancelBackgroundFullSummaryRefresh(string reason)
+    {
+        var operation = _backgroundFullRefreshOperation;
+        if (operation is null)
+        {
+            return;
+        }
+
+        _backgroundFullRefreshOperation = null;
+        if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Pending)
+        {
+            _ = operation.Abort();
+            ShellLog.Info($"background full refresh canceled reason={reason}");
+        }
+    }
+
+    private bool ShouldUseRecentSummaryFirstPaint(string? query, string reason)
+    {
+        return string.IsNullOrWhiteSpace(query) &&
+            string.Equals(reason, "show-refresh", StringComparison.OrdinalIgnoreCase) &&
+            _store.HasCurrentRecentSummaryIndex();
+    }
+
+    private void QueueFullSummaryRefreshAfterFirstPaint(int generation, bool selectFirst)
+    {
+        var totalWatch = Stopwatch.StartNew();
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(180);
+            var queryWatch = Stopwatch.StartNew();
+            var items = _store.QueryItemSummaries();
+            return (Items: items, QueryElapsedMs: queryWatch.ElapsedMilliseconds);
+        }).ContinueWith(task =>
+        {
+            QueueApply(0);
+
+            void QueueApply(int delayMs)
+            {
+                if (delayMs <= 0)
+                {
+                    _backgroundFullRefreshOperation = Dispatcher.BeginInvoke(new Action(Apply), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                    return;
+                }
+
+                _ = Task.Delay(delayMs).ContinueWith(_ =>
+                {
+                    if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                    {
+                        return;
+                    }
+
+                    _backgroundFullRefreshOperation = Dispatcher.BeginInvoke(new Action(Apply), System.Windows.Threading.DispatcherPriority.ContextIdle);
+                }, TaskScheduler.Default);
+            }
+
+            void Apply()
+            {
+                _backgroundFullRefreshOperation = null;
+                if (_isClosing || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                    return;
+                }
+
+                if (generation != _loadGeneration || !string.IsNullOrWhiteSpace(SearchBox.Text))
+                {
+                    ShellLog.Info($"load items canceled reason=background-full-refresh generation={generation}");
+                    return;
+                }
+
+                if (task.IsFaulted)
+                {
+                    ShellLog.Error(task.Exception?.GetBaseException() ?? new InvalidOperationException("load items failed"), "load items failed reason=background-full-refresh");
+                    return;
+                }
+
+                _allItems = task.Result.Items;
+                _historySummariesPreloaded = true;
+                if (_paletteOpen)
+                {
+                    if (IsPaletteInteractionBusy())
+                    {
+                        QueueApply(120);
+                        return;
+                    }
+
+                    var visibleItems = RenderItems("background-full-refresh");
+                    _itemsDirtySinceRender = false;
+                    SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: false);
+                }
+                else
+                {
+                    _itemsDirtySinceRender = true;
+                }
+
+                ShellLog.Info($"load items reason=background-full-refresh count={_allItems.Count} queryElapsedMs={task.Result.QueryElapsedMs} elapsedMs={totalWatch.ElapsedMilliseconds}");
+            }
+        }, TaskScheduler.Default);
+    }
+
+    private bool IsPaletteInteractionBusy()
+    {
+        return _suppressDeactivate ||
+            ActionMenuPopup.IsOpen ||
+            ShareSubmenuPopup.IsOpen ||
+            IsContextMenuOpen(this);
+    }
+
     private void LoadItems(bool selectFirst, string reason)
     {
+        _loadGeneration++;
         var watch = Stopwatch.StartNew();
         try
         {
-            _allItems = _store.QueryItems(SearchBox.Text);
-            RenderItems(reason);
+            _allItems = _store.QueryItemSummaries(SearchBox.Text);
+            _historySummariesPreloaded = string.IsNullOrWhiteSpace(SearchBox.Text);
+            var visibleItems = RenderItems(reason);
             _itemsDirtySinceRender = false;
-            if (selectFirst && _selected is null)
-            {
-                SelectItem(FilteredItems().FirstOrDefault(), reason: "initial");
-            }
+            SelectInitialItemIfNeeded(selectFirst, visibleItems, defer: false);
         }
         catch (Exception ex)
         {
@@ -1489,6 +2642,34 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SelectInitialItemIfNeeded(bool selectFirst, IReadOnlyList<ClipboardHistoryItem> visibleItems, bool defer)
+    {
+        if (!selectFirst || _selected is not null)
+        {
+            return;
+        }
+
+        var first = visibleItems.FirstOrDefault();
+        if (first is null)
+        {
+            return;
+        }
+
+        if (!defer)
+        {
+            SelectItem(first, reason: "initial");
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_selected is null)
+            {
+                SelectItem(first, reason: "initial");
+            }
+        }), System.Windows.Threading.DispatcherPriority.Background);
+    }
+
     private async Task ImportWindowsClipboardHistoryAsync(string reason, bool refreshVisible)
     {
         if (_historyImportInProgress)
@@ -1496,17 +2677,24 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!_windowsHistoryImportThrottle.TryBegin(DateTimeOffset.UtcNow))
+        {
+            ShellLog.Info($"windows history import skipped reason={reason} throttle={WindowsHistoryImportMinimumInterval}");
+            return;
+        }
+
         _historyImportInProgress = true;
         var watch = Stopwatch.StartNew();
         try
         {
-            var imported = await _historyImporter.ImportAsync(EffectiveHistoryLimit());
+            var imported = await ImportWindowsClipboardHistoryInHelperAsync(EffectiveHistoryLimit());
             if (imported > 0)
             {
                 _itemsDirtySinceRender = true;
-                if (refreshVisible && IsVisible)
+                _historySummariesPreloaded = false;
+                if (refreshVisible && _paletteOpen)
                 {
-                    _ = Dispatcher.BeginInvoke(new Action(() => LoadItems(selectFirst: _selected is null, reason: $"windows-history-{reason}")), System.Windows.Threading.DispatcherPriority.Background);
+                    _ = Dispatcher.BeginInvoke(new Action(() => QueueLoadItems(selectFirst: _selected is null, reason: $"windows-history-{reason}")), System.Windows.Threading.DispatcherPriority.Background);
                 }
             }
 
@@ -1522,37 +2710,101 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RenderItems(string reason)
+    private static async Task<int> ImportWindowsClipboardHistoryInHelperAsync(int maxItems)
     {
-        var selectedId = _selected?.Id;
-        ItemsHost.Children.Clear();
-        _rows.Clear();
-        UpdateFilterVisuals();
-
-        foreach (var group in GroupItems(FilteredItems()))
+        var helper = FindWindowsHistoryExecutable();
+        if (helper is null)
         {
-            if (group.Items.Count == 0)
-            {
-                continue;
-            }
+            ShellLog.Info("windows history import skipped helper=missing");
+            return 0;
+        }
 
-            var header = new TextBlock
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
             {
-                Text = $"{group.Header.ToUpperInvariant()}  {group.Items.Count}",
-                Foreground = (WpfBrush)FindResource("Muted"),
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(16, 12, 8, 4),
-            };
-            ItemsHost.Children.Add(header);
+                FileName = helper,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(helper) ?? AppContext.BaseDirectory,
+            },
+        };
+        process.StartInfo.ArgumentList.Add("import-windows-history");
+        process.StartInfo.ArgumentList.Add("--max");
+        process.StartInfo.ArgumentList.Add(maxItems.ToString());
 
-            foreach (var item in group.Items)
+        if (!process.Start())
+        {
+            return 0;
+        }
+
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+        {
+            ShellLog.Info($"windows history import helper failed exit={process.ExitCode} error={error.Trim()}");
+            return 0;
+        }
+
+        return ParseImportCount(output);
+    }
+
+    private static string? FindWindowsHistoryExecutable()
+    {
+        var local = Path.Combine(AppContext.BaseDirectory, "Clip.WindowsHistory.exe");
+        if (File.Exists(local))
+        {
+            return local;
+        }
+
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath))
+        {
+            var sibling = Path.Combine(Path.GetDirectoryName(processPath) ?? AppContext.BaseDirectory, "Clip.WindowsHistory.exe");
+            if (File.Exists(sibling))
             {
-                var row = BuildRow(item);
-                ItemsHost.Children.Add(row);
-                _rows[item.Id] = row;
+                return sibling;
             }
         }
+
+        return null;
+    }
+
+    private static int ParseImportCount(string output)
+    {
+        foreach (var line in output.Split(["\r\n", "\n", "\r"], StringSplitOptions.RemoveEmptyEntries).Reverse())
+        {
+            if (int.TryParse(line.Trim(), out var count))
+            {
+                return count;
+            }
+        }
+
+        return 0;
+    }
+
+    private IReadOnlyList<ClipboardHistoryItem> RenderItems(string reason)
+    {
+        var watch = Stopwatch.StartNew();
+        var selectedId = _selected?.Id;
+        var visibleItems = FilteredItems();
+        var entries = RenderEntries(visibleItems);
+        var generation = ++_renderGeneration;
+        ItemsHost.Children.Clear();
+        _rows.Clear();
+        _deferredRenderEntries = [];
+        _deferredRenderIndex = 0;
+        _deferredRenderGeneration = generation;
+        _deferredRenderReason = string.Empty;
+        _deferredRenderWatch = null;
+        UpdateFilterVisuals();
+
+        var nextIndex = AddRenderEntries(entries, 0, InitialRenderEntryBatch);
 
         if (selectedId is not null && _rows.TryGetValue(selectedId, out var selectedRow))
         {
@@ -1561,7 +2813,104 @@ public partial class MainWindow : Window
             selectedRow.BorderThickness = new Thickness(1);
         }
 
-        ShellLog.Info($"render items reason={reason} rows={_rows.Count} selected={selectedId ?? "none"}");
+        if (nextIndex < entries.Count)
+        {
+            _deferredRenderEntries = entries;
+            _deferredRenderIndex = nextIndex;
+            _deferredRenderGeneration = generation;
+            _deferredRenderReason = reason;
+            _deferredRenderWatch = watch;
+            _ = Dispatcher.BeginInvoke(new Action(() => AppendDeferredRowsIfNeeded(force: ListScroll.ScrollableHeight <= 0)), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        ShellLog.Info($"render items reason={reason} rows={_rows.Count}/{visibleItems.Count} selected={selectedId ?? "none"} elapsedMs={watch.ElapsedMilliseconds} deferred={nextIndex < entries.Count}");
+        return visibleItems;
+    }
+
+    private static List<(string? Header, ClipboardHistoryItem? Item)> RenderEntries(IReadOnlyList<ClipboardHistoryItem> visibleItems)
+    {
+        var entries = new List<(string? Header, ClipboardHistoryItem? Item)>();
+        foreach (var group in GroupItems(visibleItems))
+        {
+            if (group.Items.Count == 0)
+            {
+                continue;
+            }
+
+            entries.Add(($"{group.Header.ToUpperInvariant()}  {group.Items.Count}", null));
+            foreach (var item in group.Items)
+            {
+                entries.Add((null, item));
+            }
+        }
+
+        return entries;
+    }
+
+    private int AddRenderEntries(IReadOnlyList<(string? Header, ClipboardHistoryItem? Item)> entries, int start, int count)
+    {
+        var end = Math.Min(entries.Count, start + count);
+        for (var index = start; index < end; index++)
+        {
+            var entry = entries[index];
+            if (entry.Header is not null)
+            {
+                var header = new TextBlock
+                {
+                    Text = entry.Header,
+                    Foreground = (WpfBrush)FindResource("Muted"),
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Margin = new Thickness(16, 12, 8, 4),
+                };
+                ItemsHost.Children.Add(header);
+                continue;
+            }
+
+            if (entry.Item is null)
+            {
+                continue;
+            }
+
+            var row = BuildRow(entry.Item);
+            ItemsHost.Children.Add(row);
+            _rows[entry.Item.Id] = row;
+        }
+
+        return end;
+    }
+
+    private void AppendDeferredRowsIfNeeded(bool force = false)
+    {
+        if (_deferredRenderEntries.Count == 0 || _deferredRenderIndex >= _deferredRenderEntries.Count)
+        {
+            return;
+        }
+
+        if (_deferredRenderGeneration != _renderGeneration)
+        {
+            ShellLog.Info($"render items canceled reason={_deferredRenderReason} start={_deferredRenderIndex}");
+            _deferredRenderEntries = [];
+            return;
+        }
+
+        if (!force && ListScroll.ScrollableHeight - ListScroll.VerticalOffset > 140)
+        {
+            return;
+        }
+
+        _deferredRenderIndex = AddRenderEntries(_deferredRenderEntries, _deferredRenderIndex, DeferredRenderEntryBatch);
+        if (_deferredRenderIndex < _deferredRenderEntries.Count)
+        {
+            ShellLog.Info($"render items appended reason={_deferredRenderReason} rows={_rows.Count} next={_deferredRenderIndex}/{_deferredRenderEntries.Count}");
+            return;
+        }
+
+        ShellLog.Info($"render items complete reason={_deferredRenderReason} rows={_rows.Count} elapsedMs={_deferredRenderWatch?.ElapsedMilliseconds ?? 0}");
+        _deferredRenderEntries = [];
+        _deferredRenderIndex = 0;
+        _deferredRenderReason = string.Empty;
+        _deferredRenderWatch = null;
     }
 
     private void RefreshClipboardManagerTextTheme()
@@ -1610,7 +2959,7 @@ public partial class MainWindow : Window
             var child = VisualTreeHelper.GetChild(root, i);
             if (child is WpfImage image && FindRowItem(image) is { } imageItem)
             {
-                image.Source = IconFor(imageItem, 96);
+                image.Source = IconFor(imageItem, 96, preferRichPreview: false);
             }
 
             RefreshClipboardManagerIcons(child);
@@ -1693,7 +3042,7 @@ public partial class MainWindow : Window
 
         var icon = new WpfImage
         {
-            Source = IconFor(item, 96),
+            Source = IconFor(item, 96, preferRichPreview: false),
             Width = item.Kind == ClipboardItemKind.Text ? 32 : 28,
             Height = item.Kind == ClipboardItemKind.Text ? 32 : 28,
             Stretch = Stretch.Uniform,
@@ -2114,7 +3463,7 @@ public partial class MainWindow : Window
 
             if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
             {
-                TextPreview.Text = TextPayload(item);
+                TextPreview.Text = TextFilePreviewReader.Format(TextPayload(item), TextPreviewCharacterLimit);
                 TextPreview.Foreground = (WpfBrush)FindResource("Text");
                 TextPreview.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview text id={item.Id} chars={TextPreview.Text.Length}");
@@ -2123,7 +3472,7 @@ public partial class MainWindow : Window
 
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
-                ImagePreview.Source = LoadBitmap(item.AssetPath);
+                ImagePreview.Source = LoadCachedBitmap(item.AssetPath, PreviewImageDecodePixels);
                 _currentPreviewImagePath = item.AssetPath;
                 ImagePreview.Visibility = Visibility.Visible;
                 ExpandImageButton.Visibility = Visibility.Visible;
@@ -2172,7 +3521,7 @@ public partial class MainWindow : Window
                 {
                     if (token != _previewToken) return;
                     HidePreviews();
-                    ImagePreview.Source = LoadBitmap(path);
+                    ImagePreview.Source = LoadCachedBitmap(path, PreviewImageDecodePixels);
                     _currentPreviewImagePath = path;
                     ImagePreview.Visibility = Visibility.Visible;
                     ExpandImageButton.Visibility = Visibility.Visible;
@@ -2187,9 +3536,7 @@ public partial class MainWindow : Window
                 {
                     if (token != _previewToken) return;
                     HidePreviews();
-                    HtmlPreview.Visibility = Visibility.Visible;
-                    await HtmlPreview.EnsureCoreWebView2Async();
-                    HtmlPreview.Source = new Uri(path);
+                    await ShowHtmlPreviewAsync(path);
                 });
                 ShellLog.Info($"preview html path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
@@ -2197,11 +3544,7 @@ public partial class MainWindow : Window
 
             if (IsTextFile(ext))
             {
-                var text = await File.ReadAllTextAsync(path);
-                if (text.Length > 80_000)
-                {
-                    text = text[..80_000] + Environment.NewLine + "...";
-                }
+                var text = await TextFilePreviewReader.ReadAsync(path, TextPreviewCharacterLimit);
 
                 await Dispatcher.InvokeAsync(() =>
                 {
@@ -2353,7 +3696,7 @@ public partial class MainWindow : Window
         InfoHost.Children.Add(new Border { Height = 1, Background = (WpfBrush)FindResource("Line") });
     }
 
-    private IEnumerable<ClipboardHistoryItem> FilteredItems()
+    private IReadOnlyList<ClipboardHistoryItem> FilteredItems()
     {
         IEnumerable<ClipboardHistoryItem> items = _allItems;
         items = _kindFilter switch
@@ -2368,7 +3711,8 @@ public partial class MainWindow : Window
 
         if (_dateFilter != "all")
         {
-            items = items.Where(i => DateKey(i) == _dateFilter);
+            var today = DateTime.Today;
+            items = items.Where(i => DateKey(i, today) == _dateFilter);
         }
 
         if (_kindFilter == "files" && _fileFilter != "all")
@@ -2381,14 +3725,61 @@ public partial class MainWindow : Window
 
     private static IEnumerable<(string Header, List<ClipboardHistoryItem> Items)> GroupItems(IEnumerable<ClipboardHistoryItem> items)
     {
-        var list = items.ToList();
-        yield return ("Pinned items", list.Where(i => i.IsPinned).OrderBy(i => i.PinOrder).ToList());
-        yield return ("Today", list.Where(i => !i.IsPinned && DateKey(i) == "today").OrderByDescending(i => i.LastCopiedAt).ToList());
-        yield return ("Yesterday", list.Where(i => !i.IsPinned && DateKey(i) == "yesterday").OrderByDescending(i => i.LastCopiedAt).ToList());
-        yield return ("This week", list.Where(i => !i.IsPinned && DateKey(i) == "week").OrderByDescending(i => i.LastCopiedAt).ToList());
-        yield return ("This month", list.Where(i => !i.IsPinned && DateKey(i) == "month").OrderByDescending(i => i.LastCopiedAt).ToList());
-        yield return ("This year", list.Where(i => !i.IsPinned && DateKey(i) == "year").OrderByDescending(i => i.LastCopiedAt).ToList());
-        yield return ("Older", list.Where(i => !i.IsPinned && DateKey(i) == "older").OrderByDescending(i => i.LastCopiedAt).ToList());
+        var pinned = new List<ClipboardHistoryItem>();
+        var todayItems = new List<ClipboardHistoryItem>();
+        var yesterday = new List<ClipboardHistoryItem>();
+        var week = new List<ClipboardHistoryItem>();
+        var month = new List<ClipboardHistoryItem>();
+        var year = new List<ClipboardHistoryItem>();
+        var older = new List<ClipboardHistoryItem>();
+        var today = DateTime.Today;
+
+        foreach (var item in items)
+        {
+            if (item.IsPinned)
+            {
+                pinned.Add(item);
+                continue;
+            }
+
+            switch (DateKey(item, today))
+            {
+                case "today":
+                    todayItems.Add(item);
+                    break;
+                case "yesterday":
+                    yesterday.Add(item);
+                    break;
+                case "week":
+                    week.Add(item);
+                    break;
+                case "month":
+                    month.Add(item);
+                    break;
+                case "year":
+                    year.Add(item);
+                    break;
+                default:
+                    older.Add(item);
+                    break;
+            }
+        }
+
+        pinned.Sort((left, right) => left.PinOrder.CompareTo(right.PinOrder));
+        SortByLastCopied(todayItems);
+        SortByLastCopied(yesterday);
+        SortByLastCopied(week);
+        SortByLastCopied(month);
+        SortByLastCopied(year);
+        SortByLastCopied(older);
+
+        yield return ("Pinned items", pinned);
+        yield return ("Today", todayItems);
+        yield return ("Yesterday", yesterday);
+        yield return ("This week", week);
+        yield return ("This month", month);
+        yield return ("This year", year);
+        yield return ("Older", older);
     }
 
     private void SetFilter(string kind)
@@ -2399,8 +3790,8 @@ public partial class MainWindow : Window
             _fileFilter = "all";
         }
 
-        RenderItems($"filter-{kind}");
-        SelectItem(FilteredItems().FirstOrDefault(), $"filter-{kind}");
+        var visibleItems = RenderItems($"filter-{kind}");
+        SelectItem(visibleItems.FirstOrDefault(), $"filter-{kind}");
         ShellLog.Info($"filter changed kind={kind} date={_dateFilter} file={_fileFilter}");
     }
 
@@ -2410,7 +3801,8 @@ public partial class MainWindow : Window
         if (_store.SetPinned(item.Id, next))
         {
             item.IsPinned = next;
-            _allItems = _store.QueryItems(SearchBox.Text);
+            _allItems = _store.QueryItemSummaries(SearchBox.Text);
+            _historySummariesPreloaded = string.IsNullOrWhiteSpace(SearchBox.Text);
             RenderItems("pin-toggle");
             ShellLog.Info($"pin toggled id={item.Id} pinned={next}");
         }
@@ -2424,7 +3816,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        _allItems = _store.QueryItems(SearchBox.Text);
+        _allItems = _store.QueryItemSummaries(SearchBox.Text);
+        _historySummariesPreloaded = string.IsNullOrWhiteSpace(SearchBox.Text);
         RenderItems("pin-move");
         ShellLog.Info($"pin moved id={item.Id} direction={direction}");
     }
@@ -2440,14 +3833,15 @@ public partial class MainWindow : Window
     private void CopySelected()
     {
         if (_selected is null) return;
-        SetClipboard(_selected, _settings.DefaultPasteFormat);
+        var selected = ClipboardItemForPasteFormat(_selected);
+        SetClipboard(selected, _settings.DefaultPasteFormat);
         ShellLog.Info($"copy selected id={_selected.Id}");
     }
 
     private void PasteSelected()
     {
         if (_selected is null) return;
-        var selected = _selected;
+        var selected = ClipboardItemForPasteFormat(_selected);
         var payload = selected.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color
             ? ClipboardPasteData.Create(selected, _settings.DefaultPasteFormat)
             : null;
@@ -2491,15 +3885,60 @@ public partial class MainWindow : Window
         ShellLog.Info($"paste selected id={selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"} verified={verified}");
     }
 
+    private ClipboardHistoryItem ClipboardItemForPasteFormat(ClipboardHistoryItem item)
+    {
+        if (NeedsFullText(item) ||
+            (_settings.DefaultPasteFormat == PasteFormatPreference.OriginalFormatting &&
+            ClipboardPasteData.HasOriginalFormatting(item)))
+        {
+            return _store.GetItem(item.Id) ?? item;
+        }
+
+        return item;
+    }
+
+    private ClipboardHistoryItem FullTextItem(ClipboardHistoryItem item)
+    {
+        return NeedsFullText(item) ? _store.GetItem(item.Id) ?? item : item;
+    }
+
+    private static bool NeedsFullText(ClipboardHistoryItem item)
+    {
+        if (item.Kind is not (ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color))
+        {
+            return false;
+        }
+
+        if (item.Text is null)
+        {
+            return true;
+        }
+
+        return item.CharacterCount is int characterCount && item.Text.Length < characterCount;
+    }
+
     private void CaptureReturnFocus(IntPtr foreground)
     {
+        var watch = Stopwatch.StartNew();
         _returnFocusHwnd = foreground;
-        _returnFocusChildHwnd = FocusedChildWindow(foreground);
-        _returnFocusElement = FocusedAutomationElement();
-        _returnFocusElementSummary = AutomationSummary(_returnFocusElement);
-        _returnFocusValueBefore = AutomationValue(_returnFocusElement);
-        _returnFocusCommitsPasteWithEnter = ShouldCommitPasteWithEnter(_returnFocusHwnd, _returnFocusElement);
-        ShellLog.Info($"return focus captured hwnd={_returnFocusHwnd} child={_returnFocusChildHwnd} element={_returnFocusElementSummary} value={SafeLogValue(_returnFocusValueBefore)}");
+        var windowTitle = WindowTitle(foreground);
+        var windowClass = WindowClass(foreground);
+        _returnFocusCouldNeedNoActivate = CouldNeedNoActivatePalette(foreground, windowTitle);
+        var needsAutomation = IsFileExplorerWindowClass(windowClass) || _returnFocusCouldNeedNoActivate;
+        var processName = needsAutomation ? TryGetProcessNameForWindow(foreground) : null;
+        _returnFocusChildHwnd = ShouldSkipFocusedChildCapture(needsAutomation)
+            ? IntPtr.Zero
+            : FocusedChildWindow(foreground);
+        _returnFocusElement = needsAutomation ? FocusedAutomationElement() : null;
+        _returnFocusElementSummary = _returnFocusElement is null ? "none" : "captured";
+        _returnFocusValueBefore = null;
+        _returnFocusCommitsPasteWithEnter = _returnFocusCouldNeedNoActivate && ShouldCommitPasteWithEnter(_returnFocusHwnd, _returnFocusElement);
+        ShellLog.Info($"return focus captured hwnd={_returnFocusHwnd} child={_returnFocusChildHwnd} process={processName ?? "unknown"} element={_returnFocusElementSummary} elapsedMs={watch.ElapsedMilliseconds}");
+    }
+
+    private static bool ShouldSkipFocusedChildCapture(bool needsAutomation)
+    {
+        return !needsAutomation;
     }
 
     private void RestoreReturnFocus()
@@ -2971,10 +4410,18 @@ public partial class MainWindow : Window
 
     private void EditText(ClipboardHistoryItem item)
     {
+        item = FullTextItem(item);
+        var watch = Stopwatch.StartNew();
+        if (TryShowTextEditOverlay(item, watch))
+        {
+            return;
+        }
+
         var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("TextCursor"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
+        editor.ContentRendered += (_, _) => ShellLog.Info($"edit-text rendered elapsedMs={watch.ElapsedMilliseconds}");
         _suppressDeactivate = true;
         try
         {
@@ -2994,12 +4441,173 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool TryShowTextEditOverlay(ClipboardHistoryItem item, Stopwatch watch)
+    {
+        if (Shell.Child is not Grid root)
+        {
+            return false;
+        }
+
+        CloseInlineModal(showPalette: false);
+        var background = (WpfBrush)FindResource("Bg");
+        var foreground = (WpfBrush)FindResource("Text");
+        var line = (WpfBrush)FindResource("Line");
+        var surface = (WpfBrush)FindResource("Surface");
+        var textCursor = (WpfBrush)FindResource("TextCursor");
+        var accentSoft = (WpfBrush)FindResource("AccentSoft");
+        var selected = (WpfBrush)FindResource("Selected");
+        var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
+
+        var overlay = new Border
+        {
+            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(76, 0, 0, 0)),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ClipToBounds = true,
+        };
+
+        var panel = new Border
+        {
+            Width = 640,
+            Height = 420,
+            Background = background,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            SnapsToDevicePixels = true,
+        };
+
+        var box = new WpfTextBox
+        {
+            Text = TextPayload(item),
+            TextWrapping = TextWrapping.Wrap,
+            AcceptsReturn = true,
+            FocusVisualStyle = null,
+            SnapsToDevicePixels = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Margin = new Thickness(0),
+            Padding = new Thickness(14),
+            Background = WpfBrushes.Transparent,
+            Foreground = foreground,
+            BorderThickness = new Thickness(0),
+            FontFamily = new System.Windows.Media.FontFamily("JetBrains Mono, Cascadia Mono, Consolas"),
+            FontSize = 13,
+            CaretBrush = textCursor,
+            SelectionBrush = accentSoft,
+        };
+        TextOptions.SetTextFormattingMode(box, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(box, TextRenderingMode.ClearType);
+        TextOptions.SetTextHintingMode(box, TextHintingMode.Fixed);
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                CloseInlineModal();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                CommitTextEditOverlay(item, box.Text);
+                e.Handled = true;
+            }
+        };
+
+        var grid = new Grid { Background = background };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(60) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var header = new Grid { Margin = new Thickness(18, 14, 18, 10) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = "Edit Text",
+            Foreground = foreground,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var trim = InlineModalButton("Trim", foreground, line, surface, accentSoft, selectedBorder, selected, primary: false);
+        trim.Margin = new Thickness(0, 0, 8, 0);
+        trim.Click += (_, _) => { box.Text = box.Text.Trim(); };
+        Grid.SetColumn(trim, 1);
+        header.Children.Add(trim);
+        grid.Children.Add(header);
+
+        var editorShell = new Border
+        {
+            Background = surface,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Margin = new Thickness(18, 0, 18, 0),
+            Child = box,
+        };
+        Grid.SetRow(editorShell, 1);
+        grid.Children.Add(editorShell);
+
+        var buttons = new StackPanel
+        {
+            Orientation = WpfOrientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new Thickness(18, 14, 18, 18),
+        };
+        var cancel = InlineModalButton("Cancel", foreground, line, surface, accentSoft, selectedBorder, selected, primary: false);
+        cancel.Margin = new Thickness(0, 0, 8, 0);
+        cancel.Click += (_, _) => CloseInlineModal();
+        var save = InlineModalButton("Save", foreground, line, surface, accentSoft, selectedBorder, selected, primary: true);
+        save.Click += (_, _) => CommitTextEditOverlay(item, box.Text);
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        Grid.SetRow(buttons, 2);
+        grid.Children.Add(buttons);
+
+        panel.Child = grid;
+        overlay.Child = panel;
+        System.Windows.Controls.Panel.SetZIndex(overlay, 900);
+        root.Children.Add(overlay);
+        _inlineModalOverlay = overlay;
+        _suppressDeactivate = true;
+        root.UpdateLayout();
+        ShellLog.Info($"edit-text rendered elapsedMs={watch.ElapsedMilliseconds} hosted=True");
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            box.Focus();
+            box.CaretIndex = box.Text.Length;
+        }), System.Windows.Threading.DispatcherPriority.Background);
+
+        return true;
+    }
+
+    private void CommitTextEditOverlay(ClipboardHistoryItem item, string value)
+    {
+        CloseInlineModal(showPalette: false);
+        _store.EditText(item.Id, value);
+        item.Text = value;
+        item.Preview = ClipboardHistoryStore.PreviewText(value);
+        LoadItems(selectFirst: false, reason: "edit-text");
+        SelectItem(_store.GetItem(item.Id), "edit-text");
+        ShowPalette();
+    }
+
     private void RenameItem(ClipboardHistoryItem item)
     {
+        var watch = Stopwatch.StartNew();
+        if (TryShowRenameOverlay(item, watch))
+        {
+            return;
+        }
+
         var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
         {
             Owner = this,
         };
+        editor.ContentRendered += (_, _) => ShellLog.Info($"rename rendered elapsedMs={watch.ElapsedMilliseconds}");
         _suppressDeactivate = true;
         try
         {
@@ -3020,8 +4628,205 @@ public partial class MainWindow : Window
         }
     }
 
-    private static void AppendText(ClipboardHistoryItem item)
+    private bool TryShowRenameOverlay(ClipboardHistoryItem item, Stopwatch watch)
     {
+        if (Shell.Child is not Grid root)
+        {
+            return false;
+        }
+
+        CloseInlineModal(showPalette: false);
+        var background = (WpfBrush)FindResource("Bg");
+        var foreground = (WpfBrush)FindResource("Text");
+        var muted = (WpfBrush)FindResource("Muted");
+        var line = (WpfBrush)FindResource("Line");
+        var surface = (WpfBrush)FindResource("Surface");
+        var accentSoft = (WpfBrush)FindResource("AccentSoft");
+        var selected = (WpfBrush)FindResource("Selected");
+        var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
+
+        var overlay = new Border
+        {
+            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(76, 0, 0, 0)),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ClipToBounds = true,
+        };
+        overlay.MouseLeftButtonDown += (_, e) =>
+        {
+            if (ReferenceEquals(e.OriginalSource, overlay))
+            {
+                CloseInlineModal();
+                e.Handled = true;
+            }
+        };
+
+        var panel = new Border
+        {
+            Width = 420,
+            Background = background,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            SnapsToDevicePixels = true,
+        };
+
+        var box = new WpfTextBox
+        {
+            Text = TitleFor(item),
+            FocusVisualStyle = null,
+            Margin = new Thickness(0),
+            Padding = new Thickness(12, 8, 12, 8),
+            Background = WpfBrushes.Transparent,
+            Foreground = foreground,
+            BorderThickness = new Thickness(0),
+            FontSize = 13,
+            SelectionBrush = accentSoft,
+            MaxLength = 120,
+        };
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                CommitRenameOverlay(item, box.Text);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                CloseInlineModal();
+                e.Handled = true;
+            }
+        };
+
+        var grid = new Grid { Background = background, Margin = new Thickness(18, 16, 18, 18) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        grid.Children.Add(new TextBlock
+        {
+            Text = "Rename",
+            Foreground = foreground,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 2),
+        });
+
+        var hint = new TextBlock
+        {
+            Text = "Leave blank to use the original title.",
+            Foreground = muted,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 12),
+        };
+        Grid.SetRow(hint, 1);
+        grid.Children.Add(hint);
+
+        var boxShell = new Border
+        {
+            Background = surface,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Child = box,
+        };
+        Grid.SetRow(boxShell, 2);
+        grid.Children.Add(boxShell);
+
+        var buttons = new StackPanel
+        {
+            Orientation = WpfOrientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0),
+        };
+        var cancel = InlineModalButton("Cancel", foreground, line, surface, accentSoft, selectedBorder, selected, primary: false);
+        cancel.Margin = new Thickness(0, 0, 8, 0);
+        cancel.Click += (_, _) => CloseInlineModal();
+        var save = InlineModalButton("Save", foreground, line, surface, accentSoft, selectedBorder, selected, primary: true);
+        save.Click += (_, _) => CommitRenameOverlay(item, box.Text);
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        Grid.SetRow(buttons, 3);
+        grid.Children.Add(buttons);
+
+        panel.Child = grid;
+        overlay.Child = panel;
+        System.Windows.Controls.Panel.SetZIndex(overlay, 900);
+        root.Children.Add(overlay);
+        _inlineModalOverlay = overlay;
+        _suppressDeactivate = true;
+        root.UpdateLayout();
+        ShellLog.Info($"rename rendered elapsedMs={watch.ElapsedMilliseconds} hosted=True");
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            box.Focus();
+            box.SelectAll();
+        }), System.Windows.Threading.DispatcherPriority.Input);
+
+        return true;
+    }
+
+    private void CommitRenameOverlay(ClipboardHistoryItem item, string value)
+    {
+        CloseInlineModal(showPalette: false);
+        _store.Rename(item.Id, value);
+        var updated = _store.GetItem(item.Id);
+        _selected = null;
+        LoadItems(selectFirst: false, reason: "rename");
+        SelectItem(updated, "rename");
+        ShellLog.Info($"rename item id={item.Id}");
+        ShowPalette();
+    }
+
+    private void CloseInlineModal(bool showPalette = true)
+    {
+        if (_inlineModalOverlay?.Parent is System.Windows.Controls.Panel parent)
+        {
+            parent.Children.Remove(_inlineModalOverlay);
+        }
+
+        _inlineModalOverlay = null;
+        _suppressDeactivate = false;
+        if (showPalette)
+        {
+            ShowPalette();
+            SearchBox.Focus();
+        }
+    }
+
+    private static WpfButton InlineModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush secondaryBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
+    {
+        var idleBackground = primary ? primaryBackground : secondaryBackground;
+        var idleBorder = primary ? primaryBorder : line;
+        var hoverBg = primary ? hoverBackground : primaryBackground;
+        var button = new WpfButton
+        {
+            Content = text,
+            Height = 32,
+            MinWidth = primary ? 74 : 68,
+            Padding = new Thickness(14, 0, 14, 0),
+            Background = idleBackground,
+            BorderBrush = idleBorder,
+            BorderThickness = new Thickness(1),
+            Foreground = foreground,
+            FontSize = 12,
+            FontWeight = primary ? FontWeights.SemiBold : FontWeights.Medium,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            FocusVisualStyle = null,
+            Template = ClipControlTemplates.CenterButton,
+        };
+        button.MouseEnter += (_, _) => { button.Background = hoverBg; button.BorderBrush = primaryBorder; };
+        button.MouseLeave += (_, _) => { button.Background = idleBackground; button.BorderBrush = idleBorder; };
+        return button;
+    }
+
+    private void AppendText(ClipboardHistoryItem item)
+    {
+        item = FullTextItem(item);
         var existing = System.Windows.Clipboard.ContainsText() ? System.Windows.Clipboard.GetText() : string.Empty;
         var payload = TextPayload(item);
         if (!string.IsNullOrWhiteSpace(payload))
@@ -3032,6 +4837,7 @@ public partial class MainWindow : Window
 
     private void OpenItem(ClipboardHistoryItem item)
     {
+        item = FullTextItem(item);
         try
         {
             if (item.Kind == ClipboardItemKind.Link)
@@ -3069,6 +4875,11 @@ public partial class MainWindow : Window
         {
             var watch = Stopwatch.StartNew();
             ShellLog.Info($"open-with opening path={targetPath}");
+            if (TryShowOpenWithOverlay(targetPath, watch))
+            {
+                return;
+            }
+
             var picker = new OpenWithWindow(
                 targetPath,
                 (WpfBrush)FindResource("Bg"),
@@ -3084,6 +4895,7 @@ public partial class MainWindow : Window
             {
                 Owner = this,
             };
+            picker.ContentRendered += (_, _) => ShellLog.Info($"open-with rendered elapsedMs={watch.ElapsedMilliseconds}");
 
             _suppressDeactivate = true;
             picker.Closed += (_, _) =>
@@ -3119,6 +4931,305 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool TryShowOpenWithOverlay(string targetPath, Stopwatch watch)
+    {
+        if (Shell.Child is not Grid root)
+        {
+            return false;
+        }
+
+        CloseInlineModal(showPalette: false);
+        var background = (WpfBrush)FindResource("Bg");
+        var foreground = (WpfBrush)FindResource("Text");
+        var muted = (WpfBrush)FindResource("Muted");
+        var line = (WpfBrush)FindResource("Line");
+        var surface = (WpfBrush)FindResource("Surface");
+        var surface2 = (WpfBrush)FindResource("Surface2");
+        var accentSoft = (WpfBrush)FindResource("AccentSoft");
+        var selected = (WpfBrush)FindResource("Selected");
+        var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
+        var apps = new List<WatcherAppChoice>();
+
+        var overlay = new Border
+        {
+            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(76, 0, 0, 0)),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ClipToBounds = true,
+        };
+
+        var panel = new Border
+        {
+            Width = 620,
+            Height = 520,
+            Background = background,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            SnapsToDevicePixels = true,
+        };
+
+        var shell = new Grid();
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(46) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(44) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(46) });
+
+        var header = new Grid { Background = surface2 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = $"Open with {Path.GetFileName(targetPath)}",
+            Foreground = foreground,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(18, 0, 18, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        var close = InlineModalButton("Close", foreground, line, surface2, accentSoft, selectedBorder, selected, primary: false);
+        close.Margin = new Thickness(0, 0, 12, 0);
+        close.Click += (_, _) => CloseInlineModal();
+        Grid.SetColumn(close, 1);
+        header.Children.Add(close);
+        shell.Children.Add(header);
+
+        var search = new WpfTextBox
+        {
+            Background = WpfBrushes.Transparent,
+            Foreground = foreground,
+            BorderThickness = new Thickness(0),
+            FontSize = 13,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        var searchShell = new Border
+        {
+            Background = surface,
+            BorderBrush = line,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Margin = new Thickness(16, 8, 16, 7),
+            Padding = new Thickness(10, 0, 10, 0),
+            Child = search,
+        };
+        Grid.SetRow(searchShell, 1);
+        shell.Children.Add(searchShell);
+
+        var appHost = new Border
+        {
+            Background = background,
+            Margin = new Thickness(12, 0, 8, 0),
+            Child = OpenWithOverlayRow("Loading apps...", "Use Browse if the app is not listed.", foreground, muted),
+        };
+        Grid.SetRow(appHost, 2);
+        shell.Children.Add(appHost);
+
+        var footer = new Grid { Background = surface2 };
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var status = new TextBlock
+        {
+            Text = "Loading apps...",
+            Foreground = muted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 0, 0),
+        };
+        footer.Children.Add(status);
+        var browse = InlineModalButton("Browse...", foreground, line, surface2, accentSoft, selectedBorder, selected, primary: false);
+        browse.Margin = new Thickness(0, 0, 12, 0);
+        browse.Click += (_, _) => BrowseOpenWithOverlay(targetPath);
+        Grid.SetColumn(browse, 1);
+        footer.Children.Add(browse);
+        Grid.SetRow(footer, 3);
+        shell.Children.Add(footer);
+
+        panel.Child = shell;
+        overlay.Child = panel;
+        System.Windows.Controls.Panel.SetZIndex(overlay, 900);
+        root.Children.Add(overlay);
+        _inlineModalOverlay = overlay;
+        _suppressDeactivate = true;
+        root.UpdateLayout();
+        ShellLog.Info($"open-with rendered elapsedMs={watch.ElapsedMilliseconds} hosted=True");
+
+        WpfListBox? appList = null;
+        search.TextChanged += (_, _) => Render();
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                CloseInlineModal();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Enter)
+            {
+                Accept();
+                e.Handled = true;
+            }
+        };
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            search.Focus();
+        }), System.Windows.Threading.DispatcherPriority.Input);
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            appList = new WpfListBox
+            {
+                Background = background,
+                Foreground = foreground,
+                BorderThickness = new Thickness(0),
+            };
+            appList.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
+            appList.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
+            appList.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter)
+                {
+                    Accept();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.Escape)
+                {
+                    CloseInlineModal();
+                    e.Handled = true;
+                }
+            };
+            appList.MouseDoubleClick += (_, _) => Accept();
+            appHost.Child = appList;
+            Render();
+            _ = LoadOpenWithOverlayAppsAsync(targetPath, loaded =>
+            {
+                apps = loaded;
+                status.Text = $"{apps.Count} apps";
+                Render();
+            });
+        }), System.Windows.Threading.DispatcherPriority.Background);
+
+        return true;
+
+        void Render()
+        {
+            if (appList is null)
+            {
+                return;
+            }
+
+            var query = search.Text.Trim();
+            var visibleApps = apps
+                .Where(app => string.IsNullOrWhiteSpace(query) ||
+                    app.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    (app.ExecutablePath?.Contains(query, StringComparison.OrdinalIgnoreCase) == true) ||
+                    (app.AppUserModelId?.Contains(query, StringComparison.OrdinalIgnoreCase) == true))
+                .OrderByDescending(app => app.IsDefault)
+                .ThenByDescending(app => app.IsRecent)
+                .ThenBy(app => app.Name)
+                .Take(80)
+                .ToList();
+
+            appList.Items.Clear();
+            if (apps.Count == 0)
+            {
+                appList.Items.Add(new WpfListBoxItem
+                {
+                    Content = OpenWithOverlayRow("Loading apps...", "Use Browse if the app is not listed.", foreground, muted),
+                    Foreground = muted,
+                    IsEnabled = false,
+                });
+                return;
+            }
+
+            foreach (var app in visibleApps)
+            {
+                appList.Items.Add(new WpfListBoxItem
+                {
+                    Tag = app,
+                    Content = OpenWithOverlayRow(app.Name, app.IsDefault ? "Default app" : app.Source, foreground, muted),
+                    Padding = new Thickness(8, 5, 8, 5),
+                    Margin = new Thickness(4, 1, 4, 1),
+                    Background = WpfBrushes.Transparent,
+                    Foreground = foreground,
+                });
+            }
+
+            if (appList.Items.Count > 0)
+            {
+                appList.SelectedIndex = 0;
+            }
+        }
+
+        void Accept()
+        {
+            if (appList?.SelectedItem is not WpfListBoxItem { Tag: WatcherAppChoice app })
+            {
+                return;
+            }
+
+            LaunchOpenWithOverlay(targetPath, app);
+        }
+    }
+
+    private async Task LoadOpenWithOverlayAppsAsync(string targetPath, Action<List<WatcherAppChoice>> apply)
+    {
+        var loadWatch = Stopwatch.StartNew();
+        try
+        {
+            ShellLog.Info($"open-with async load started path={targetPath}");
+            var apps = await Task.Run(() => WatcherAppDiscovery.GetApps(targetPath).ToList());
+            apply(apps);
+            ShellLog.Info($"open-with async load completed count={apps.Count} elapsedMs={loadWatch.ElapsedMilliseconds}");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"open-with async load failed elapsedMs={loadWatch.ElapsedMilliseconds}");
+        }
+    }
+
+    private static StackPanel OpenWithOverlayRow(string title, string subtitle, WpfBrush foreground, WpfBrush muted)
+    {
+        var panel = new StackPanel { Orientation = WpfOrientation.Vertical, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock { Text = title, Foreground = foreground, FontSize = 13, FontWeight = FontWeights.Medium });
+        panel.Children.Add(new TextBlock { Text = subtitle, Foreground = muted, FontSize = 11, Margin = new Thickness(0, 2, 0, 0) });
+        return panel;
+    }
+
+    private void LaunchOpenWithOverlay(string targetPath, WatcherAppChoice app)
+    {
+        try
+        {
+            CloseInlineModal(showPalette: false);
+            WatcherAppLauncher.OpenWith(targetPath, app);
+            ShellLog.Info($"open-with completed path={targetPath} selected={app.Name} hosted=True");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"open-with launch failed path={targetPath}");
+            ShowToast("Open With failed. Log saved.");
+        }
+        finally
+        {
+            ShowPalette();
+        }
+    }
+
+    private void BrowseOpenWithOverlay(string targetPath)
+    {
+        using var dialog = new Forms.OpenFileDialog
+        {
+            Title = "Choose an app",
+            Filter = "Applications|*.exe|All files|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog() == Forms.DialogResult.OK)
+        {
+            LaunchOpenWithOverlay(targetPath, new WatcherAppChoice(Path.GetFileNameWithoutExtension(dialog.FileName), dialog.FileName, "Browse"));
+        }
+    }
+
     private void ShowInFileExplorer(ClipboardHistoryItem item)
     {
         var path = ClipboardItemRevealTarget.GetPath(item);
@@ -3141,10 +5252,11 @@ public partial class MainWindow : Window
 
     private void ShareItem(ClipboardHistoryItem item)
     {
+        item = FullTextItem(item);
         ClipboardSharePayload? payload = null;
         try
         {
-            if (!WinDataTransferManager.IsSupported())
+            if (!WindowsShareService.IsSupported())
             {
                 ShowToast("Sharing is not available on this PC.");
                 return;
@@ -3152,54 +5264,13 @@ public partial class MainWindow : Window
 
             payload = ClipboardSharePayload.Create(item);
             var hwnd = new WindowInteropHelper(this).Handle;
-            var interop = WinDataTransferManager.As<IDataTransferManagerInterop>();
-            var result = interop.GetForWindow(hwnd, DataTransferManagerId);
-            var manager = WinRT.MarshalInterface<WinDataTransferManager>.FromAbi(result);
-
-            Windows.Foundation.TypedEventHandler<WinDataTransferManager, WinDataRequestedEventArgs>? handler = null;
-            handler = async (_, args) =>
-            {
-                if (handler is not null)
-                {
-                    manager.DataRequested -= handler;
-                }
-
-                var deferral = args.Request.GetDeferral();
-                try
-                {
-                    var data = args.Request.Data;
-                    data.Properties.Title = ShareTitle(item);
-                    data.Properties.Description = ShareDescription(item);
-                    data.RequestedOperation = WinDataPackageOperation.Copy;
-                    if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
-                    {
-                        data.SetText(TextPayload(item));
-                    }
-
-                    var files = new List<StorageFile>();
-                    foreach (var path in payload.FilePaths)
-                    {
-                        files.Add(await StorageFile.GetFileFromPathAsync(path));
-                    }
-
-                    data.SetStorageItems(files);
-                    data.ShareCompleted += (_, _) => payload.Cleanup();
-                    data.ShareCanceled += (_, _) => payload.Cleanup();
-                }
-                catch (Exception ex)
-                {
-                    payload.Cleanup();
-                    ShellLog.Error(ex, $"share data failed id={item.Id}");
-                    args.Request.FailWithDisplayText("Clip could not prepare this item for sharing.");
-                }
-                finally
-                {
-                    deferral.Complete();
-                }
-            };
-
-            manager.DataRequested += handler;
-            interop.ShowShareUIForWindow(hwnd);
+            WindowsShareService.ShowShareUI(
+                hwnd,
+                item,
+                payload,
+                ShareTitle(item),
+                ShareDescription(item),
+                ex => ShellLog.Error(ex, $"share data failed id={item.Id}"));
             ShellLog.Info($"share opened id={item.Id} files={payload.FilePaths.Count} temp={payload.HasTemporaryFiles}");
         }
         catch (Exception ex)
@@ -3212,6 +5283,7 @@ public partial class MainWindow : Window
 
     private void ShareWithBlip(ClipboardHistoryItem item)
     {
+        item = FullTextItem(item);
         try
         {
             var payload = ClipboardSharePayload.Create(item);
@@ -3274,6 +5346,7 @@ public partial class MainWindow : Window
 
     private void SaveItem(ClipboardHistoryItem item)
     {
+        item = FullTextItem(item);
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
             FileName = item.Kind == ClipboardItemKind.Image ? "clipboard.png" : "clipboard.txt",
@@ -3317,13 +5390,49 @@ public partial class MainWindow : Window
         PlaceholderPreview.Visibility = Visibility.Visible;
     }
 
+    private static Task<CoreWebView2Environment> CreateWebView2EnvironmentAsync()
+    {
+        Directory.CreateDirectory(ClipStoragePaths.WebView2UserDataFolderPath);
+        return CoreWebView2Environment.CreateAsync(userDataFolder: ClipStoragePaths.WebView2UserDataFolderPath);
+    }
+
+    private FrameworkElement EnsureHtmlPreview()
+    {
+        if (_htmlPreview is not null)
+        {
+            return _htmlPreview;
+        }
+
+        var htmlPreview = new Microsoft.Web.WebView2.Wpf.WebView2
+        {
+            Visibility = Visibility.Collapsed,
+            DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg")),
+        };
+        _htmlPreview = htmlPreview;
+        _setHtmlPreviewBackground = color => htmlPreview.DefaultBackgroundColor = color;
+        PreviewHost.Children.Add(_htmlPreview);
+        return _htmlPreview;
+    }
+
+    private async Task ShowHtmlPreviewAsync(string path)
+    {
+        var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+        htmlPreview.Visibility = Visibility.Visible;
+        await htmlPreview.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
+        htmlPreview.Source = new Uri(path);
+    }
+
     private void HidePreviews()
     {
         CloseExpandedImage();
         TextPreview.Visibility = Visibility.Collapsed;
         ImagePreview.Visibility = Visibility.Collapsed;
         ExpandImageButton.Visibility = Visibility.Collapsed;
-        HtmlPreview.Visibility = Visibility.Collapsed;
+        if (_htmlPreview is not null)
+        {
+            _htmlPreview.Visibility = Visibility.Collapsed;
+        }
+
         PlaceholderPreview.Visibility = Visibility.Collapsed;
         ColorPreview.Visibility = Visibility.Collapsed;
         TextPreview.Text = string.Empty;
@@ -3691,9 +5800,10 @@ public partial class MainWindow : Window
         return Math.Sqrt(dx * dx + dy * dy);
     }
 
-    private void PositionOnMouseScreen()
+    private void PositionOnMouseScreen(bool log = true)
     {
-        var screen = Forms.Screen.FromPoint(Forms.Control.MousePosition).WorkingArea;
+        var mouse = Forms.Control.MousePosition;
+        var screen = WorkingAreaForMouse(mouse);
         var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
         var screenTopLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
         var screenBottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
@@ -3702,28 +5812,53 @@ public partial class MainWindow : Window
         var windowWidth = ActualWidth > 0 ? ActualWidth : Width;
         var windowHeight = ActualHeight > 0 ? ActualHeight : Height;
 
+        if (_palettePositionReady &&
+            _palettePositionWorkingArea.Equals(screen) &&
+            Math.Abs(_palettePositionWidth - windowWidth) < 0.5 &&
+            Math.Abs(_palettePositionHeight - windowHeight) < 0.5)
+        {
+            if (log)
+            {
+                ShellLog.Info($"position reused screenPx={screen.Left},{screen.Top},{screen.Width}x{screen.Height} mouse={mouse.X},{mouse.Y} size={windowWidth:0}x{windowHeight:0} left={Left:0} top={Top:0}");
+            }
+
+            return;
+        }
+
         Left = screenTopLeft.X + Math.Max(0, (screenWidth - windowWidth) / 2);
         Top = screenTopLeft.Y + Math.Max(0, (screenHeight - windowHeight) / 2);
-        ShellLog.Info($"position screenPx={screen.Left},{screen.Top},{screen.Width}x{screen.Height} screenDip={screenTopLeft.X:0},{screenTopLeft.Y:0},{screenWidth:0}x{screenHeight:0} mouse={Forms.Control.MousePosition.X},{Forms.Control.MousePosition.Y} size={windowWidth:0}x{windowHeight:0} left={Left:0} top={Top:0}");
+        _palettePositionReady = true;
+        _palettePositionWorkingArea = screen;
+        _palettePositionWidth = windowWidth;
+        _palettePositionHeight = windowHeight;
+        if (log)
+        {
+            ShellLog.Info($"position screenPx={screen.Left},{screen.Top},{screen.Width}x{screen.Height} screenDip={screenTopLeft.X:0},{screenTopLeft.Y:0},{screenWidth:0}x{screenHeight:0} mouse={mouse.X},{mouse.Y} size={windowWidth:0}x{windowHeight:0} left={Left:0} top={Top:0}");
+        }
     }
 
-    private async Task WarmHtmlPreviewAsync()
+    private static void WarmMouseScreenCache()
     {
-        try
+        _ = WorkingAreaForMouse(Forms.Control.MousePosition);
+    }
+
+    private static System.Drawing.Rectangle WorkingAreaForMouse(System.Drawing.Point mouse)
+    {
+        if (_hasCachedMouseScreenWorkingArea && _cachedMouseScreenWorkingArea.Contains(mouse))
         {
-            await HtmlPreview.EnsureCoreWebView2Async();
-            ShellLog.Info("html preview warmed");
+            return _cachedMouseScreenWorkingArea;
         }
-        catch (Exception ex)
-        {
-            ShellLog.Error(ex, "html warm failed");
-        }
+
+        _cachedMouseScreenWorkingArea = Forms.Screen.FromPoint(mouse).WorkingArea;
+        _hasCachedMouseScreenWorkingArea = true;
+        return _cachedMouseScreenWorkingArea;
     }
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e)
     {
         SearchPlaceholder.Visibility = string.IsNullOrEmpty(SearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-        LoadItems(selectFirst: false, reason: "search");
+        _searchTimer.Stop();
+        _searchTimer.Start();
     }
     private void OnAllFilterClick(object sender, RoutedEventArgs e) => SetFilter("all");
     private void OnTextFilterClick(object sender, RoutedEventArgs e) => SetFilter("text");
@@ -3743,9 +5878,15 @@ public partial class MainWindow : Window
 
     public void OpenSettingsFromTray() => OpenSettingsInternal(showPaletteOnClose: false);
 
+    private void OpenSettingsForDebug()
+    {
+        DebugOpenSettings = false;
+        OpenSettingsInternal(showPaletteOnClose: false);
+    }
+
     public void PasteLatestFromTray()
     {
-        var item = _allItems.OrderByDescending(i => i.LastCopiedAt).FirstOrDefault();
+        var item = LatestClipboardItem();
         if (item is null)
         {
             ShellLog.Info("tray paste latest skipped — no items");
@@ -3772,25 +5913,41 @@ public partial class MainWindow : Window
         }
     }
 
+    private ClipboardHistoryItem? LatestClipboardItem()
+    {
+        var items = _allItems;
+        if (items.Count == 0 || !string.IsNullOrWhiteSpace(SearchBox.Text))
+        {
+            items = _store.QueryItemSummaries();
+            _allItems = items;
+        }
+
+        return items.OrderByDescending(i => i.LastCopiedAt).FirstOrDefault();
+    }
+
     private void OpenSettingsInternal(bool showPaletteOnClose)
     {
         try
         {
+            var watch = Stopwatch.StartNew();
             ShellLog.Info($"settings opening showPaletteOnClose={showPaletteOnClose}");
-            var settings = new SettingsWindow(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, RenderSvg("dropdown-arrow-svgrepo-com.svg", 24), CurrentSettingsPalette)
+            SettingsWindow? settings = null;
+            Border? overlay = null;
+            if (Shell.Child is Grid)
             {
-                Owner = this,
-            };
+                TryTakePrewarmedHostedSettings(out settings, out overlay);
+            }
+
+            settings ??= CreateSettingsWindow();
+
+            if (TryShowHostedSettings(settings, showPaletteOnClose, watch, overlay))
+            {
+                return;
+            }
+
             _suppressDeactivate = true;
-            settings.Closed += (_, _) =>
-            {
-                _suppressDeactivate = false;
-                ShellLog.Info("settings closed");
-                if (showPaletteOnClose)
-                {
-                    ShowPalette();
-                }
-            };
+            settings.ContentRendered += (_, _) => ShellLog.Info($"settings rendered elapsedMs={watch.ElapsedMilliseconds} showPaletteOnClose={showPaletteOnClose}");
+            settings.Closed += (_, _) => CloseStandaloneSettings(showPaletteOnClose);
             settings.Show();
         }
         catch (Exception ex)
@@ -3801,7 +5958,168 @@ public partial class MainWindow : Window
         }
     }
 
+    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyOpenMode, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, CurrentSettingsPalette)
+    {
+        Owner = this,
+    };
+
+    private bool TryTakePrewarmedHostedSettings(out SettingsWindow? settings, out Border? overlay)
+    {
+        settings = null;
+        overlay = null;
+        if (!_prewarmedSettingsReady || _prewarmedSettings is null || _prewarmedSettingsOverlay is null)
+        {
+            return false;
+        }
+
+        settings = _prewarmedSettings;
+        overlay = _prewarmedSettingsOverlay;
+        _prewarmedSettings = null;
+        _prewarmedSettingsOverlay = null;
+        _prewarmedSettingsReady = false;
+        ShellLog.Info("settings using prewarmed panel");
+        return true;
+    }
+
+    private bool TryShowHostedSettings(SettingsWindow settings, bool showPaletteOnClose, Stopwatch watch, Border? preparedOverlay = null)
+    {
+        if (Shell.Child is not Grid host)
+        {
+            return false;
+        }
+
+        CloseHostedSettings(logClose: false);
+
+        var overlay = preparedOverlay ?? CreateHostedSettingsOverlay(settings);
+        overlay.Opacity = 1;
+        overlay.IsHitTestVisible = true;
+
+        _hostedSettings = settings;
+        _settingsOverlay = overlay;
+        _settingsOverlayKeepPaletteOnClose = showPaletteOnClose;
+        _suppressDeactivate = true;
+
+        if (!ReferenceEquals(overlay.Parent, host))
+        {
+            host.Children.Add(overlay);
+        }
+
+        if (!IsVisible || Opacity == 0 || !IsHitTestVisible)
+        {
+            ShowPalette(loadItems: false);
+        }
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ShellLog.Info($"settings rendered elapsedMs={watch.ElapsedMilliseconds} showPaletteOnClose={showPaletteOnClose} hosted=True");
+            _ = Dispatcher.BeginInvoke(new Action(() => overlay.Focus()), System.Windows.Threading.DispatcherPriority.Input);
+        }), System.Windows.Threading.DispatcherPriority.Render);
+        return true;
+    }
+
+    private Border CreateHostedSettingsOverlay(SettingsWindow settings)
+    {
+        var content = settings.DetachForHost(CloseHostedSettings);
+        content.Width = 720;
+        content.Height = 500;
+        content.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+        content.VerticalAlignment = VerticalAlignment.Center;
+
+        var overlay = new Border
+        {
+            Background = WpfBrushes.Transparent,
+            Child = content,
+            Focusable = true,
+        };
+        Grid.SetRowSpan(overlay, 4);
+        System.Windows.Controls.Panel.SetZIndex(overlay, 1000);
+        overlay.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                CloseHostedSettings();
+                e.Handled = true;
+            }
+        };
+        return overlay;
+    }
+
+    private void CloseHostedSettings() => CloseHostedSettings(logClose: true);
+
+    private void CloseHostedSettings(bool logClose)
+    {
+        var hadOverlay = _settingsOverlay is not null;
+        if (_settingsOverlay is not null && Shell.Child is Grid host)
+        {
+            host.Children.Remove(_settingsOverlay);
+        }
+
+        _settingsOverlay = null;
+        _hostedSettings = null;
+        var keepPalette = _settingsOverlayKeepPaletteOnClose;
+        _settingsOverlayKeepPaletteOnClose = false;
+
+        if (!hadOverlay)
+        {
+            return;
+        }
+
+        _suppressDeactivate = false;
+
+        if (logClose)
+        {
+            ShellLog.Info("settings closed");
+        }
+
+        if (!keepPalette && !_isClosing)
+        {
+            ConcealPalette("settings-closed");
+        }
+
+        if (!_isClosing)
+        {
+            PrewarmHostedSettingsSoon();
+        }
+    }
+
+    private void CloseStandaloneSettings(bool showPaletteOnClose)
+    {
+        _suppressDeactivate = false;
+        ShellLog.Info("settings closed");
+        if (showPaletteOnClose && !_isClosing)
+        {
+            ShowPalette();
+        }
+    }
+
     private void ApplyAppIcon(AppIconPreference preference) => ApplyAppIcon(preference, save: true);
+
+    private void ApplyOpenMode(ClipOpenMode mode)
+    {
+        if (_settings.OpenMode == mode)
+        {
+            return;
+        }
+
+        _settings.OpenMode = mode;
+        _settings.Save();
+        ShellLog.Info($"open mode changed mode={mode}");
+        if (mode == ClipOpenMode.CommandPalette)
+        {
+            var result = CommandPaletteSettings.ConfigureClipHistoryHotkey(enableExternalReloadForApply: true);
+            var reloadRequested = result.Available && CommandPaletteSettings.RequestExternalReload();
+            if (reloadRequested)
+            {
+                _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => CommandPaletteSettings.SetExternalReloadAllowed(false), TaskScheduler.Default);
+            }
+
+            ShellLog.Info($"command palette hotkey configured available={result.Available} changed={result.Changed} path={result.Path} message={result.Message}");
+            ShowToast(result.Available ? "Alt+V opens Clip in Command Palette" : "Command Palette settings not found");
+            return;
+        }
+
+        ShowToast("Opening with Clip app");
+    }
 
     private SettingsPalette CurrentSettingsPalette() => new(
         (WpfBrush)FindResource("Bg"),
@@ -3855,7 +6173,8 @@ public partial class MainWindow : Window
         _settings.HistoryLimit = limit;
         _settings.Save();
         var removed = _store.ApplyHistoryLimit(EffectiveHistoryLimit());
-        _allItems = _store.QueryItems();
+        _allItems = _store.QueryItemSummaries();
+        _historySummariesPreloaded = true;
         if (_selected is not null && _allItems.All(item => item.Id != _selected.Id))
         {
             _selected = null;
@@ -3894,6 +6213,7 @@ public partial class MainWindow : Window
         }
         else
         {
+            _startupUpdateCheckTimer.Stop();
             _updateCheckTimer.Stop();
             ShellLog.Info("update check schedule stopped");
         }
@@ -4013,7 +6333,8 @@ public partial class MainWindow : Window
             _selected = null;
         }
 
-        _allItems = _store.QueryItems();
+        _allItems = _store.QueryItemSummaries();
+        _historySummariesPreloaded = true;
         RenderItems(includePinned ? "clear-all-history" : "clear-unpinned-history");
         SelectItem(FilteredItems().FirstOrDefault(), includePinned ? "clear-all-history" : "clear-unpinned-history");
         ShellLog.Info($"history cleared includePinned={includePinned} removed={removed}");
@@ -4055,6 +6376,7 @@ public partial class MainWindow : Window
         _settings.ClipboardFolderPath = folderPath;
         _settings.Save();
         _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
+        ResetHistorySummaryCache();
         ShellLog.Info($"clipboard folder changed path={_store.ContentRootPath}");
         ShowToast("Clipboard folder updated");
     }
@@ -4064,8 +6386,19 @@ public partial class MainWindow : Window
         _settings.ClipboardFolderPath = null;
         _settings.Save();
         _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
+        ResetHistorySummaryCache();
         ShellLog.Info($"clipboard folder reset path={_store.ContentRootPath}");
         ShowToast("Clipboard folder reset");
+    }
+
+    private void ResetHistorySummaryCache()
+    {
+        ClearRecentFirstPaintPreload();
+        _allItems = [];
+        _selected = null;
+        _historySummariesPreloaded = false;
+        _itemsDirtySinceRender = true;
+        _historyPreloadTimer.Stop();
     }
 
     private int EffectiveHistoryLimit()
@@ -4112,7 +6445,8 @@ public partial class MainWindow : Window
         _store.SetContentRootPath(_settings.EffectiveClipboardFolderPath());
         ReRegisterHotkeys("settings-reset");
         var removed = _store.ApplyHistoryLimit(EffectiveHistoryLimit());
-        _allItems = _store.QueryItems();
+        _allItems = _store.QueryItemSummaries();
+        _historySummariesPreloaded = true;
         RenderItems("settings-reset");
         SelectItem(FilteredItems().FirstOrDefault(), "settings-reset");
         ShellLog.Info($"settings reset all removed={removed}");
@@ -4141,12 +6475,14 @@ public partial class MainWindow : Window
             UnregisterHotKey(hwnd, OpenHotkeyId);
             _openHotkeyRegistered = false;
         }
+        _openHotkeyUnavailable = false;
 
         if (_debugLogHotkeyRegistered)
         {
             UnregisterHotKey(hwnd, DebugLogHotkeyId);
             _debugLogHotkeyRegistered = false;
         }
+        _debugLogHotkeyUnavailable = false;
 
         EnsureHotkeyRegistered(reason);
     }
@@ -4155,6 +6491,7 @@ public partial class MainWindow : Window
 
     private void ApplyTheme(ClipThemePreference preference, bool save)
     {
+        ClearPrewarmedHostedSettings();
         _settings.Theme = preference;
         var useDark = preference switch
         {
@@ -4180,16 +6517,17 @@ public partial class MainWindow : Window
         SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
         Background = (WpfBrush)FindResource("Bg");
-        HtmlPreview.DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg"));
+        _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Bg")));
+
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
         TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
         if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
         if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
         if (save)
         {
-            Dispatcher.BeginInvoke(RefreshChromeIcons, System.Windows.Threading.DispatcherPriority.ContextIdle);
+            Dispatcher.BeginInvoke(RefreshChromeIconsIfReady, System.Windows.Threading.DispatcherPriority.ContextIdle);
         }
-        else
+        else if (_chromeIconsReady)
         {
             RefreshChromeIcons();
         }
@@ -4212,22 +6550,314 @@ public partial class MainWindow : Window
 
     private void ApplyWindowTitleIcon(AppIconPreference preference)
     {
-        var iconPath = AppIconPath(preference);
-        if (File.Exists(iconPath))
+        AppHeaderIcon.Source = RenderAppTileIcon(preference);
+        _appHeaderIconReady = true;
+        ShellLog.Info($"window header icon applied icon={preference}");
+    }
+
+    private void EnsureAppHeaderIcon()
+    {
+        if (_appHeaderIconReady)
         {
-            var icon = LoadBitmap(iconPath);
-            Icon = icon;
-            AppHeaderIcon.Source = icon;
-            ShellLog.Info($"window title icon applied icon={preference} path={iconPath}");
+            return;
         }
+
+        ApplyWindowTitleIcon(_settings.AppIcon);
     }
 
     private void RefreshChromeIcons()
     {
-        SettingsIcon.Source = RenderSvg("settings-svgrepo-com.svg", 24, color: BrushHex("Muted2"));
-        DateDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24, color: BrushHex(_kindFilter == "all" ? "Text" : "Muted2"));
-        FileDropIcon.Source = RenderSvg("dropdown-arrow-svgrepo-com.svg", 24, color: BrushHex(_kindFilter == "files" ? "Text" : "Muted2"));
-        ExpandImageIcon.Source = RenderSvg("expand-alt-svgrepo-com.svg", 24, color: BrushHex("Muted2"));
+        SettingsIcon.Source = RenderChromeIcon(ChromeIconKind.Settings, "Muted2");
+        DateDropIcon.Source = RenderChromeIcon(ChromeIconKind.ChevronDown, _kindFilter == "all" ? "Text" : "Muted2");
+        FileDropIcon.Source = RenderChromeIcon(ChromeIconKind.ChevronDown, _kindFilter == "files" ? "Text" : "Muted2");
+        ExpandImageIcon.Source = RenderChromeIcon(ChromeIconKind.Expand, "Muted2");
+        _chromeIconsReady = true;
+    }
+
+    private void EnsureChromeIcons()
+    {
+        if (_chromeIconsReady)
+        {
+            return;
+        }
+
+        RefreshChromeIcons();
+    }
+
+    private void RefreshChromeIconsIfReady()
+    {
+        if (_chromeIconsReady)
+        {
+            RefreshChromeIcons();
+        }
+    }
+
+    private enum ChromeIconKind
+    {
+        Settings,
+        ChevronDown,
+        Expand,
+    }
+
+    private enum ItemVectorIconKind
+    {
+        Text,
+        Link,
+        Folder,
+        Image,
+        File,
+    }
+
+    private ImageSource RenderChromeIcon(ChromeIconKind kind, string colorKey)
+    {
+        var color = ((SolidColorBrush)FindResource(colorKey)).Color;
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+
+        var pen = new WpfPen(brush, kind == ChromeIconKind.Settings ? 1.8 : 2.2)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze();
+
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(WpfBrushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, 24, 24))));
+
+        switch (kind)
+        {
+            case ChromeIconKind.Settings:
+                drawing.Children.Add(new GeometryDrawing(null, pen, new EllipseGeometry(new System.Windows.Point(12, 12), 4.2, 4.2)));
+                for (var i = 0; i < 8; i++)
+                {
+                    var angle = (Math.PI / 4) * i;
+                    drawing.Children.Add(new GeometryDrawing(null, pen, new LineGeometry(
+                        new System.Windows.Point(12 + Math.Cos(angle) * 7.1, 12 + Math.Sin(angle) * 7.1),
+                        new System.Windows.Point(12 + Math.Cos(angle) * 9.6, 12 + Math.Sin(angle) * 9.6))));
+                }
+                break;
+
+            case ChromeIconKind.ChevronDown:
+                drawing.Children.Add(new GeometryDrawing(null, pen, PolylineGeometry(
+                    new System.Windows.Point(6.5, 9),
+                    new System.Windows.Point(12, 14.5),
+                    new System.Windows.Point(17.5, 9))));
+                break;
+
+            case ChromeIconKind.Expand:
+                AddLine(drawing, pen, 5, 5, 10, 5);
+                AddLine(drawing, pen, 5, 5, 5, 10);
+                AddLine(drawing, pen, 5, 5, 10, 10);
+                AddLine(drawing, pen, 19, 5, 14, 5);
+                AddLine(drawing, pen, 19, 5, 19, 10);
+                AddLine(drawing, pen, 19, 5, 14, 10);
+                AddLine(drawing, pen, 5, 19, 10, 19);
+                AddLine(drawing, pen, 5, 19, 5, 14);
+                AddLine(drawing, pen, 5, 19, 10, 14);
+                AddLine(drawing, pen, 19, 19, 14, 19);
+                AddLine(drawing, pen, 19, 19, 19, 14);
+                AddLine(drawing, pen, 19, 19, 14, 14);
+                break;
+        }
+
+        drawing.Freeze();
+        var image = new System.Windows.Media.DrawingImage(drawing);
+        image.Freeze();
+        return image;
+    }
+
+    internal static ImageSource RenderAppTileIcon(AppIconPreference preference)
+    {
+        var cacheKey = $"app-tile|{preference}";
+        lock (SvgCacheGate)
+        {
+            if (SvgImageCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        var dark = preference == AppIconPreference.Dark;
+        var background = new SolidColorBrush(dark
+            ? System.Windows.Media.Color.FromRgb(0x21, 0x1F, 0x1C)
+            : System.Windows.Media.Color.FromRgb(0xF4, 0xF0, 0xE6));
+        var strokeBrush = new SolidColorBrush(dark
+            ? System.Windows.Media.Color.FromRgb(0xF4, 0xF0, 0xE6)
+            : System.Windows.Media.Color.FromRgb(0x1A, 0x18, 0x16));
+        background.Freeze();
+        strokeBrush.Freeze();
+
+        var pen = new WpfPen(strokeBrush, 5)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze();
+
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(background, null, new RectangleGeometry(new Rect(0, 0, 72, 72), 16.2, 16.2)));
+        drawing.Children.Add(new GeometryDrawing(null, pen, PaperclipIconGeometry()));
+        drawing.Freeze();
+
+        var image = new System.Windows.Media.DrawingImage(drawing);
+        image.Freeze();
+
+        lock (SvgCacheGate)
+        {
+            SvgImageCache[cacheKey] = image;
+        }
+
+        return image;
+    }
+
+    private static StreamGeometry PaperclipIconGeometry()
+    {
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(new System.Windows.Point(48, 16), isFilled: false, isClosed: false);
+            context.LineTo(new System.Windows.Point(48, 50), isStroked: true, isSmoothJoin: true);
+            context.ArcTo(new System.Windows.Point(32, 50), new System.Windows.Size(8, 8), rotationAngle: 0, isLargeArc: false, SweepDirection.Clockwise, isStroked: true, isSmoothJoin: true);
+            context.LineTo(new System.Windows.Point(32, 24), isStroked: true, isSmoothJoin: true);
+            context.ArcTo(new System.Windows.Point(40, 24), new System.Windows.Size(4, 4), rotationAngle: 0, isLargeArc: false, SweepDirection.Clockwise, isStroked: true, isSmoothJoin: true);
+            context.LineTo(new System.Windows.Point(40, 46), isStroked: true, isSmoothJoin: true);
+        }
+
+        geometry.Freeze();
+        return geometry;
+    }
+
+    private ImageSource RenderItemVectorIcon(ItemVectorIconKind kind, int size)
+    {
+        var color = BrushHex("Muted2");
+        var cacheKey = $"item-vector|{kind}|{size}|{color}";
+        lock (SvgCacheGate)
+        {
+            if (SvgImageCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        var stroke = new SolidColorBrush(((SolidColorBrush)FindResource("Muted2")).Color);
+        stroke.Freeze();
+        var fill = new SolidColorBrush(((SolidColorBrush)FindResource("Muted2")).Color) { Opacity = 0.16 };
+        fill.Freeze();
+        var pen = new WpfPen(stroke, 1.8)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze();
+
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(WpfBrushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, 24, 24))));
+
+        switch (kind)
+        {
+            case ItemVectorIconKind.Text:
+                AddDocumentOutline(drawing, pen, fill);
+                AddLine(drawing, pen, 8.5, 12, 16.5, 12);
+                AddLine(drawing, pen, 8.5, 15, 17, 15);
+                AddLine(drawing, pen, 8.5, 18, 14.5, 18);
+                break;
+
+            case ItemVectorIconKind.Link:
+                drawing.Children.Add(new GeometryDrawing(null, pen, new RectangleGeometry(new Rect(3.8, 8.3, 9.4, 7.4), 3.7, 3.7)));
+                drawing.Children.Add(new GeometryDrawing(null, pen, new RectangleGeometry(new Rect(10.8, 8.3, 9.4, 7.4), 3.7, 3.7)));
+                AddLine(drawing, pen, 9.2, 12, 14.8, 12);
+                break;
+
+            case ItemVectorIconKind.Folder:
+                drawing.Children.Add(new GeometryDrawing(fill, pen, PolygonGeometry(
+                    new System.Windows.Point(3.5, 7.5),
+                    new System.Windows.Point(8.8, 7.5),
+                    new System.Windows.Point(11, 9.7),
+                    new System.Windows.Point(20.5, 9.7),
+                    new System.Windows.Point(20.5, 18.5),
+                    new System.Windows.Point(3.5, 18.5))));
+                break;
+
+            case ItemVectorIconKind.Image:
+                drawing.Children.Add(new GeometryDrawing(fill, pen, new RectangleGeometry(new Rect(4.5, 5.5, 15, 13), 2.8, 2.8)));
+                drawing.Children.Add(new GeometryDrawing(stroke, null, new EllipseGeometry(new System.Windows.Point(14.8, 9.2), 1.25, 1.25)));
+                drawing.Children.Add(new GeometryDrawing(null, pen, PolylineGeometry(
+                    new System.Windows.Point(6.8, 16),
+                    new System.Windows.Point(10.2, 12.6),
+                    new System.Windows.Point(12.7, 15.1),
+                    new System.Windows.Point(14.2, 13.6),
+                    new System.Windows.Point(17.4, 16.8))));
+                break;
+
+            case ItemVectorIconKind.File:
+                AddDocumentOutline(drawing, pen, fill);
+                AddLine(drawing, pen, 8.5, 14, 16, 14);
+                AddLine(drawing, pen, 8.5, 17, 14, 17);
+                break;
+        }
+
+        drawing.Freeze();
+        var image = new System.Windows.Media.DrawingImage(drawing);
+        image.Freeze();
+
+        lock (SvgCacheGate)
+        {
+            SvgImageCache[cacheKey] = image;
+        }
+
+        return image;
+    }
+
+    private static void AddDocumentOutline(DrawingGroup drawing, WpfPen pen, WpfBrush fill)
+    {
+        drawing.Children.Add(new GeometryDrawing(fill, pen, PolygonGeometry(
+            new System.Windows.Point(6.5, 3.8),
+            new System.Windows.Point(14.7, 3.8),
+            new System.Windows.Point(18.5, 7.6),
+            new System.Windows.Point(18.5, 20.2),
+            new System.Windows.Point(6.5, 20.2))));
+        AddLine(drawing, pen, 14.7, 3.8, 14.7, 8);
+        AddLine(drawing, pen, 14.7, 8, 18.5, 8);
+    }
+
+    private static void AddLine(DrawingGroup drawing, WpfPen pen, double x1, double y1, double x2, double y2)
+    {
+        drawing.Children.Add(new GeometryDrawing(null, pen, new LineGeometry(new System.Windows.Point(x1, y1), new System.Windows.Point(x2, y2))));
+    }
+
+    private static StreamGeometry PolylineGeometry(params System.Windows.Point[] points)
+    {
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(points[0], isFilled: false, isClosed: false);
+            for (var i = 1; i < points.Length; i++)
+            {
+                context.LineTo(points[i], isStroked: true, isSmoothJoin: false);
+            }
+        }
+
+        geometry.Freeze();
+        return geometry;
+    }
+
+    private static StreamGeometry PolygonGeometry(params System.Windows.Point[] points)
+    {
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(points[0], isFilled: true, isClosed: true);
+            for (var i = 1; i < points.Length; i++)
+            {
+                context.LineTo(points[i], isStroked: true, isSmoothJoin: true);
+            }
+        }
+
+        geometry.Freeze();
+        return geometry;
     }
 
     private void SetBrush(string key, string hex)
@@ -4344,8 +6974,13 @@ public partial class MainWindow : Window
     private void OnListWheel(object sender, MouseWheelEventArgs e)
     {
         ListScroll.ScrollToVerticalOffset(ListScroll.VerticalOffset - e.Delta);
+        AppendDeferredRowsIfNeeded();
         e.Handled = true;
-        ShellLog.Info($"list wheel delta={e.Delta} offset={ListScroll.VerticalOffset}/{ListScroll.ScrollableHeight}");
+    }
+
+    private void OnListScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        AppendDeferredRowsIfNeeded();
     }
 
     private void OnDateDropClick(object sender, RoutedEventArgs e)
@@ -4354,8 +6989,8 @@ public partial class MainWindow : Window
             .Select(pair => new MenuAction(pair.Item1, () =>
             {
                 _dateFilter = pair.Item2;
-                RenderItems("date-filter");
-                SelectItem(FilteredItems().FirstOrDefault(), "date-filter");
+                var visibleItems = RenderItems("date-filter");
+                SelectItem(visibleItems.FirstOrDefault(), "date-filter");
             }));
         ShowStyledMenu(actions, AllFilterShell);
     }
@@ -4371,8 +7006,8 @@ public partial class MainWindow : Window
         {
             _kindFilter = "files";
             _fileFilter = key;
-            RenderItems("file-filter");
-            SelectItem(FilteredItems().FirstOrDefault(), "file-filter");
+            var visibleItems = RenderItems("file-filter");
+            SelectItem(visibleItems.FirstOrDefault(), "file-filter");
         }));
         ShowStyledMenu(actions, FilesFilterShell);
     }
@@ -4578,7 +7213,7 @@ public partial class MainWindow : Window
         DateDropButton.Background = _kindFilter == "all" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         FileDropButton.Foreground = _kindFilter == "files" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
         FileDropButton.Background = _kindFilter == "files" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
-        RefreshChromeIcons();
+        RefreshChromeIconsIfReady();
     }
 
     private void SetFilterVisual(WpfButton button, Border? shell, bool selected)
@@ -4746,6 +7381,11 @@ public partial class MainWindow : Window
     }
 
     private static string HashText(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
     private static int CountWords(string text) => Regex.Matches(text, @"\b[\w']+\b").Count;
     private static long? SizeOf(string? path) => File.Exists(path) ? new FileInfo(path).Length : null;
     private static string FormatBytes(long? bytes) => bytes is null ? "" : bytes < 1024 ? $"{bytes} B" : bytes < 1024 * 1024 ? $"{bytes / 1024d:0.#} KB" : $"{bytes / 1024d / 1024d:0.#} MB";
@@ -4753,13 +7393,22 @@ public partial class MainWindow : Window
 
     private static string DateKey(ClipboardHistoryItem item)
     {
+        return DateKey(item, DateTime.Today);
+    }
+
+    private static string DateKey(ClipboardHistoryItem item, DateTime today)
+    {
         var copied = item.LastCopiedAt.LocalDateTime.Date;
-        var today = DateTime.Today;
         if (copied == today) return "today";
         if (copied == today.AddDays(-1)) return "yesterday";
         if (copied >= today.AddDays(-7)) return "week";
         if (copied.Year == today.Year && copied.Month == today.Month) return "month";
         return copied.Year == today.Year ? "year" : "older";
+    }
+
+    private static void SortByLastCopied(List<ClipboardHistoryItem> items)
+    {
+        items.Sort((left, right) => right.LastCopiedAt.CompareTo(left.LastCopiedAt));
     }
 
     private static string FileKindKey(string path)
@@ -4798,7 +7447,7 @@ public partial class MainWindow : Window
     private static bool IsOfficeOrVisio(string ext) => ext is ".doc" or ".docx" or ".xls" or ".xlsx" or ".xlsm" or ".ppt" or ".pptx" or ".vsd" or ".vsdx";
     private static bool IsTextFile(string ext) => ext is ".txt" or ".log" or ".md" or ".csv" or ".json" or ".xml" or ".css" or ".js" or ".ts" or ".cs" or ".bat" or ".cmd" or ".ps1" or ".py" or ".html" or ".htm";
 
-    private ImageSource IconFor(ClipboardHistoryItem item, int size)
+    private ImageSource IconFor(ClipboardHistoryItem item, int size, bool preferRichPreview = true)
     {
         try
         {
@@ -4809,24 +7458,38 @@ public partial class MainWindow : Window
 
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
-                return LoadBitmap(item.AssetPath);
+                return preferRichPreview
+                    ? LoadCachedBitmap(item.AssetPath, RowIconDecodePixels)
+                    : RenderItemVectorIcon(ItemVectorIconKind.Image, size);
             }
 
-            if (item.Kind == ClipboardItemKind.Link) return RenderSvg("hyperlink-icon.svg", size, 0.78);
-            if (item.Kind == ClipboardItemKind.Text) return RenderSvg("text_underline_icon_high_fidelity.svg", size);
+            if (item.Kind == ClipboardItemKind.Image)
+            {
+                return RenderItemVectorIcon(ItemVectorIconKind.Image, size);
+            }
+
+            if (item.Kind == ClipboardItemKind.Link) return RenderItemVectorIcon(ItemVectorIconKind.Link, size);
+            if (item.Kind == ClipboardItemKind.Text) return RenderItemVectorIcon(ItemVectorIconKind.Text, size);
             if (item.Kind == ClipboardItemKind.Files && item.FilePaths.Count == 1)
             {
                 var path = item.FilePaths[0];
-                if (Directory.Exists(path)) return RenderSvg("folder-svgrepo-com.svg", size);
+                if (Directory.Exists(path)) return RenderItemVectorIcon(ItemVectorIconKind.Folder, size);
+                if (!preferRichPreview)
+                {
+                    return IsImageFile(Path.GetExtension(path).ToLowerInvariant())
+                        ? RenderItemVectorIcon(ItemVectorIconKind.Image, size)
+                        : RenderItemVectorIcon(ItemVectorIconKind.File, size);
+                }
+
                 if (File.Exists(path) && IsImageFile(Path.GetExtension(path).ToLowerInvariant()))
                 {
-                    return LoadBitmap(path);
+                    return LoadCachedBitmap(path, RowIconDecodePixels);
                 }
 
                 return RenderFileSvg(path, size);
             }
 
-            return RenderSvg("file-60.svg", size);
+            return RenderItemVectorIcon(ItemVectorIconKind.File, size);
         }
         catch (Exception ex)
         {
@@ -4841,11 +7504,17 @@ public partial class MainWindow : Window
         {
             if (item.SourceApplicationPath is not null && File.Exists(item.SourceApplicationPath))
             {
+                var cacheKey = RasterCacheKey("source", item.SourceApplicationPath, 32);
+                if (TryGetCachedRaster(cacheKey, out var cached))
+                {
+                    return cached;
+                }
+
                 using var icon = System.Drawing.Icon.ExtractAssociatedIcon(item.SourceApplicationPath);
                 if (icon is not null)
                 {
                     using var bitmap = icon.ToBitmap();
-                    return BitmapFromDrawingImage(bitmap);
+                    return RememberRaster(cacheKey, BitmapFromDrawingImage(bitmap));
                 }
             }
         }
@@ -4860,6 +7529,13 @@ public partial class MainWindow : Window
     private ImageSource RenderFileSvg(string path, int size)
     {
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        var cacheKey = $"file-icon|{ext}|{size}";
+        if (TryGetCachedRaster(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        ImageSource source;
         if (ShouldUseWindowsFileIcon(ext))
         {
             var windowsIcon = WatcherShellIconReader.TryGetIcon(path, large: size >= 48);
@@ -4867,13 +7543,15 @@ public partial class MainWindow : Window
             {
                 using (windowsIcon)
                 {
-                    return BitmapFromDrawingImage(windowsIcon);
+                    source = BitmapFromDrawingImage(windowsIcon);
+                    return RememberRaster(cacheKey, source);
                 }
             }
         }
 
         var name = string.IsNullOrWhiteSpace(ext) ? "file-60.svg" : $"file-icon-{ext}.svg";
-        return File.Exists(AssetIconPath(name)) ? RenderSvg(name, size) : RenderGeneratedFileIcon(ext, size);
+        source = File.Exists(AssetIconPath(name)) ? RenderSvg(name, size) : RenderItemVectorIcon(ItemVectorIconKind.File, size);
+        return RememberRaster(cacheKey, source);
     }
 
     private static bool ShouldUseWindowsFileIcon(string ext)
@@ -4916,6 +7594,12 @@ public partial class MainWindow : Window
 
     private ImageSource RenderGeneratedFileIcon(string ext, int size)
     {
+        var cacheKey = $"generated-file|{ext}|{size}";
+        if (TryGetCachedRaster(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
         var label = Regex.Replace((ext ?? "file").ToUpperInvariant(), @"[^A-Z0-9+#-]", "");
         if (label.Length == 0) label = "FILE";
         if (label.Length > 5) label = label[..5];
@@ -4933,7 +7617,7 @@ public partial class MainWindow : Window
         var document = SvgDocument.FromSvg<SvgDocument>(svg);
         using var rendered = document.Draw(size, size);
         graphics.DrawImage(rendered, 0, 0, size, size);
-        return BitmapFromDrawingImage(bitmap);
+        return RememberRaster(cacheKey, BitmapFromDrawingImage(bitmap));
     }
 
     private static WpfBrush BrushFromHex(string hex)
@@ -4950,6 +7634,12 @@ public partial class MainWindow : Window
 
     private static ImageSource RenderColorSwatch(string hex, int size)
     {
+        var cacheKey = $"color|{hex}|{size}";
+        if (TryGetCachedRaster(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
         var swatchSize = Math.Max(18, size);
         using var bitmap = new System.Drawing.Bitmap(swatchSize, swatchSize);
         using var graphics = System.Drawing.Graphics.FromImage(bitmap);
@@ -4962,7 +7652,7 @@ public partial class MainWindow : Window
         var inset = Math.Max(2, swatchSize / 12);
         graphics.FillEllipse(fill, inset, inset, swatchSize - inset * 2, swatchSize - inset * 2);
         graphics.DrawEllipse(border, inset, inset, swatchSize - inset * 2, swatchSize - inset * 2);
-        return BitmapFromDrawingImage(bitmap);
+        return RememberRaster(cacheKey, BitmapFromDrawingImage(bitmap));
     }
 
     private static string ThemeSvg(string svg, string color)
@@ -5000,11 +7690,72 @@ public partial class MainWindow : Window
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "app-icons", fileName));
     }
 
-    private static BitmapImage LoadBitmap(string path)
+    private static ImageSource LoadCachedBitmap(string path, int decodePixels)
+    {
+        if (!ShouldCacheBitmap(decodePixels))
+        {
+            return LoadBitmap(path, decodePixels);
+        }
+
+        var cacheKey = RasterCacheKey("bitmap", path, decodePixels);
+        if (TryGetCachedRaster(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        return RememberRaster(cacheKey, LoadBitmap(path, decodePixels));
+    }
+
+    private static bool ShouldCacheBitmap(int decodePixels) => decodePixels <= RowIconDecodePixels;
+
+    private static string RasterCacheKey(string prefix, string path, int size)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var info = new FileInfo(fullPath);
+            var stamp = info.Exists ? $"{info.Length}|{info.LastWriteTimeUtc.Ticks}" : "missing";
+            return $"{prefix}|{fullPath}|{size}|{stamp}";
+        }
+        catch
+        {
+            return $"{prefix}|{path}|{size}";
+        }
+    }
+
+    private static bool TryGetCachedRaster(string cacheKey, out ImageSource source)
+    {
+        lock (RasterImageCacheGate)
+        {
+            return RasterImageCache.TryGetValue(cacheKey, out source!);
+        }
+    }
+
+    private static ImageSource RememberRaster(string cacheKey, ImageSource source)
+    {
+        lock (RasterImageCacheGate)
+        {
+            if (RasterImageCache.Count >= MaxCachedRasterImages)
+            {
+                RasterImageCache.Clear();
+            }
+
+            RasterImageCache[cacheKey] = source;
+        }
+
+        return source;
+    }
+
+    private static BitmapImage LoadBitmap(string path, int? decodePixels = null)
     {
         var bitmap = new BitmapImage();
         bitmap.BeginInit();
         bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        if (decodePixels is > 0)
+        {
+            bitmap.DecodePixelWidth = decodePixels.Value;
+        }
+
         bitmap.UriSource = new Uri(path);
         bitmap.EndInit();
         bitmap.Freeze();
@@ -5035,7 +7786,7 @@ public partial class MainWindow : Window
             hex = $"#{solid.Color.R:X2}{solid.Color.G:X2}{solid.Color.B:X2}";
         }
 
-        return (Style)XamlReader.Parse($$"""
+        return ThinScrollBarStyleCache.GetOrAdd(hex, static key => (Style)XamlReader.Parse($$"""
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type ScrollBar}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Setter Property="Width" Value="6"/>
   <Setter Property="Height" Value="6"/>
@@ -5052,7 +7803,7 @@ public partial class MainWindow : Window
               <Thumb>
                 <Thumb.Template>
                   <ControlTemplate TargetType="{x:Type Thumb}">
-                    <Border Background="{{hex}}" CornerRadius="3" Margin="1"/>
+                    <Border Background="{{key}}" CornerRadius="3" Margin="1"/>
                   </ControlTemplate>
                 </Thumb.Template>
               </Thumb>
@@ -5066,7 +7817,7 @@ public partial class MainWindow : Window
     </Setter.Value>
   </Setter>
 </Style>
-""");
+"""));
     }
 
     private static (string? Name, string? Path) ForegroundSource()
@@ -5228,6 +7979,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private static string WindowClass(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var className = new StringBuilder(256);
+            return GetClassName(hwnd, className, className.Capacity) > 0 ? className.ToString() : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static bool IsFileExplorerWindowClass(string? className)
+    {
+        return string.Equals(className, "CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(className, "ExploreWClass", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsFileExplorerSearchTarget(IntPtr hwnd, AutomationElement? element)
     {
         if (element is null || hwnd == IntPtr.Zero)
@@ -5278,6 +8053,28 @@ public partial class MainWindow : Window
         {
             return false;
         }
+    }
+
+    private static bool CouldNeedNoActivatePalette(IntPtr hwnd)
+    {
+        return CouldNeedNoActivatePalette(hwnd, WindowTitle(hwnd));
+    }
+
+    private static bool CouldNeedNoActivatePalette(IntPtr hwnd, string windowTitle)
+    {
+        if (!windowTitle.Contains("Google Earth", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var processName = TryGetProcessNameForWindow(hwnd);
+        if (!string.Equals(processName, "chrome", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(processName, "msedge", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static bool ShouldCommitPasteWithEnter(IntPtr hwnd, AutomationElement? element)
@@ -5428,7 +8225,9 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool AddClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr SetActiveWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr SetFocus(IntPtr hWnd);
@@ -5448,17 +8247,6 @@ public partial class MainWindow : Window
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
 
-    private static readonly Guid DataTransferManagerId = new(0xa5caee9b, 0x8708, 0x49d1, 0x8d, 0x36, 0x67, 0xd2, 0x5a, 0x8d, 0xa0, 0x0c);
-
-    [ComImport]
-    [Guid("3A3DCD6C-3EAB-43DC-BCDE-45671CE800C8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IDataTransferManagerInterop
-    {
-        IntPtr GetForWindow(IntPtr appWindow, [In] ref Guid riid);
-        void ShowShareUIForWindow(IntPtr appWindow);
-    }
-
     internal static void ApplyRoundedWindowCorners(IntPtr hwnd)
     {
         try
@@ -5477,6 +8265,53 @@ public partial class MainWindow : Window
 internal sealed class WpfWindowHandle(IntPtr handle) : Forms.IWin32Window
 {
     public IntPtr Handle { get; } = handle;
+}
+
+internal static class ClipControlTemplates
+{
+    private static readonly Lazy<ControlTemplate> PaddedButtonCache = new(() => (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""));
+
+    private static readonly Lazy<ControlTemplate> CenterButtonCache = new(() => (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""));
+
+    public static ControlTemplate PaddedButton => PaddedButtonCache.Value;
+
+    public static ControlTemplate CenterButton => CenterButtonCache.Value;
 }
 
 internal sealed class HotkeyHelpWindow : Window
@@ -5546,16 +8381,7 @@ internal sealed class HotkeyHelpWindow : Window
             FontSize = 12,
             FontWeight = FontWeights.Medium,
             FocusVisualStyle = null,
-            Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-"""),
+            Template = ClipControlTemplates.PaddedButton,
         };
         close.MouseEnter += (_, _) => { close.Background = accentSoft; close.BorderBrush = selectedBorder; close.Foreground = text; };
         close.MouseLeave += (_, _) => { close.Background = WpfBrushes.Transparent; close.BorderBrush = WpfBrushes.Transparent; close.Foreground = muted; };
@@ -5775,26 +8601,29 @@ internal sealed class OpenWithWindow : Window
         shell.Children.Add(footer);
 
         Content = root;
-        Loaded += async (_, _) =>
+        Loaded += (_, _) =>
         {
             _search.Focus();
-            LoadPersistedCache();
-            if (TryGetCachedApps(_targetPath, out var cached))
-            {
-                _allApps = cached;
-                _status.Text = $"{_allApps.Count} apps";
-            }
-            else
-            {
-                _status.Text = "Loading apps...";
-            }
-
+            _status.Text = "Loading apps...";
             RenderApps();
-            await LoadAppsAsync();
+            _ = Dispatcher.BeginInvoke(new Action(() => _ = LoadAppsAfterFirstPaintAsync()), System.Windows.Threading.DispatcherPriority.ContextIdle);
         };
     }
 
     public WatcherAppChoice? SelectedApp { get; private set; }
+
+    private async Task LoadAppsAfterFirstPaintAsync()
+    {
+        LoadPersistedCache();
+        if (TryGetCachedApps(_targetPath, out var cached))
+        {
+            _allApps = cached;
+            _status.Text = $"{_allApps.Count} apps";
+            RenderApps();
+        }
+
+        await LoadAppsAsync();
+    }
 
     private WpfButton PlainButton(string label)
     {
@@ -5812,16 +8641,7 @@ internal sealed class OpenWithWindow : Window
             FontSize = 12,
             FontWeight = FontWeights.Medium,
             FocusVisualStyle = null,
-            Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-"""),
+            Template = ClipControlTemplates.PaddedButton,
         };
         button.MouseEnter += (_, _) =>
         {
@@ -6241,16 +9061,7 @@ internal sealed class ExcludedAppPickerWindow : Window
             FontSize = 12,
             FontWeight = FontWeights.Medium,
             FocusVisualStyle = null,
-            Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-"""),
+            Template = ClipControlTemplates.PaddedButton,
         };
         button.MouseEnter += (_, _) =>
         {
@@ -6443,6 +9254,83 @@ internal sealed record SettingsPalette(WpfBrush Bg, WpfBrush Surface, WpfBrush S
 
 internal sealed class SettingsWindow : Window
 {
+    private const string DropdownIconTag = "SettingsDropdownIcon";
+    private static readonly ConcurrentDictionary<string, ImageSource> DropdownChevronIconCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Lazy<ControlTemplate> TransparentButtonTemplateCache = new(() => (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="5">
+    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      Margin="{TemplateBinding Padding}"/>
+  </Border>
+</ControlTemplate>
+"""));
+    private static readonly Lazy<ControlTemplate> SubtleSettingsButtonTemplateCache = new(() => (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border x:Name="Root"
+          Background="{TemplateBinding Background}"
+          BorderBrush="{TemplateBinding BorderBrush}"
+          BorderThickness="{TemplateBinding BorderThickness}"
+          CornerRadius="6">
+    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                      Margin="{TemplateBinding Padding}"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""));
+    private static readonly Lazy<ControlTemplate> InfoBadgeButtonTemplateCache = new(() => (ControlTemplate)XamlReader.Parse("""
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="{x:Type Button}">
+  <Border Background="{TemplateBinding Background}" CornerRadius="11">
+    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property="IsMouseOver" Value="True">
+      <Setter Property="Opacity" Value="0.75"/>
+    </Trigger>
+    <Trigger Property="IsPressed" Value="True">
+      <Setter Property="Opacity" Value="0.5"/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>
+"""));
+
+    public static void WarmCaches()
+    {
+        try
+        {
+            _ = TransparentButtonTemplateCache.Value;
+            _ = SubtleSettingsButtonTemplateCache.Value;
+            _ = InfoBadgeButtonTemplateCache.Value;
+            WarmDropdownIcon("#646464");
+            WarmDropdownIcon("#989898");
+            ShellLog.Info("settings caches warmed");
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "settings cache warm failed");
+        }
+    }
+
+    private static void WarmDropdownIcon(string hex)
+    {
+        DropdownChevronIconCache.GetOrAdd(hex, CreateDropdownChevronIcon);
+    }
+
     private readonly Grid _content = new();
     private readonly Dictionary<string, WpfButton> _nav = new(StringComparer.OrdinalIgnoreCase);
     private readonly ClipShellSettings _settings;
@@ -6450,6 +9338,7 @@ internal sealed class SettingsWindow : Window
     private readonly Action<ClipThemePreference> _applyTheme;
     private readonly Action _refreshClipboardManagerTextTheme;
     private readonly Action<AppIconPreference> _applyAppIcon;
+    private readonly Action<ClipOpenMode> _applyOpenMode;
     private readonly Action<bool> _applyRunAtStartup;
     private readonly Action<int?> _applyHistoryLimit;
     private readonly Action<long?> _applyMaxItemSize;
@@ -6466,7 +9355,6 @@ internal sealed class SettingsWindow : Window
     private readonly Action<PasteFormatPreference> _applyDefaultPasteFormat;
     private readonly Action _resetAllSettings;
     private readonly Func<SettingsPalette> _paletteProvider;
-    private readonly ImageSource _dropdownIcon;
     private readonly System.Windows.Threading.DispatcherTimer _themeApplyTimer = new(System.Windows.Threading.DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(16) };
     private SettingsPalette? _paletteOverride;
     private ThemeMorphIcon? _themeIcon;
@@ -6490,15 +9378,17 @@ internal sealed class SettingsWindow : Window
     private WpfBrush _accentSoft = WpfBrushes.Transparent;
     private WpfBrush _selected = WpfBrushes.Transparent;
     private WpfBrush _selectedBorder = WpfBrushes.Transparent;
+    private Action? _hostClose;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, ImageSource dropdownIcon, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<ClipOpenMode> applyOpenMode, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
         _applyTheme = applyTheme;
         _refreshClipboardManagerTextTheme = refreshClipboardManagerTextTheme;
         _applyAppIcon = applyAppIcon;
+        _applyOpenMode = applyOpenMode;
         _applyRunAtStartup = applyRunAtStartup;
         _applyHistoryLimit = applyHistoryLimit;
         _applyMaxItemSize = applyMaxItemSize;
@@ -6515,7 +9405,6 @@ internal sealed class SettingsWindow : Window
         _applyDefaultPasteFormat = applyDefaultPasteFormat;
         _resetAllSettings = resetAllSettings;
         _paletteProvider = paletteProvider;
-        _dropdownIcon = dropdownIcon;
         ApplyPalette(_paletteProvider());
         _themeApplyTimer.Tick += (_, _) => ApplyPendingTheme();
 
@@ -6534,7 +9423,7 @@ internal sealed class SettingsWindow : Window
         {
             if (e.Key == Key.Escape)
             {
-                Close();
+                RequestClose();
             }
         };
 
@@ -6559,7 +9448,7 @@ internal sealed class SettingsWindow : Window
         {
             if (e.ButtonState == MouseButtonState.Pressed)
             {
-                DragMove();
+                DragSettingsWindow();
             }
         };
         var headerTitle = new TextBlock
@@ -6598,7 +9487,7 @@ internal sealed class SettingsWindow : Window
             close.BorderBrush = WpfBrushes.Transparent;
             close.Foreground = _muted;
         };
-        close.Click += (_, _) => Close();
+        close.Click += (_, _) => RequestClose();
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
         var headerBorder = new Border
@@ -6658,6 +9547,39 @@ internal sealed class SettingsWindow : Window
         ShowPage("General");
     }
 
+    public FrameworkElement DetachForHost(Action close)
+    {
+        _hostClose = close;
+        if (Content is not FrameworkElement content)
+        {
+            throw new InvalidOperationException("Settings content is not hostable.");
+        }
+
+        Content = null;
+        return content;
+    }
+
+    private void RequestClose()
+    {
+        if (_hostClose is not null)
+        {
+            _hostClose();
+            return;
+        }
+
+        Close();
+    }
+
+    private void DragSettingsWindow()
+    {
+        if (_hostClose is not null)
+        {
+            return;
+        }
+
+        DragMove();
+    }
+
     private void CenterOnCursorScreen()
     {
         var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Control.MousePosition).WorkingArea;
@@ -6690,47 +9612,50 @@ internal sealed class SettingsWindow : Window
         };
     }
 
-    private static ControlTemplate TransparentButtonTemplate()
+    private static ControlTemplate TransparentButtonTemplate() => TransparentButtonTemplateCache.Value;
+
+    private static ControlTemplate SubtleSettingsButtonTemplate() => SubtleSettingsButtonTemplateCache.Value;
+
+    private static ControlTemplate InfoBadgeButtonTemplate() => InfoBadgeButtonTemplateCache.Value;
+
+    private ImageSource DropdownIcon()
     {
-        return (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                 TargetType="{x:Type Button}">
-  <Border x:Name="Root"
-          Background="{TemplateBinding Background}"
-          BorderBrush="{TemplateBinding BorderBrush}"
-          BorderThickness="{TemplateBinding BorderThickness}"
-          CornerRadius="5">
-    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                      Margin="{TemplateBinding Padding}"/>
-  </Border>
-</ControlTemplate>
-""");
+        var color = _muted is SolidColorBrush solid ? solid.Color : Colors.Gray;
+        var key = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+        return DropdownChevronIconCache.GetOrAdd(key, CreateDropdownChevronIcon);
     }
 
-    private static ControlTemplate SubtleSettingsButtonTemplate()
+    private static ImageSource CreateDropdownChevronIcon(string hex)
     {
-        return (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                 TargetType="{x:Type Button}">
-  <Border x:Name="Root"
-          Background="{TemplateBinding Background}"
-          BorderBrush="{TemplateBinding BorderBrush}"
-          BorderThickness="{TemplateBinding BorderThickness}"
-          CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                      Margin="{TemplateBinding Padding}"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True">
-      <Setter TargetName="Root" Property="Opacity" Value="0.82"/>
-    </Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-""");
+        var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+
+        var pen = new WpfPen(brush, 2.2)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze();
+
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(new System.Windows.Point(6.5, 9), isFilled: false, isClosed: false);
+            context.LineTo(new System.Windows.Point(12, 14.5), isStroked: true, isSmoothJoin: true);
+            context.LineTo(new System.Windows.Point(17.5, 9), isStroked: true, isSmoothJoin: true);
+        }
+        geometry.Freeze();
+
+        var drawing = new DrawingGroup();
+        drawing.Children.Add(new GeometryDrawing(WpfBrushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, 24, 24))));
+        drawing.Children.Add(new GeometryDrawing(null, pen, geometry));
+        drawing.Freeze();
+
+        var image = new System.Windows.Media.DrawingImage(drawing);
+        image.Freeze();
+        return image;
     }
 
     private void ApplyPalette(SettingsPalette palette)
@@ -6849,6 +9774,7 @@ internal sealed class SettingsWindow : Window
         if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
         {
             panel.Children.Add(StartupRow());
+            panel.Children.Add(OpenModeRow());
             panel.Children.Add(UpdateCheckRow());
             panel.Children.Add(DefaultPasteFormatRow());
         }
@@ -6913,7 +9839,14 @@ internal sealed class SettingsWindow : Window
 
         if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
         {
-            panel.Children.Add(ResetDefaultsFooter());
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (string.Equals(_currentPage, "General", StringComparison.OrdinalIgnoreCase) &&
+                    _content.Children.Contains(panel))
+                {
+                    panel.Children.Add(ResetDefaultsFooter());
+                }
+            }), System.Windows.Threading.DispatcherPriority.Background);
         }
 
         _content.Children.Add(panel);
@@ -7024,21 +9957,7 @@ internal sealed class SettingsWindow : Window
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             FocusVisualStyle = null,
         };
-        button.Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type Button}">
-  <Border Background="{TemplateBinding Background}" CornerRadius="11">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsMouseOver" Value="True">
-      <Setter Property="Opacity" Value="0.75"/>
-    </Trigger>
-    <Trigger Property="IsPressed" Value="True">
-      <Setter Property="Opacity" Value="0.5"/>
-    </Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-""");
+        button.Template = InfoBadgeButtonTemplate();
         return button;
     }
 
@@ -7419,6 +10338,36 @@ internal sealed class SettingsWindow : Window
             "Start Clip when you log in to Windows.",
             toggle);
     }
+
+    private Border OpenModeRow()
+    {
+        var options = new[] { OpenModeLabel(ClipOpenMode.Standalone), OpenModeLabel(ClipOpenMode.CommandPalette) };
+        var dropdown = StyledDropdown(OpenModeLabel(_settings.OpenMode), options, selected =>
+        {
+            var mode = OpenModeFromLabel(selected);
+            if (mode == _settings.OpenMode)
+            {
+                return;
+            }
+
+            _applyOpenMode(mode);
+            ShowPage(_currentPage);
+        });
+        dropdown.Width = 168;
+
+        return ControlRow(
+            "Open with",
+            "Choose what the main hotkey opens.",
+            dropdown);
+    }
+
+    private static string OpenModeLabel(ClipOpenMode mode) => mode == ClipOpenMode.CommandPalette
+        ? "Command Palette"
+        : "Standalone app";
+
+    private static ClipOpenMode OpenModeFromLabel(string label) => label.Equals("Command Palette", StringComparison.OrdinalIgnoreCase)
+        ? ClipOpenMode.CommandPalette
+        : ClipOpenMode.Standalone;
 
     private Border UpdateCheckRow()
     {
@@ -8001,7 +10950,7 @@ internal sealed class SettingsWindow : Window
             Background = _surface2,
             BorderBrush = _line,
             BorderThickness = new Thickness(1),
-            Content = new WpfImage { Source = _dropdownIcon, Width = 11, Height = 11 },
+            Content = new WpfImage { Source = DropdownIcon(), Width = 11, Height = 11, Tag = DropdownIconTag },
             Cursor = System.Windows.Input.Cursors.Hand,
             Template = SubtleSettingsButtonTemplate(),
             FocusVisualStyle = null,
@@ -8333,6 +11282,9 @@ internal sealed class SettingsWindow : Window
                         border.BorderBrush = _line;
                     }
                     break;
+                case WpfImage image when string.Equals(image.Tag as string, DropdownIconTag, StringComparison.Ordinal):
+                    image.Source = DropdownIcon();
+                    break;
             }
 
             RefreshVisibleSettingsContentTheme(child);
@@ -8462,22 +11414,7 @@ internal sealed class SettingsWindow : Window
 
     private static ImageSource LoadAppIconImage(AppIconPreference preference)
     {
-        var fileName = preference == AppIconPreference.Dark ? "clip-tile-dark.svg" : "clip-tile-light.svg";
-        var path = Path.Combine(AppContext.BaseDirectory, "assets", "app-icons", fileName);
-        if (!File.Exists(path))
-        {
-            path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "assets", "app-icons", fileName));
-        }
-
-        var document = SvgDocument.FromSvg<SvgDocument>(File.ReadAllText(path));
-        using var bitmap = new System.Drawing.Bitmap(64, 64);
-        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-        graphics.Clear(System.Drawing.Color.Transparent);
-        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        using var rendered = document.Draw(64, 64);
-        graphics.DrawImage(rendered, 0, 0, 64, 64);
-        return MainWindow.BitmapFromDrawingImage(bitmap);
+        return MainWindow.RenderAppTileIcon(preference);
     }
 
     private WpfButton StyledDropdown(string selected, IReadOnlyList<string> items, Action<string> onSelected)
@@ -8495,9 +11432,10 @@ internal sealed class SettingsWindow : Window
         content.Children.Add(label);
         var arrow = new WpfImage
         {
-            Source = _dropdownIcon,
+            Source = DropdownIcon(),
             Width = 11,
             Height = 11,
+            Tag = DropdownIconTag,
             Margin = new Thickness(12, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -8754,21 +11692,148 @@ internal sealed class MenuAction
 
 internal static class ShellLog
 {
-    private static readonly object Gate = new();
+    private static readonly object FileGate = new();
+    private static readonly ConcurrentQueue<string> Pending = new();
+    private static readonly AutoResetEvent Signal = new(false);
     private static readonly string LogRoot = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip");
     public static readonly string Path = System.IO.Path.Combine(LogRoot, "shell.log");
+    private static readonly string TempPath = System.IO.Path.Combine(LogRoot, "shell.log.tmp");
+    private const long MaxLogBytes = 5L * 1024 * 1024;
+    private const long TrimmedLogBytes = 2L * 1024 * 1024;
+    private static readonly Lazy<Thread> Writer = new(StartWriter);
+    private static volatile bool _stopping;
+    private static volatile bool _traceEnabled = TraceEnabledByEnvironment();
+
+    public static void Configure(string[] args)
+    {
+        if (_traceEnabled)
+        {
+            return;
+        }
+
+        _traceEnabled = args.Any(arg =>
+            string.Equals(arg, "--debug-perf", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(arg, "--debug-log", StringComparison.OrdinalIgnoreCase));
+    }
 
     public static void Info(string message) => Write("INFO", message);
 
-    public static void Error(Exception exception, string message) => Write("ERROR", $"{message}: {exception}");
+    public static void Snapshot(string message) => Write("INFO", message, force: true);
 
-    private static void Write(string level, string message)
+    public static void Error(Exception exception, string message) => Write("ERROR", $"{message}: {exception}", force: true);
+
+    public static void Flush() => FlushPending();
+
+    public static void Shutdown()
     {
-        lock (Gate)
+        if (!Writer.IsValueCreated)
         {
-            Directory.CreateDirectory(LogRoot);
-            File.AppendAllText(Path, $"{DateTimeOffset.Now:O} [{level}] {message}{Environment.NewLine}");
+            return;
         }
+
+        _stopping = true;
+        Signal.Set();
+        if (!Writer.Value.Join(TimeSpan.FromSeconds(2)))
+        {
+            FlushPending();
+        }
+    }
+
+    private static void Write(string level, string message, bool force = false)
+    {
+        if (!force && !_traceEnabled)
+        {
+            return;
+        }
+
+        _ = Writer.Value;
+        Pending.Enqueue($"{DateTimeOffset.Now:O} [{level}] {message}{Environment.NewLine}");
+        Signal.Set();
+    }
+
+    private static bool TraceEnabledByEnvironment()
+    {
+        var value = Environment.GetEnvironmentVariable("CLIP_SHELL_TRACE");
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Thread StartWriter()
+    {
+        var thread = new Thread(WriteLoop)
+        {
+            IsBackground = true,
+            Name = "Clip shell log writer",
+        };
+        thread.Start();
+        return thread;
+    }
+
+    private static void WriteLoop()
+    {
+        while (!_stopping || !Pending.IsEmpty)
+        {
+            Signal.WaitOne(TimeSpan.FromSeconds(1));
+            FlushPending();
+        }
+    }
+
+    private static void FlushPending()
+    {
+        if (Pending.IsEmpty)
+        {
+            return;
+        }
+
+        var builder = new StringBuilder();
+        while (Pending.TryDequeue(out var line))
+        {
+            builder.Append(line);
+        }
+
+        if (builder.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            lock (FileGate)
+            {
+                Directory.CreateDirectory(LogRoot);
+                TrimLogIfNeeded();
+                File.AppendAllText(Path, builder.ToString());
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TrimLogIfNeeded()
+    {
+        if (!File.Exists(Path))
+        {
+            return;
+        }
+
+        var info = new FileInfo(Path);
+        if (info.Length <= MaxLogBytes)
+        {
+            return;
+        }
+
+        using (var input = File.Open(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var output = File.Create(TempPath))
+        {
+            var marker = Encoding.UTF8.GetBytes($"{DateTimeOffset.Now:O} [INFO] shell log trimmed to last {TrimmedLogBytes / 1024 / 1024} MB{Environment.NewLine}");
+            output.Write(marker, 0, marker.Length);
+            input.Seek(Math.Max(0, input.Length - TrimmedLogBytes), SeekOrigin.Begin);
+            input.CopyTo(output);
+        }
+
+        File.Copy(TempPath, Path, overwrite: true);
+        File.Delete(TempPath);
     }
 }
 
@@ -8898,16 +11963,7 @@ internal sealed class RenameWindow : Window
             Cursor = System.Windows.Input.Cursors.Hand,
             FocusVisualStyle = null,
         };
-        button.Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True"><Setter TargetName="Root" Property="Opacity" Value="0.85"/></Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-""");
+        button.Template = ClipControlTemplates.CenterButton;
         button.MouseEnter += (_, _) => { button.Background = hoverBg; button.BorderBrush = primaryBorder; };
         button.MouseLeave += (_, _) => { button.Background = idleBackground; button.BorderBrush = idleBorder; };
         return button;
@@ -9033,18 +12089,7 @@ internal sealed class TextEditWindow : Window
             Cursor = System.Windows.Input.Cursors.Hand,
             FocusVisualStyle = null,
         };
-        button.Template = (ControlTemplate)XamlReader.Parse("""
-<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type Button}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Border x:Name="Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
-    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-  </Border>
-  <ControlTemplate.Triggers>
-    <Trigger Property="IsPressed" Value="True">
-      <Setter TargetName="Root" Property="Opacity" Value="0.85"/>
-    </Trigger>
-  </ControlTemplate.Triggers>
-</ControlTemplate>
-""");
+        button.Template = ClipControlTemplates.CenterButton;
         button.MouseEnter += (_, _) =>
         {
             button.Background = hoverBg;

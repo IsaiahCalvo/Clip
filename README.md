@@ -1,22 +1,34 @@
 # Clip
 
-Clip is a free Windows clipboard history app inspired by Raycast's clipboard history.
+[![Latest release](https://img.shields.io/github/v/release/IsaiahCalvo/Clip?label=release)](https://github.com/IsaiahCalvo/Clip/releases/latest)
+[![License](https://img.shields.io/github/license/IsaiahCalvo/Clip)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2011-blue)](#requirements)
+[![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)](#run-from-source)
+
+Clip is a free, open-source Windows clipboard history app inspired by Raycast's clipboard history.
 
 It runs locally, opens with `Alt+V`, and keeps clipboard history on your own device.
 
 ## Install
 
-**[⬇ Get the latest installer](https://github.com/IsaiahCalvo/Clip/releases/latest)** — open the latest release page and download `Clip_X.Y.Z-Setup.exe` from the Assets list, then double-click and click through the wizard. Installs per-user with no admin prompt, adds a Start menu entry, and registers in Add/Remove Programs.
+**[Get the latest installer](https://github.com/IsaiahCalvo/Clip/releases/latest)**, download `Clip_X.Y.Z-Setup.exe` from the Assets list, then double-click it and follow the wizard.
 
-Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64.zip)**, unzip anywhere, and run `Clip.exe`.
+The installer:
 
-> **Heads up:** Windows SmartScreen will say "Windows protected your PC" the first time because Clip isn't code-signed yet. Click **More info → Run anyway**. The app is open source — you can read every line on this page.
+- Installs per-user with no admin prompt.
+- Adds a Start menu entry.
+- Registers Clip in Add/Remove Programs.
+- Starts Clip with `Alt+V`.
 
-After install, press `Alt+V` to open it.
+Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64.zip)**, unzip it anywhere, and run `Start-Clip.ps1` or `Clip.exe --palette-session`.
 
-### Code Signing
+Already have the .NET 8 Desktop Runtime? **[Download Clip-win-x64-framework-dependent.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64-framework-dependent.zip)** for the smaller portable build.
 
-Clip uses free code signing provided by the [SignPath Foundation](https://signpath.org/) for open-source projects. Once signed, future releases will install without a SmartScreen warning. Certificates are issued in SignPath Foundation's name.
+### SmartScreen
+
+Clip is not code-signed yet, so Windows SmartScreen may warn the first time you install or run it.
+
+If you trust the source, click **More info**, then **Run anyway**. The full source code, release history, privacy policy, and build scripts are public in this repository.
 
 ## Features
 
@@ -29,13 +41,24 @@ Clip uses free code signing provided by the [SignPath Foundation](https://signpa
 - Color swatches for copied hex colors.
 - Source app metadata and item information panel.
 - Local debug logs with `Ctrl+Shift+L`.
-- Public settings for theme, startup, updates, history limits, storage, hotkeys, paste format, and excluded apps.
+- Settings for theme, startup, updates, history limits, storage, hotkeys, paste format, and excluded apps.
+
+## Project Status
+
+Clip is an individual-maintained open-source project.
+
+- Releases are published on GitHub: <https://github.com/IsaiahCalvo/Clip/releases>
+- Builds are produced with GitHub Actions.
+- Tests live in `tests\Clip.Tests`.
+- Privacy details live in `PRIVACY.md`.
+- Code signing is planned, but releases are currently unsigned.
 
 ## Requirements
 
 - Windows 11.
-- .NET 8 SDK to build from source.
 - Microsoft Edge WebView2 runtime for HTML previews.
+- .NET 8 Desktop Runtime only if you use the smaller framework-dependent zip.
+- .NET 8 SDK only if you want to build from source.
 
 ## Run From Source
 
@@ -58,10 +81,10 @@ The release files are created under:
 artifacts\publish\Clip-win-x64
 ```
 
-Double-click this app file to start Clip:
+Start the lightweight Clip host:
 
 ```text
-artifacts\publish\Clip-win-x64\Clip.exe
+artifacts\publish\Clip-win-x64\Start-Clip.ps1
 ```
 
 The zip file is created at:
@@ -69,6 +92,14 @@ The zip file is created at:
 ```text
 artifacts\publish\Clip-win-x64.zip
 ```
+
+For a smaller framework-dependent build, run:
+
+```powershell
+.\Publish-Clip.ps1 -FrameworkDependent
+```
+
+This writes `artifacts\publish\Clip-win-x64-framework-dependent`. It is much smaller, but the machine needs the .NET 8 Desktop Runtime installed, so the normal installer/zip remains the default public download.
 
 ## Start With Windows
 
@@ -78,7 +109,7 @@ After publishing or building, run:
 .\Install-ClipStartup.ps1
 ```
 
-This installs Clip under `%LOCALAPPDATA%\Programs\Clip`, creates Desktop and Start Menu shortcuts, and starts Clip automatically when your Windows user signs in.
+This installs Clip under `%APPDATA%\Programs\Clip`, creates Desktop and Start Menu shortcuts, and starts Clip automatically when your Windows user signs in.
 
 ## Privacy
 
@@ -101,5 +132,5 @@ Main projects:
 
 - `src\Clip.Shell`: WPF shell and main UI.
 - `src\Clip.Core`: clipboard history model and local JSON store.
-- `src\Clip.Watcher`: older watcher/utilities still used by the shell for some Windows integrations.
+- `src\Clip.Watcher`: headless clipboard watcher and Windows integration helpers.
 - `tests\Clip.Tests`: focused regression tests.

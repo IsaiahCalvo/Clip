@@ -1,13 +1,13 @@
+using Clip.Core;
 using Windows.ApplicationModel.DataTransfer;
-using Windows.Storage;
 using Windows.Storage.Streams;
 using WinClipboard = Windows.ApplicationModel.DataTransfer.Clipboard;
 using WinHistoryStatus = Windows.ApplicationModel.DataTransfer.ClipboardHistoryItemsResultStatus;
 using WinFormats = Windows.ApplicationModel.DataTransfer.StandardDataFormats;
 
-namespace Clip.Core;
+namespace Clip.WindowsHistory;
 
-public sealed class WindowsClipboardHistorySource : IClipboardHistorySource
+internal sealed class WindowsClipboardHistorySource : IClipboardHistorySource
 {
     public async Task<IReadOnlyList<ClipboardHistorySnapshotItem>> GetItemsAsync(Func<string, string> reserveImagePath, CancellationToken cancellationToken = default)
     {

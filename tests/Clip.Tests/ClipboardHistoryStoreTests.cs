@@ -41,6 +41,299 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void QueryItemSummariesKeepsSmallTextButStripsRichPayload()
+    {
+        var item = TextItem("alpha invoice");
+        item.HtmlText = new string('h', 10_000);
+        item.RtfText = new string('r', 10_000);
+
+        _store.AddOrUpdate(item);
+
+        var summary = Assert.Single(_store.QueryItemSummaries());
+        Assert.Equal("alpha invoice", summary.Text);
+        Assert.Null(summary.HtmlText);
+        Assert.Null(summary.RtfText);
+        Assert.Null(summary.AssetPath);
+        Assert.True(summary.HasOriginalFormatting);
+        Assert.True(File.Exists(_store.HistoryIndexFilePath));
+        Assert.True(new FileInfo(_store.HistoryIndexFilePath).Length < new FileInfo(_store.HistoryFilePath).Length);
+
+        var searched = Assert.Single(_store.QueryItemSummaries("invoice"));
+        Assert.Equal(item.Id, searched.Id);
+        Assert.Null(searched.HtmlText);
+        Assert.Null(searched.RtfText);
+    }
+
+    [Fact]
+    public void QueryItemSummariesCapsLargeTextPayload()
+    {
+        var item = TextItem(new string('a', 20_000) + "tail");
+
+        _store.AddOrUpdate(item);
+
+        var summary = Assert.Single(_store.QueryItemSummaries());
+        Assert.NotNull(summary.Text);
+        Assert.True(summary.Text!.Length < item.Text!.Length);
+        Assert.Equal(16_384, summary.Text.Length);
+        Assert.Equal(item.Text.Length, summary.CharacterCount);
+        Assert.DoesNotContain("tail", summary.Text);
+        Assert.Single(_store.QueryItems("tail"));
+        Assert.Empty(_store.QueryItemSummaries("tail"));
+    }
+
+    [Fact]
+    public void QueryItemSummariesWithLimitSearchesSummaryIndexBeforeReturningPage()
+    {
+        var older = TextItem("invoice older");
+        older.LastUsedAt = DateTimeOffset.Now.AddMinutes(-10);
+        var newer = TextItem("invoice newer");
+        newer.LastUsedAt = DateTimeOffset.Now;
+        var other = TextItem("proposal");
+        other.LastUsedAt = DateTimeOffset.Now.AddMinutes(10);
+
+        _store.Save([older, newer, other]);
+
+        var summaries = _store.QueryItemSummaries("invoice", 1);
+
+        var summary = Assert.Single(summaries);
+        Assert.Equal(newer.Id, summary.Id);
+
+        var caseInsensitiveSummary = Assert.Single(_store.QueryItemSummaries("INVOICE", 1));
+        Assert.Equal(newer.Id, caseInsensitiveSummary.Id);
+    }
+
+    [Fact]
+    public void QueryItemSummariesRebuildsOversizedExistingIndex()
+    {
+        var item = _store.AddOrUpdate(TextItem(new string('b', 20_000)));
+        File.WriteAllText(_store.HistoryIndexFilePath, JsonSerializer.Serialize(new[] { item }));
+        File.SetLastWriteTimeUtc(_store.HistoryIndexFilePath, File.GetLastWriteTimeUtc(_store.HistoryFilePath).AddSeconds(1));
+
+        var summary = Assert.Single(_store.QueryItemSummaries());
+
+        Assert.Equal(16_384, summary.Text?.Length);
+        Assert.True(new FileInfo(_store.HistoryIndexFilePath).Length < new FileInfo(_store.HistoryFilePath).Length);
+    }
+
+    [Fact]
+    public void QueryItemSummariesCompactsExistingVerboseIndex()
+    {
+        var item = _store.AddOrUpdate(TextItem("compact invoice"));
+        item.SourceApplicationPath = @"C:\Program Files\Test App\app.exe";
+        var verboseOptions = new JsonSerializerOptions(JsonSerializerDefaults.General) { WriteIndented = true };
+        File.WriteAllText(_store.HistoryIndexFilePath, JsonSerializer.Serialize(new[] { item }, verboseOptions));
+        File.SetLastWriteTimeUtc(_store.HistoryIndexFilePath, File.GetLastWriteTimeUtc(_store.HistoryFilePath).AddSeconds(1));
+
+        var loaded = new ClipboardHistoryStore(_root);
+        var summary = Assert.Single(loaded.QueryItemSummaries());
+        var compactIndex = File.ReadAllText(loaded.HistoryIndexFilePath);
+
+        Assert.Equal(item.Id, summary.Id);
+        Assert.DoesNotContain('\n', compactIndex);
+        Assert.DoesNotContain("\"HtmlText\"", compactIndex);
+        Assert.DoesNotContain("\"AssetPath\"", compactIndex);
+        Assert.DoesNotContain("\"SourceApplicationPath\"", compactIndex);
+    }
+
+    [Fact]
+    public void NoRetainStoreStillPersistsAndQueriesItems()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var first = store.AddOrUpdate(TextItem("first no retain"));
+        var second = store.AddOrUpdate(TextItem("second no retain"));
+
+        var summaries = store.QueryItemSummaries("second").ToList();
+        var full = store.GetItem(first.Id);
+
+        Assert.Single(summaries);
+        Assert.Equal(second.Id, summaries[0].Id);
+        Assert.NotNull(full);
+        Assert.Equal("first no retain", full!.Text);
+        Assert.True(File.Exists(store.HistoryFilePath));
+        Assert.True(File.Exists(store.HistoryIndexFilePath));
+        Assert.True(File.Exists(store.HistoryTopIndexFilePath));
+        Assert.True(File.Exists(store.HistoryKeyIndexFilePath));
+    }
+
+    [Fact]
+    public void NoRetainStoreHydratesFullTextFromAsset()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var text = new string('x', 500) + "tail";
+        var saved = store.AddOrUpdate(TextItem(text));
+        var historyJson = File.ReadAllText(store.HistoryFilePath);
+
+        var loaded = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false).GetItem(saved.Id);
+
+        Assert.DoesNotContain("tail", historyJson);
+        Assert.NotNull(loaded);
+        Assert.Equal(text, loaded!.Text);
+    }
+
+    [Fact]
+    public void NoRetainStoreHydratesRichTextFromAsset()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var item = TextItem("rich text");
+        item.HtmlText = "<b>rich text</b>";
+        item.RtfText = @"{\rtf1 rich text}";
+        var saved = store.AddOrUpdate(item);
+        var historyJson = File.ReadAllText(store.HistoryFilePath);
+
+        var loaded = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false).GetItem(saved.Id);
+
+        Assert.DoesNotContain("<b>rich text</b>", historyJson);
+        Assert.DoesNotContain(@"{\rtf1 rich text}", historyJson);
+        Assert.Equal(item.HtmlText, loaded?.HtmlText);
+        Assert.Equal(item.RtfText, loaded?.RtfText);
+    }
+
+    [Fact]
+    public void NoRetainStoreAppendsNewItemsWithoutRewritingHistory()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var first = store.AddOrUpdate(TextItem("first append"), maxItems: 10);
+        var secondText = new string('z', 500) + "tail";
+        var second = store.AddOrUpdate(TextItem(secondText), maxItems: 10);
+
+        var historyJson = File.ReadAllBytes(store.HistoryFilePath);
+        var history = JsonSerializer.Deserialize<List<ClipboardHistoryItem>>(historyJson);
+        var summaries = store.QueryItemSummaries().ToList();
+        var recent = store.QueryRecentItemSummaries(10).ToList();
+        var loaded = store.GetItem(second.Id);
+
+        Assert.NotNull(history);
+        Assert.Equal(2, history!.Count);
+        Assert.True(store.HasCurrentRecentSummaryIndex());
+        Assert.Equal(second.Id, summaries[0].Id);
+        Assert.Equal(first.Id, summaries[1].Id);
+        Assert.Equal(second.Id, recent[0].Id);
+        Assert.Equal(first.Id, recent[1].Id);
+        Assert.Equal(secondText, loaded?.Text);
+    }
+
+    [Fact]
+    public void NoRetainStoreKeepsTopIndexCurrentAfterAppend()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        store.AddOrUpdate(TextItem("first top index"), maxItems: 10);
+        File.SetLastWriteTimeUtc(store.HistoryTopIndexFilePath, File.GetLastWriteTimeUtc(store.HistoryFilePath).AddSeconds(1));
+
+        var second = store.AddOrUpdate(TextItem("second top index"), maxItems: 10);
+
+        var recent = store.QueryRecentItemSummaries(1);
+        Assert.True(store.HasCurrentRecentSummaryIndex());
+        Assert.Equal(second.Id, Assert.Single(recent).Id);
+    }
+
+    [Fact]
+    public void NoRetainStoreTrimsNewItemsToLimit()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+
+        store.AddOrUpdate(TextItem("one"), maxItems: 2);
+        store.AddOrUpdate(TextItem("two"), maxItems: 2);
+        store.AddOrUpdate(TextItem("three"), maxItems: 2);
+
+        var items = store.QueryItems().ToList();
+
+        Assert.Equal(2, items.Count);
+        Assert.DoesNotContain(items, item => item.Text == "one");
+        Assert.Contains(items, item => item.Text == "two");
+        Assert.Contains(items, item => item.Text == "three");
+    }
+
+    [Fact]
+    public void NoRetainStoreUpdatesDuplicateWithoutApplyingHistoryTrim()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var first = store.AddOrUpdate(TextItem("same"), maxItems: 10);
+        store.AddOrUpdate(TextItem("other"), maxItems: 10);
+
+        var duplicate = store.AddOrUpdate(TextItem("same"), maxItems: 1);
+
+        var items = store.QueryItems().ToList();
+        Assert.Equal(first.Id, duplicate.Id);
+        Assert.Equal(2, duplicate.CopyCount);
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, item => item.Text == "same");
+        Assert.Contains(items, item => item.Text == "other");
+    }
+
+    [Fact]
+    public void NoRetainStoreKeepsPinnedItemsWhenTrimming()
+    {
+        var store = new ClipboardHistoryStore(_root, enableLoadMaintenance: false, retainLoadedItems: false);
+        var pinned = store.AddOrUpdate(TextItem("pinned"), maxItems: 10);
+        store.SetPinned(pinned.Id, true);
+
+        store.AddOrUpdate(TextItem("one"), maxItems: 1);
+        store.AddOrUpdate(TextItem("two"), maxItems: 1);
+
+        var items = store.QueryItems().ToList();
+
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, item => item.Id == pinned.Id);
+        Assert.Contains(items, item => item.Text == "two");
+    }
+
+    [Fact]
+    public void QueryRecentItemSummariesUsesSmallTopIndex()
+    {
+        var now = DateTimeOffset.Now;
+        var items = Enumerable.Range(0, 90)
+            .Select(index =>
+            {
+                var item = TextItem($"item {index:D2}");
+                item.LastUsedAt = now.AddSeconds(index);
+                return item;
+            })
+            .ToList();
+        _store.Save(items);
+
+        var recent = _store.QueryRecentItemSummaries(5);
+        var topIndex = JsonSerializer.Deserialize<List<ClipboardHistoryItem>>(File.ReadAllText(_store.HistoryTopIndexFilePath));
+
+        Assert.True(_store.HasCurrentRecentSummaryIndex());
+        Assert.Equal(["item 89", "item 88", "item 87", "item 86", "item 85"], recent.Select(item => item.Text).ToArray());
+        Assert.NotNull(topIndex);
+        Assert.InRange(topIndex!.Count, 1, 64);
+    }
+
+    [Fact]
+    public void QueryRecentItemSummariesCapsTopIndexTextForFastFirstPaint()
+    {
+        var item = TextItem(new string('x', 5_000));
+        _store.Save([item]);
+        var loaded = new ClipboardHistoryStore(_root);
+
+        var recentSummary = Assert.Single(loaded.QueryRecentItemSummaries(1));
+        var topIndex = Assert.Single(JsonSerializer.Deserialize<List<ClipboardHistoryItem>>(File.ReadAllText(loaded.HistoryTopIndexFilePath))!);
+        var fullSummary = Assert.Single(new ClipboardHistoryStore(_root).QueryItemSummaries());
+
+        Assert.Equal(5_000, fullSummary.Text?.Length);
+        Assert.Equal(1_024, recentSummary.Text?.Length);
+        Assert.Equal(1_024, topIndex.Text?.Length);
+        Assert.Equal(5_000, topIndex.CharacterCount);
+    }
+
+    [Fact]
+    public void QueryItemSummariesBackfillsMissingTopIndex()
+    {
+        _store.AddOrUpdate(TextItem("existing history"));
+        File.Delete(_store.HistoryTopIndexFilePath);
+        var loaded = new ClipboardHistoryStore(_root);
+
+        Assert.False(loaded.HasCurrentRecentSummaryIndex());
+
+        var summary = Assert.Single(loaded.QueryItemSummaries());
+
+        Assert.Equal("existing history", summary.Text);
+        Assert.True(loaded.HasCurrentRecentSummaryIndex());
+        Assert.True(File.Exists(loaded.HistoryTopIndexFilePath));
+    }
+
+    [Fact]
     public void EditTextUpdatesPreview()
     {
         var item = _store.AddOrUpdate(TextItem("old text"));
@@ -479,7 +772,6 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
         return new ClipboardHistoryItem
         {
             Kind = ClipboardItemKind.Text,
-            ContentHash = text,
             Text = text,
             Preview = ClipboardHistoryStore.PreviewText(text),
         };

@@ -18,6 +18,8 @@ public sealed class ClipboardHistoryItem
 
     public string? RtfText { get; set; }
 
+    public bool HasOriginalFormatting { get; set; }
+
     public string? AssetPath { get; set; }
 
     public List<string> FilePaths { get; set; } = [];

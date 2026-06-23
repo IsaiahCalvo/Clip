@@ -17,28 +17,34 @@ $sourceExe = Join-Path $sourceDir "Clip.exe"
 if (-not (Test-Path $sourceExe)) {
     $sourceExe = Join-Path $sourceDir "Clip.Shell.exe"
 }
+$sourceHostExe = Join-Path $sourceDir "Clip.Watcher.exe"
+$sourceLauncherExe = Join-Path $sourceDir "Clip.Launcher.exe"
 $sourceIcon = Join-Path $sourceDir "assets\app-icons\clip-tile-light.ico"
 
 if (-not (Test-Path $sourceExe)) {
     throw "Clip executable was not found."
 }
 
-$installDir = Join-Path $env:LOCALAPPDATA "Programs\Clip"
+$installDir = Join-Path $env:APPDATA "Programs\Clip"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-Get-Process Clip, Clip.Shell -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process Clip, Clip.Shell, Clip.Watcher, Clip.Launcher, Clip.Command, Clip.WindowsHistory -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-ChildItem -LiteralPath $installDir -Force | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $sourceDir "*") $installDir -Recurse -Force
 
 $exe = Join-Path $installDir (Split-Path $sourceExe -Leaf)
+$hostExe = if (Test-Path $sourceHostExe) { Join-Path $installDir "Clip.Watcher.exe" } else { $exe }
+$launcherExe = if (Test-Path $sourceLauncherExe) { Join-Path $installDir "Clip.Launcher.exe" } else { $exe }
+$hostArguments = if ((Split-Path $hostExe -Leaf) -ieq "Clip.Watcher.exe") { "watch" } else { "" }
+$shortcutArguments = if ((Split-Path $launcherExe -Leaf) -ieq "Clip.exe") { "--palette-session" } else { "" }
 $icon = Join-Path $installDir "assets\app-icons\clip-tile-light.ico"
 if (-not (Test-Path $icon)) {
     $icon = $exe
 }
-$quotedExe = "`"$exe`""
+$quotedHost = if ($hostArguments) { "`"$hostExe`" $hostArguments" } else { "`"$hostExe`"" }
 
 New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
-Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -Value $quotedExe
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -Value $quotedHost
 
 $oldTaskName = "Clip Clipboard Watcher"
 if (Get-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue) {
@@ -54,7 +60,8 @@ function New-ClipShortcut {
     )
 
     $shortcut = $shell.CreateShortcut($Path)
-    $shortcut.TargetPath = $exe
+    $shortcut.TargetPath = $launcherExe
+    $shortcut.Arguments = $shortcutArguments
     $shortcut.WorkingDirectory = $installDir
     $shortcut.IconLocation = $icon
     $shortcut.WindowStyle = 7
@@ -74,7 +81,12 @@ if (Test-Path $startupShortcut) {
     Remove-Item -LiteralPath $startupShortcut -Force
 }
 
-Start-Process -FilePath $exe -WindowStyle Hidden
+if ($hostArguments) {
+    Start-Process -FilePath $hostExe -ArgumentList $hostArguments -WindowStyle Hidden
+}
+else {
+    Start-Process -FilePath $hostExe -WindowStyle Hidden
+}
 
 Write-Output "Clip installed to $installDir"
 Write-Output "Desktop shortcut: $desktopShortcut"

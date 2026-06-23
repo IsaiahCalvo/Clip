@@ -2,6 +2,8 @@ namespace Clip.Core;
 
 public sealed class ClipboardSharePayload
 {
+    private const string CleanupMarkerFileName = ".clip-share-cleanup";
+
     private ClipboardSharePayload(IReadOnlyList<string> filePaths, IReadOnlyList<string> temporaryFiles)
     {
         FilePaths = filePaths;
@@ -53,7 +55,33 @@ public sealed class ClipboardSharePayload
         }
     }
 
-    public static void CleanupStaleTemporaryFiles(string? tempRoot = null, TimeSpan? olderThan = null)
+    public static bool CleanupStaleTemporaryFilesIfDue(
+        string? tempRoot = null,
+        TimeSpan? olderThan = null,
+        TimeSpan? minimumInterval = null,
+        DateTimeOffset? now = null)
+    {
+        var root = tempRoot ?? Path.Combine(Path.GetTempPath(), "Clip", "Share");
+        if (!Directory.Exists(root))
+        {
+            return false;
+        }
+
+        var current = now ?? DateTimeOffset.Now;
+        var interval = minimumInterval ?? TimeSpan.FromDays(1);
+        var markerPath = Path.Combine(root, CleanupMarkerFileName);
+        if (File.Exists(markerPath) &&
+            File.GetLastWriteTime(markerPath) > (current - interval).LocalDateTime)
+        {
+            return false;
+        }
+
+        CleanupStaleTemporaryFiles(root, olderThan, current);
+        TryWriteCleanupMarker(markerPath, current);
+        return true;
+    }
+
+    public static void CleanupStaleTemporaryFiles(string? tempRoot = null, TimeSpan? olderThan = null, DateTimeOffset? now = null)
     {
         var root = tempRoot ?? Path.Combine(Path.GetTempPath(), "Clip", "Share");
         if (!Directory.Exists(root))
@@ -61,7 +89,7 @@ public sealed class ClipboardSharePayload
             return;
         }
 
-        var cutoff = DateTimeOffset.Now - (olderThan ?? TimeSpan.FromDays(1));
+        var cutoff = (now ?? DateTimeOffset.Now) - (olderThan ?? TimeSpan.FromDays(1));
         foreach (var path in Directory.EnumerateFiles(root, "clip-*.txt"))
         {
             try
@@ -75,6 +103,19 @@ public sealed class ClipboardSharePayload
             {
                 // Temp cleanup is best effort.
             }
+        }
+    }
+
+    private static void TryWriteCleanupMarker(string markerPath, DateTimeOffset timestamp)
+    {
+        try
+        {
+            File.WriteAllText(markerPath, timestamp.ToString("O"));
+            File.SetLastWriteTime(markerPath, timestamp.LocalDateTime);
+        }
+        catch
+        {
+            // Temp cleanup bookkeeping is best effort.
         }
     }
 
