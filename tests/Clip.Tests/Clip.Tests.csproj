@@ -21,7 +21,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Clip.Command\Clip.Command.csproj" />
     <ProjectReference Include="..\..\src\Clip.Core\Clip.Core.csproj" />
     <ProjectReference Include="..\..\src\Clip.Shell\Clip.Shell.csproj" />
     <ProjectReference Include="..\..\src\Clip.Watcher\Clip.Watcher.csproj" />

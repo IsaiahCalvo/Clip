@@ -23,7 +23,6 @@ internal static class Program
     internal const string RichPaletteShowEventName = @"Local\ClipShellShowPalette";
     internal const string WatcherPaletteShowEventName = @"Local\ClipWatcherShowPalette";
     internal const string RichPaletteSingleInstanceMutexName = @"Global\ClipShellSingleInstance";
-    internal const string CommandPaletteAppUserModelId = "Microsoft.CommandPalette_8wekyb3d8bbwe!App";
 
     private static readonly Lazy<WatcherSettingsProvider> SettingsLazy = new(() => new WatcherSettingsProvider());
     private static readonly Lazy<ClipboardHistoryStore> StoreLazy = new(() => new ClipboardHistoryStore(contentRootPath: Settings.Current.EffectiveClipboardFolderPath(), enableLoadMaintenance: false, retainLoadedItems: false));
@@ -554,49 +553,6 @@ internal static class Program
         }
     }
 
-    internal static bool TryLaunchCommandPalette()
-    {
-        if (TryActivatePackagedApp(CommandPaletteAppUserModelId, null, out var processId))
-        {
-            LogDebug($"Command Palette activated appUserModelId={CommandPaletteAppUserModelId} processId={processId}");
-            return true;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo("x-cmdpal://") { UseShellExecute = true });
-            LogDebug("Command Palette launched via x-cmdpal protocol");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            LogError(ex);
-            LogDebug("Command Palette launch failed");
-            return false;
-        }
-    }
-
-    private static bool TryActivatePackagedApp(string appUserModelId, string? arguments, out uint processId)
-    {
-        processId = 0;
-        try
-        {
-            var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-            var hr = manager.ActivateApplication(appUserModelId, arguments, 0, out processId);
-            if (hr < 0)
-            {
-                Marshal.ThrowExceptionForHR(hr);
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            LogError(ex);
-            return false;
-        }
-    }
-
     internal static bool TrySignalRichPalette(string eventName = RichPaletteShowEventName)
     {
         try
@@ -664,9 +620,12 @@ internal static class Program
         return null;
     }
 
-    internal static string? FindCommandExecutable()
+    // The Watcher imports Windows clipboard history by shelling out to the
+    // Clip.WindowsHistory helper directly (same helper the Shell uses). The old
+    // Clip.Command pass-through was only needed by the removed Command Palette extension.
+    internal static string? FindWindowsHistoryExecutable()
     {
-        var local = Path.Combine(AppContext.BaseDirectory, "Clip.Command.exe");
+        var local = Path.Combine(AppContext.BaseDirectory, "Clip.WindowsHistory.exe");
         if (File.Exists(local))
         {
             return local;
@@ -675,7 +634,7 @@ internal static class Program
         var processPath = Environment.ProcessPath;
         if (!string.IsNullOrWhiteSpace(processPath))
         {
-            var sibling = Path.Combine(Path.GetDirectoryName(processPath) ?? AppContext.BaseDirectory, "Clip.Command.exe");
+            var sibling = Path.Combine(Path.GetDirectoryName(processPath) ?? AppContext.BaseDirectory, "Clip.WindowsHistory.exe");
             if (File.Exists(sibling))
             {
                 return sibling;
@@ -879,12 +838,6 @@ internal enum WatcherAppIconPreference
     Dark,
 }
 
-internal enum WatcherOpenModePreference
-{
-    Standalone,
-    CommandPalette,
-}
-
 internal static class WatcherTrayIcon
 {
     public static string IconPath(WatcherAppIconPreference preference, string baseDirectory)
@@ -919,7 +872,6 @@ internal sealed class WatcherSettings
     public int? HistoryLimit { get; init; } = 500;
     public long? MaxItemSizeBytes { get; init; } = 50L * 1024 * 1024;
     public WatcherAppIconPreference AppIcon { get; init; } = WatcherAppIconPreference.Light;
-    public WatcherOpenModePreference OpenMode { get; init; } = WatcherOpenModePreference.Standalone;
     public string OpenHotkey { get; init; } = "Alt+V";
     public PasteFormatPreference DefaultPasteFormat { get; init; } = PasteFormatPreference.PlainText;
     public WatcherPrivacySettings Privacy { get; init; } = new();
@@ -937,8 +889,6 @@ internal sealed class WatcherSettings
     public string EffectiveClipboardFolderPath() => string.IsNullOrWhiteSpace(ClipboardFolderPath) ? DefaultClipboardFolderPath : ClipboardFolderPath;
 
     public int EffectiveHistoryLimit() => HistoryLimit is null ? int.MaxValue : Math.Max(0, HistoryLimit.Value);
-
-    internal static bool ShouldRegisterOpenHotkey(WatcherOpenModePreference openMode) => openMode == WatcherOpenModePreference.Standalone;
 
     public static WatcherSettings Load()
     {
@@ -969,7 +919,6 @@ internal sealed class WatcherSettings
                 HistoryLimit = NullableIntProperty(root, "HistoryLimit", 500),
                 MaxItemSizeBytes = NullableLongProperty(root, "MaxItemSizeBytes", 50L * 1024 * 1024),
                 AppIcon = AppIconProperty(root),
-                OpenMode = OpenModeProperty(root),
                 OpenHotkey = HotkeyProperty(root) ?? "Alt+V",
                 DefaultPasteFormat = PasteFormatProperty(root),
                 Privacy = WatcherPrivacySettings.FromJson(root),
@@ -999,23 +948,6 @@ internal sealed class WatcherSettings
                 : WatcherAppIconPreference.Light;
     }
 
-    private static WatcherOpenModePreference OpenModeProperty(JsonElement root)
-    {
-        if (!root.TryGetProperty("OpenMode", out var value))
-        {
-            return WatcherOpenModePreference.Standalone;
-        }
-
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric))
-        {
-            return numeric == (int)WatcherOpenModePreference.CommandPalette ? WatcherOpenModePreference.CommandPalette : WatcherOpenModePreference.Standalone;
-        }
-
-        return value.ValueKind == JsonValueKind.String &&
-            Enum.TryParse<WatcherOpenModePreference>(value.GetString(), ignoreCase: true, out var preference)
-                ? preference
-                : WatcherOpenModePreference.Standalone;
-    }
 
     private static string? HotkeyProperty(JsonElement root)
     {
@@ -1329,7 +1261,7 @@ internal sealed class ClipboardWatcherForm : Form
         var watch = Stopwatch.StartNew();
         EnsureWatcherHooks(showWarning: true);
         _store.WarmHotIndexes();
-        ApplyOpenMode(_settingsProvider.Current.OpenMode);
+        ApplyOpenMode();
         Program.LogDebug($"Clip watcher started handle={Handle} hotkey={_registeredHotkey.DisplayText} registered={_hotkeyRegistered} win32={Marshal.GetLastWin32Error()} elapsedMs={watch.ElapsedMilliseconds}");
     }
 
@@ -1382,15 +1314,9 @@ internal sealed class ClipboardWatcherForm : Form
         }
     }
 
-    private void ApplyOpenMode(WatcherOpenModePreference mode)
+    private void ApplyOpenMode()
     {
-        if (mode == WatcherOpenModePreference.Standalone)
-        {
-            EnsureStandaloneShellWarm();
-            return;
-        }
-
-        EnsureCommandPaletteWarm();
+        EnsureStandaloneShellWarm();
     }
 
     private void EnsureStandaloneShellWarm()
@@ -1404,44 +1330,6 @@ internal sealed class ClipboardWatcherForm : Form
         if (Program.TryLaunchRichPalette(WatcherTrayAction.OpenClip, keepWarm: true, startHidden: true))
         {
             Program.LogDebug("Standalone shell prewarm requested");
-        }
-    }
-
-    private void EnsureCommandPaletteWarm()
-    {
-        try
-        {
-            var result = CommandPaletteSettings.ConfigureClipHistoryHotkey();
-            if (!result.Available)
-            {
-                Program.LogDebug($"Command Palette warm skipped message={result.Message ?? "unavailable"} path={result.Path}");
-                return;
-            }
-
-            var reloadRequested = false;
-            if (result.Changed)
-            {
-                CommandPaletteSettings.SetExternalReloadAllowed(true);
-                reloadRequested = CommandPaletteSettings.RequestExternalReload();
-                _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ =>
-                {
-                    try
-                    {
-                        CommandPaletteSettings.SetExternalReloadAllowed(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        Program.LogError(ex);
-                    }
-                }, TaskScheduler.Default);
-            }
-
-            Program.LogDebug($"Command Palette warm requested changed={result.Changed} reload={reloadRequested} path={result.Path}");
-        }
-        catch (Exception ex)
-        {
-            Program.LogError(ex);
-            Program.LogDebug("Command Palette warm failed");
         }
     }
 
@@ -1476,7 +1364,7 @@ internal sealed class ClipboardWatcherForm : Form
                 case WatcherTrayAction.CheckForUpdates:
                 case WatcherTrayAction.SaveLogSnapshot:
                 case WatcherTrayAction.OpenSettings:
-                    Program.TryLaunchRichPalette(action, keepWarm: _settingsProvider.Current.OpenMode == WatcherOpenModePreference.Standalone);
+                    Program.TryLaunchRichPalette(action, keepWarm: true);
                     break;
                 case WatcherTrayAction.Exit:
                     Application.Exit();
@@ -1704,9 +1592,8 @@ internal sealed class ClipboardWatcherForm : Form
         try
         {
             var watch = Stopwatch.StartNew();
-            var settings = _settingsProvider.Current;
             Program.LogDebug("Shell palette open requested");
-            if (Program.TryLaunchRichPalette(keepWarm: settings.OpenMode == WatcherOpenModePreference.Standalone))
+            if (Program.TryLaunchRichPalette(keepWarm: true))
             {
                 var launcherToShowMs = Program.LauncherToNowMs();
                 var launcherTiming = launcherToShowMs is null ? string.Empty : $" launcherToShellMs={launcherToShowMs}";
@@ -1767,7 +1654,7 @@ internal sealed class ClipboardWatcherForm : Form
 
     private static async Task<int> ImportWindowsClipboardHistoryInHelperAsync(int maxItems)
     {
-        var command = Program.FindCommandExecutable();
+        var command = Program.FindWindowsHistoryExecutable();
         if (command is null)
         {
             Program.LogDebug("Windows history import skipped helper=missing");
@@ -1827,12 +1714,6 @@ internal sealed class ClipboardWatcherForm : Form
         if (!_hotkeyRegistered)
         {
             var settings = _settingsProvider.ReloadIfChanged();
-            if (!WatcherSettings.ShouldRegisterOpenHotkey(settings.OpenMode))
-            {
-                Program.LogDebug($"Open hotkey skipped mode={settings.OpenMode}");
-                return;
-            }
-
             _registeredHotkey = WatcherHotkey.OpenHotkey(settings.OpenHotkey);
             _hotkeyRegistered = RegisterHotKey(Handle, HotkeyId, _registeredHotkey.Modifiers, _registeredHotkey.VirtualKey);
             var win32 = Marshal.GetLastWin32Error();
@@ -2004,18 +1885,7 @@ internal sealed class ClipboardWatcherForm : Form
     {
         var settings = RefreshSettings();
         ApplyTrayIcon(settings.AppIcon);
-        ApplyOpenMode(settings.OpenMode);
-        if (!WatcherSettings.ShouldRegisterOpenHotkey(settings.OpenMode))
-        {
-            if (_hotkeyRegistered)
-            {
-                var modeReleaseSucceeded = UnregisterHotKey(Handle, HotkeyId);
-                Program.LogDebug($"Open hotkey released for mode={settings.OpenMode} key={_registeredHotkey.DisplayText} released={modeReleaseSucceeded} win32={Marshal.GetLastWin32Error()}");
-                _hotkeyRegistered = false;
-            }
-
-            return;
-        }
+        ApplyOpenMode();
 
         var desiredHotkey = WatcherHotkey.OpenHotkey(settings.OpenHotkey);
         if (!_hotkeyRegistered)

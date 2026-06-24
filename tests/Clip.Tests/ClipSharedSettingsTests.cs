@@ -6,22 +6,10 @@ namespace Clip.Tests;
 public sealed class ClipSharedSettingsTests
 {
     [Fact]
-    public void SetOpenModeJsonPreservesOtherSettings()
-    {
-        var json = ClipSharedSettings.SetOpenModeJson("""{ "AppIcon": 1, "HistoryLimit": 25 }""", ClipSharedOpenMode.CommandPalette);
-        using var document = JsonDocument.Parse(json);
-
-        Assert.Equal((int)ClipSharedOpenMode.CommandPalette, document.RootElement.GetProperty("OpenMode").GetInt32());
-        Assert.Equal(1, document.RootElement.GetProperty("AppIcon").GetInt32());
-        Assert.Equal(25, document.RootElement.GetProperty("HistoryLimit").GetInt32());
-    }
-
-    [Fact]
     public void LoadFromJsonReadsSharedSettings()
     {
-        var settings = ClipSharedSettings.LoadFromJson("""{ "OpenMode": 1, "AppIcon": 1, "CheckForUpdatesOnStartup": false }""");
+        var settings = ClipSharedSettings.LoadFromJson("""{ "AppIcon": 1, "CheckForUpdatesOnStartup": false }""");
 
-        Assert.Equal(ClipSharedOpenMode.CommandPalette, settings.OpenMode);
         Assert.Equal(ClipSharedAppIcon.Dark, settings.AppIcon);
         Assert.False(settings.CheckForUpdatesOnStartup);
     }
@@ -29,7 +17,7 @@ public sealed class ClipSharedSettingsTests
     [Fact]
     public void LoadFromJsonDefaultsPasteFormatToPlainTextWhenAbsent()
     {
-        var settings = ClipSharedSettings.LoadFromJson("""{ "OpenMode": 1 }""");
+        var settings = ClipSharedSettings.LoadFromJson("""{ "AppIcon": 1 }""");
 
         Assert.Equal(PasteFormatPreference.PlainText, settings.DefaultPasteFormat);
     }
@@ -133,13 +121,13 @@ public sealed class ClipSharedSettingsTests
     [Fact]
     public void WritersPreserveUnknownKeys()
     {
-        var json = """{ "OpenMode": 1, "Privacy": { "ExcludedApps": ["foo.exe"] } }""";
+        var json = """{ "FutureUnknownKey": 1, "Privacy": { "ExcludedApps": ["foo.exe"] } }""";
 
         var updated = ClipSharedSettings.SetHistoryLimitJson(json, 250);
 
         Assert.Contains("Privacy", updated);
         Assert.Contains("foo.exe", updated);
-        Assert.Equal(ClipSharedOpenMode.CommandPalette, ClipSharedSettings.LoadFromJson(updated).OpenMode);
+        Assert.Contains("FutureUnknownKey", updated);
         Assert.Equal(250, ClipSharedSettings.LoadFromJson(updated).HistoryLimit);
     }
 }

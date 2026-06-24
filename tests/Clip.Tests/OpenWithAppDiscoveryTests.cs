@@ -79,7 +79,7 @@ public sealed class OpenWithAppDiscoveryTests
         var actions = new List<ClipboardHistoryListAction>();
         if (openable)
         {
-            actions.Add(new ClipboardHistoryListAction("open", "Open", "Clip.Command.exe", ["open", "id"], RequiresFullItem: true));
+            actions.Add(new ClipboardHistoryListAction("open", "Open", "Clip.Watcher.exe", ["open", "id"], RequiresFullItem: true));
         }
 
         return new ClipboardHistoryListItem(

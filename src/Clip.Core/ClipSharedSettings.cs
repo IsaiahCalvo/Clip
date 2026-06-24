@@ -3,12 +3,6 @@ using System.Text.Json.Nodes;
 
 namespace Clip.Core;
 
-public enum ClipSharedOpenMode
-{
-    Standalone = 0,
-    CommandPalette = 1,
-}
-
 public enum ClipSharedAppIcon
 {
     Light = 0,
@@ -16,7 +10,6 @@ public enum ClipSharedAppIcon
 }
 
 public readonly record struct ClipSharedSettingsSnapshot(
-    ClipSharedOpenMode OpenMode,
     ClipSharedAppIcon AppIcon,
     bool CheckForUpdatesOnStartup,
     PasteFormatPreference DefaultPasteFormat,
@@ -58,7 +51,6 @@ public static class ClipSharedSettings
     {
         var root = ParseRootObject(json);
         return new ClipSharedSettingsSnapshot(
-            OpenMode: EnumValue(root, "OpenMode", ClipSharedOpenMode.Standalone),
             AppIcon: EnumValue(root, "AppIcon", ClipSharedAppIcon.Light),
             CheckForUpdatesOnStartup: BoolValue(root, "CheckForUpdatesOnStartup", true),
             DefaultPasteFormat: PasteFormatValue(root, "DefaultPasteFormat", DefaultPasteFormat),
@@ -73,18 +65,6 @@ public static class ClipSharedSettings
     /// when the key is absent or invalid.
     /// </summary>
     public static PasteFormatPreference LoadDefaultPasteFormat() => Load().DefaultPasteFormat;
-
-    public static void SetOpenMode(ClipSharedOpenMode mode)
-    {
-        Update(json => SetOpenModeJson(json, mode));
-    }
-
-    public static string SetOpenModeJson(string json, ClipSharedOpenMode mode)
-    {
-        var root = ParseRootObject(json);
-        root["OpenMode"] = (int)mode;
-        return root.ToJsonString(JsonOptions);
-    }
 
     public static void SetAppIcon(ClipSharedAppIcon icon)
     {
@@ -168,7 +148,6 @@ public static class ClipSharedSettings
 
     private static ClipSharedSettingsSnapshot DefaultSnapshot() =>
         new(
-            ClipSharedOpenMode.Standalone,
             ClipSharedAppIcon.Light,
             true,
             DefaultPasteFormat,

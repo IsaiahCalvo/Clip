@@ -131,16 +131,16 @@ public sealed class WatcherHistoryListCommandTests : IDisposable
             action.Arguments.SequenceEqual(["copy", file.Id]));
         Assert.Contains(item.Actions, action =>
             action.Id == "open" &&
-            action.Executable == "Clip.Command.exe" &&
+            action.Executable == "Clip.Watcher.exe" &&
             action.Arguments.SequenceEqual(["open", file.Id]));
         Assert.Contains(item.Actions, action =>
             action.Id == "reveal" &&
-            action.Executable == "Clip.Command.exe" &&
+            action.Executable == "Clip.Watcher.exe" &&
             action.Arguments.SequenceEqual(["reveal", file.Id]));
     }
 
     [Fact]
-    public void JsonListIncludesImageAssetPathForCommandPalettePreview()
+    public void JsonListIncludesImageAssetPathForPreview()
     {
         Directory.CreateDirectory(_root);
         var imagePath = Path.Combine(_root, "preview.png");

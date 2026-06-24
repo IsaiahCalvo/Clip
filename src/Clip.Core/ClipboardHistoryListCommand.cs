@@ -344,7 +344,9 @@ public sealed record ClipboardHistoryListAction(
             actions.Add(new ClipboardHistoryListAction(
                 Id: "open",
                 Label: "Open",
-                Executable: "Clip.Command.exe",
+                // Watcher services the "open" verb itself (Program.cs case "open");
+                // no separate Clip.Command helper is shipped anymore.
+                Executable: "Clip.Watcher.exe",
                 Arguments: ["open", item.Id],
                 RequiresFullItem: true));
         }
@@ -354,7 +356,8 @@ public sealed record ClipboardHistoryListAction(
             actions.Add(new ClipboardHistoryListAction(
                 Id: "reveal",
                 Label: "Show in File Explorer",
-                Executable: "Clip.Command.exe",
+                // Watcher services the "reveal" verb itself (Program.cs case "reveal").
+                Executable: "Clip.Watcher.exe",
                 Arguments: ["reveal", item.Id],
                 RequiresFullItem: true));
         }

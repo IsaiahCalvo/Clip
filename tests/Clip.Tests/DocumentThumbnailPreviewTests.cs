@@ -74,52 +74,6 @@ public sealed class DocumentThumbnailPreviewTests
         Assert.Contains("ImageFormat.Png", program);
     }
 
-    [Fact]
-    public void PaletteThumbnailHelperDelegatesToWatcherAndCachesUnderTempByPathAndMtime()
-    {
-        var helper = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipDocumentThumbnail.cs"));
-
-        // Rendering is delegated to the Watcher helper verb (no heavy PDF/Office deps in net9).
-        Assert.Contains("ClipExecutableLocator.Resolve(\"Clip.Watcher.exe\")", helper);
-        Assert.Contains("preview-thumb", helper);
-
-        // Supported document kinds: PDF + Office + Visio.
-        Assert.Contains("\".pdf\"", helper);
-        Assert.Contains("\".docx\"", helper);
-        Assert.Contains("\".xlsx\"", helper);
-        Assert.Contains("\".pptx\"", helper);
-        Assert.Contains("\".vsdx\"", helper);
-
-        // Cached under %TEMP%\Clip\PaletteThumbs keyed by path + mtime + size.
-        Assert.Contains("Path.GetTempPath()", helper);
-        Assert.Contains("\"PaletteThumbs\"", helper);
-        Assert.Contains("info.LastWriteTimeUtc.Ticks", helper);
-
-        // A render-free cached lookup exists for the list/details path, and the rendering call is
-        // separate (so the list never launches the helper).
-        Assert.Contains("TryGetCachedThumbnailPng", helper);
-        Assert.Contains("TryGetThumbnailPng", helper);
-    }
-
-    [Fact]
-    public void PreviewPageRendersDocumentThumbnailLazilyWhileDetailsPaneStaysRenderFree()
-    {
-        var previewPage = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipItemPreviewPage.cs"));
-        var imagePreview = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipImagePreviewContent.cs"));
-        var historyPage = File.ReadAllText(RepoPath("src", "Clip.CommandPalette", "ClipHistoryPage.cs"));
-
-        // The heavyweight render happens only when the preview page's content is built (GetContent),
-        // never during list render.
-        Assert.Contains("TryCreateDocumentThumbnail(fullItem, out var documentPreview)", previewPage);
-        Assert.Contains("ClipDocumentThumbnail.TryGetThumbnailPng", imagePreview);
-
-        // The details pane (built per row on the list path) only ever uses the render-free cached
-        // lookup and falls back to the text/path preview otherwise.
-        Assert.Contains("ClipDocumentThumbnail.TryGetCachedThumbnailPng", historyPage);
-        Assert.DoesNotContain("ClipDocumentThumbnail.TryGetThumbnailPng", historyPage);
-        Assert.Contains("ImageMarkdown(cachedPng)", historyPage);
-    }
-
     private static string RepoPath(params string[] parts)
     {
         var directory = AppContext.BaseDirectory;

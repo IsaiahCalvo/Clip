@@ -1,8 +1,0 @@
-{
-  "profiles": {
-    "Clip.CommandPalette": {
-      "commandName": "Project",
-      "commandLineArgs": "-RegisterProcessAsComServer"
-    }
-  }
-}

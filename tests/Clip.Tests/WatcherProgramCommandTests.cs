@@ -3,7 +3,7 @@ namespace Clip.Tests;
 public sealed class WatcherProgramCommandTests
 {
     [Fact]
-    public void WatcherHelperSupportsCommandPaletteHistoryActions()
+    public void WatcherHelperSupportsHistoryListActions()
     {
         var program = File.ReadAllText(RepoPath("src", "Clip.Watcher", "Program.cs"));
 

@@ -59,12 +59,6 @@ internal enum AppIconPreference
     Dark,
 }
 
-internal enum ClipOpenMode
-{
-    Standalone,
-    CommandPalette,
-}
-
 internal sealed class ClipShellSettings
 {
     private const string ClipboardFolderName = "Clipboard History";
@@ -72,7 +66,6 @@ internal sealed class ClipShellSettings
 
     public ClipThemePreference Theme { get; set; } = ClipThemePreference.System;
     public AppIconPreference AppIcon { get; set; } = AppIconPreference.Light;
-    public ClipOpenMode OpenMode { get; set; } = ClipOpenMode.Standalone;
     public PasteFormatPreference DefaultPasteFormat { get; set; } = PasteFormatPreference.PlainText;
     public int? HistoryLimit { get; set; } = 500;
     public long? MaxItemSizeBytes { get; set; } = 50L * 1024 * 1024;
@@ -103,7 +96,6 @@ internal sealed class ClipShellSettings
     {
         Theme = ClipThemePreference.System;
         AppIcon = AppIconPreference.Light;
-        OpenMode = ClipOpenMode.Standalone;
         DefaultPasteFormat = PasteFormatPreference.PlainText;
         HistoryLimit = 500;
         MaxItemSizeBytes = 50L * 1024 * 1024;
@@ -175,7 +167,7 @@ internal sealed class ClipShellSettings
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(SettingsPath, json);
-            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon} openMode={OpenMode} historyLimit={HistoryLimit?.ToString() ?? "Unlimited"} maxItemSize={ClipItemSizeLimit.MaxItemSizeLabel(MaxItemSizeBytes)} updateCheck={CheckForUpdatesOnStartup} autoInstall={InstallUpdatesAutomatically} clipboardFolder={EffectiveClipboardFolderPath()} openHotkey={Hotkeys.OpenClip} debugHotkey={Hotkeys.SaveDebugLog} excludedApps={Privacy.ExcludedApps.Count}");
+            ShellLog.Info($"settings saved path={SettingsPath} theme={Theme} appIcon={AppIcon} historyLimit={HistoryLimit?.ToString() ?? "Unlimited"} maxItemSize={ClipItemSizeLimit.MaxItemSizeLabel(MaxItemSizeBytes)} updateCheck={CheckForUpdatesOnStartup} autoInstall={InstallUpdatesAutomatically} clipboardFolder={EffectiveClipboardFolderPath()} openHotkey={Hotkeys.OpenClip} debugHotkey={Hotkeys.SaveDebugLog} excludedApps={Privacy.ExcludedApps.Count}");
         }
         catch (Exception ex)
         {
@@ -5791,7 +5783,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyOpenMode, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, CurrentSettingsPalette)
+    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, CurrentSettingsPalette)
     {
         Owner = this,
     };
@@ -5926,33 +5918,6 @@ public partial class MainWindow : Window
     }
 
     private void ApplyAppIcon(AppIconPreference preference) => ApplyAppIcon(preference, save: true);
-
-    private void ApplyOpenMode(ClipOpenMode mode)
-    {
-        if (_settings.OpenMode == mode)
-        {
-            return;
-        }
-
-        _settings.OpenMode = mode;
-        _settings.Save();
-        ShellLog.Info($"open mode changed mode={mode}");
-        if (mode == ClipOpenMode.CommandPalette)
-        {
-            var result = CommandPaletteSettings.ConfigureClipHistoryHotkey(enableExternalReloadForApply: true);
-            var reloadRequested = result.Available && CommandPaletteSettings.RequestExternalReload();
-            if (reloadRequested)
-            {
-                _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => CommandPaletteSettings.SetExternalReloadAllowed(false), TaskScheduler.Default);
-            }
-
-            ShellLog.Info($"command palette hotkey configured available={result.Available} changed={result.Changed} path={result.Path} message={result.Message}");
-            ShowToast(result.Available ? "Alt+V opens Clip in Command Palette" : "Command Palette settings not found");
-            return;
-        }
-
-        ShowToast("Opening with Clip app");
-    }
 
     private SettingsPalette CurrentSettingsPalette() => new(
         (WpfBrush)FindResource("Bg"),
@@ -9171,7 +9136,6 @@ internal sealed class SettingsWindow : Window
     private readonly Action<ClipThemePreference> _applyTheme;
     private readonly Action _refreshClipboardManagerTextTheme;
     private readonly Action<AppIconPreference> _applyAppIcon;
-    private readonly Action<ClipOpenMode> _applyOpenMode;
     private readonly Action<bool> _applyRunAtStartup;
     private readonly Action<int?> _applyHistoryLimit;
     private readonly Action<long?> _applyMaxItemSize;
@@ -9214,14 +9178,13 @@ internal sealed class SettingsWindow : Window
     private Action? _hostClose;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<ClipOpenMode> applyOpenMode, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
         _applyTheme = applyTheme;
         _refreshClipboardManagerTextTheme = refreshClipboardManagerTextTheme;
         _applyAppIcon = applyAppIcon;
-        _applyOpenMode = applyOpenMode;
         _applyRunAtStartup = applyRunAtStartup;
         _applyHistoryLimit = applyHistoryLimit;
         _applyMaxItemSize = applyMaxItemSize;
@@ -9607,7 +9570,6 @@ internal sealed class SettingsWindow : Window
         if (string.Equals(page, "General", StringComparison.OrdinalIgnoreCase))
         {
             panel.Children.Add(StartupRow());
-            panel.Children.Add(OpenModeRow());
             panel.Children.Add(UpdateCheckRow());
             panel.Children.Add(DefaultPasteFormatRow());
         }
@@ -10171,36 +10133,6 @@ internal sealed class SettingsWindow : Window
             "Start Clip when you log in to Windows.",
             toggle);
     }
-
-    private Border OpenModeRow()
-    {
-        var options = new[] { OpenModeLabel(ClipOpenMode.Standalone), OpenModeLabel(ClipOpenMode.CommandPalette) };
-        var dropdown = StyledDropdown(OpenModeLabel(_settings.OpenMode), options, selected =>
-        {
-            var mode = OpenModeFromLabel(selected);
-            if (mode == _settings.OpenMode)
-            {
-                return;
-            }
-
-            _applyOpenMode(mode);
-            ShowPage(_currentPage);
-        });
-        dropdown.Width = 168;
-
-        return ControlRow(
-            "Open with",
-            "Choose what the main hotkey opens.",
-            dropdown);
-    }
-
-    private static string OpenModeLabel(ClipOpenMode mode) => mode == ClipOpenMode.CommandPalette
-        ? "Command Palette"
-        : "Standalone app";
-
-    private static ClipOpenMode OpenModeFromLabel(string label) => label.Equals("Command Palette", StringComparison.OrdinalIgnoreCase)
-        ? ClipOpenMode.CommandPalette
-        : ClipOpenMode.Standalone;
 
     private Border UpdateCheckRow()
     {
