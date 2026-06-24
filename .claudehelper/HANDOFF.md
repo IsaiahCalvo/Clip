@@ -1,51 +1,90 @@
-# Clip → Command Palette Parity — HANDOFF
+# Clip — Command Palette removal → standalone-only — HANDOFF
 
-_Last updated: 2026-06-23_
+_Last updated: 2026-06-24 (overnight build)_
 
-## What this was
-Bring the **Clip.CommandPalette** extension to feature + responsiveness parity with the standalone Clip app,
-using Command Palette's native rendering. Driven from a 26-agent gap analysis (see `clip-palette-gap-analysis.json`,
-`GAP-REPORT.md`) that found 25 features already at parity and **19 gaps**. All 19 are now implemented.
+## What you asked for
+Remove the Command Palette plugin/extension entirely and make the **original
+standalone Clip app run off Alt+V**, just like before the Command Palette
+experiment. Just the standalone `Clip.exe`.
 
-## Current state — DONE
-- **Branch:** `feature/cmdpal-parity-buildout` (baseline checkpoint `f0c4639` on `codex/clip-paste-focus-fallback`).
-- **Tests:** 305 passing, 0 failed (baseline was 210). Full solution builds clean; trimmed Release publish warning-free.
-- **Installed + smoke-tested live:** MSIX v1.0.101.0 (trim-safe). Paste-on-Enter confirmed working in Command Palette.
-- **Not committed/pushed beyond the branch.** 13 commits on the branch; nothing merged. Push/PR only on request.
+## Status — DONE (on a branch, not pushed)
+- **Branch:** `feature/remove-command-palette` (based on `feature/cmdpal-parity-buildout`).
+- **Two commits**, both local only — nothing pushed, nothing merged, `main` untouched.
+  - `f06c696` Remove Command Palette extension; make Clip standalone-only
+  - `855570c` Drop Command Palette from publish, release, and startup scripts
+- **Build:** full solution builds clean — **0 warnings, 0 errors**.
+- **Tests:** **266 passed, 0 failed** (was 305; the ~39 removed tests were Command-Palette-only).
+- **Publish:** `Publish-Clip.ps1 -FrameworkDependent` produces a package containing only
+  `Clip.exe`, `Clip.Watcher.exe`, `Clip.Launcher.exe`, `Clip.WindowsHistory.exe` —
+  **no `Clip.Command.exe`, no `Clip.CommandPalette`, no `.msix`.**
+- Net change vs the parity branch: **60 files, +34 / −5375 lines** (almost entirely deletions).
 
-### Commits (branch, newest last)
-f0c4639 checkpoint · dd24339 P1 paste · 325b50c P2pt1 browse · 89a8466 P2pt2 preview ·
-e239d16 G16 import · 855c313 P3a actions · ca104e3 G14 settings · 223d693 P3b startup/open-with/thumbs ·
-ced2efc P4 trim-safe Open-With
+## How Alt+V works now (this is the important part)
+The parity work had added an `OpenMode` setting: in **CommandPalette** mode the
+background watcher *handed Alt+V to Command Palette* instead of opening your app.
+Your machine was almost certainly in that mode — that's why it stopped feeling
+like the original.
 
-### What shipped (by gap)
-Paste (default Enter, format-aware, delegates Ctrl+V to Watcher `paste <id>`), paste-as-plain, format-aware copy,
-append (in-process), share (Blip), save-log, Windows-history import, paste-latest (top-level), time-bucket grouping,
-date filter, file sub-filter, paging/incremental load, live updates (FileSystemWatcher), text-file previews,
-PDF/Office/Visio thumbnails (Watcher `preview-thumb` verb, lazy+cached), de-duped Information panel,
-full preview-card actions, in-palette settings (paste format / history limit / max size / data folder / run-at-startup),
-Open-With searchable picker.
+That whole mode is gone. There is now only the standalone path:
+`Clip.Launcher.exe` → `Clip.Watcher.exe watch` registers the **Alt+V** global
+hotkey and shows the WPF `Clip.exe` window. A stale `"OpenMode": 1` left in your
+old `settings.json` is now simply ignored (it reads as standalone), so no manual
+cleanup is needed.
 
-### Key architecture decisions
-- Paste reliability = palette sets clipboard + `Dismiss()` + Watcher `paste <id>` (owns focus-restore + keystroke).
-- Shared logic promoted to **Clip.Core**: StartupRegistration, OpenWithAppDiscovery, OpenWithRecentStore,
-  ClipboardHistoryTimeBucket/DateFilter/FileKindFilter, FilePreview. Clip.Core retargeted **net8.0-windows10.0.19041.0**.
-- Doc thumbnails delegated to a Watcher helper verb (keeps the net9 extension lean; no heavy PDF/Office deps in it).
-- Open-With made trim-safe: source-gen JSON (`OpenWithJsonContext`) + `IShellLinkW` COM (no dynamic/ProgID).
+## What was removed
+- Projects: `src/Clip.CommandPalette` (the extension) and `src/Clip.Command` (its helper CLI).
+- `src/Clip.Core/CommandPaletteSettings.cs` (wrote into Command Palette's settings.json).
+- The `OpenMode` "Open with" dropdown + all Command-Palette open-mode code in Shell/Watcher/Core.
+- Packaging: `tools/Build-ClipCommandPalettePackage.ps1`, `tools/Install-ClipCommandPalettePackage.ps1`.
+- `docs/command-palette-extension.md`, the `artifacts/command-palette*` build outputs.
+- The CommandPalette build/MSIX steps in `.github/workflows/release.yml` and the
+  `Clip.Command` publish in `Publish-Clip.ps1`.
+- 9 Command-Palette-only test files (+ trimmed 2 mixed tests).
 
-## Build / install / test
-- Build extension: `dotnet build src/Clip.CommandPalette/Clip.CommandPalette.csproj -c Debug`
-- Tests: `dotnet test tests/Clip.Tests/Clip.Tests.csproj -c Debug`  (use Windows PowerShell / pwsh not present)
-- Build+install MSIX: `tools/Install-ClipCommandPalettePackage.ps1 -Version <bump> -Build` (run with **powershell.exe**, not pwsh)
-- After install, restart `Microsoft.CmdPal.UI` + `Clip.CommandPalette` processes so the new build loads.
-- Perf harness: `tools/Measure-ClipPerformance.ps1` (50ms budgets; standalone-oriented, suspends running Clip).
+## What was kept (your standalone improvements were NOT thrown away)
+All the standalone-side work from the parity era stays: paste reliability, the
+prewarmed "rich palette" fast-open, time-bucket grouping, file/doc previews,
+Open-With, in-app settings, Windows-history import, etc. The Watcher's history
+import was re-pointed from the deleted `Clip.Command.exe` to `Clip.WindowsHistory.exe`
+(same helper the Shell already used), so import still works.
 
-## Next steps / open follow-ups
-1. (Optional) Run the full live `Measure-ClipPerformance.ps1` for hard 50ms numbers — not run (disruptive to running Clip).
-   The 50ms budget is met by design (in-process actions, cached list, lazy I/O) and the perf-script tests are green.
-2. Office/Visio thumbnails need the matching COM server (Word/Excel/PowerPoint/Visio) installed; PDF uses pdftoppm.
-3. Open-With picker uses Segoe glyph icons by source (no real per-app bitmaps — avoids System.Drawing in the extension).
-4. Add a periodic prune of `%TEMP%\Clip\PaletteThumbs` so the thumbnail cache doesn't grow unbounded.
-5. Consider a CmdPal-side test pattern for settings-page wiring (none exists today).
-6. Live-verify Open-With end to end (copy a file → Open with…) — smoke test covered text items; Open-With is gated to file/image.
-7. When ready: PR/merge the branch (kept isolated; not pushed).
+## How to verify in the morning
+1. `dotnet build .\Clip.sln`  → clean.
+2. `dotnet test .\Clip.sln`    → 266 passing.
+3. `.\Start-Clip.ps1` then press **Alt+V** → the standalone Clip window opens.
+   (I could not press keys in a GUI session here, so this live keystroke check is
+   the one thing left for you to eyeball. The code path + tests are green.)
+4. To ship: `.\Publish-Clip.ps1` then `.\Install-ClipStartup.ps1`.
+
+## Getting this onto your machine / into main
+Nothing is pushed (the parity branch was never on origin, and I don't push to your
+public repo unprompted). Your options:
+
+**A. Use this cleaned branch (keeps all standalone improvements):**
+```powershell
+git checkout feature/remove-command-palette
+.\Publish-Clip.ps1
+.\Install-ClipStartup.ps1     # installs to %APPDATA%\Programs\Clip + Alt+V autostart
+```
+To open a PR for review:
+```powershell
+git push -u origin feature/cmdpal-parity-buildout    # base (only if you want the focused removal diff)
+git push -u origin feature/remove-command-palette
+gh pr create --base feature/cmdpal-parity-buildout --head feature/remove-command-palette `
+  --title "Remove Command Palette; standalone-only" --body-file .claudehelper/PR-BODY.md
+```
+(Targeting the parity branch shows *only* the removal — the cleanest review. Targeting
+`main` instead shows the whole parity era minus Command Palette.)
+
+**B. Or just go back to the pristine pre-experiment app:** `main` already has zero
+Command Palette code. `git checkout main` + publish gives you the original standalone
+as it shipped (v1.0.x) — but you'd lose the parity-era standalone improvements listed above.
+I chose A because it matches "remove the extension" while keeping your work; B is there
+if you'd rather have the literal original.
+
+## Known follow-up (not blocking, not shipped)
+- `tools/Measure-ClipPerformance.ps1` is a local dev perf harness that still contains
+  (now-inert, fully guarded) Command-Palette measurement helpers. It isn't run in CI and
+  doesn't affect the app or build. Prune its `*CommandPalette*` functions when convenient.
+- Historical planning docs (`.claudehelper/BUILD-PLAN.md`, `GAP-REPORT.md`,
+  `clip-palette-gap-analysis.json`) are left as a record of the experiment.
