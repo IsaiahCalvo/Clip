@@ -28,7 +28,7 @@ if (-not (Test-Path $sourceExe)) {
 $installDir = Join-Path $env:APPDATA "Programs\Clip"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-Get-Process Clip, Clip.Shell, Clip.Watcher, Clip.Launcher, Clip.Command, Clip.WindowsHistory -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process Clip, Clip.Shell, Clip.Watcher, Clip.Launcher, Clip.WindowsHistory -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-ChildItem -LiteralPath $installDir -Force | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $sourceDir "*") $installDir -Recurse -Force
 

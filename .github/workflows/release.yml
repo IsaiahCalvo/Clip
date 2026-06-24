@@ -45,32 +45,16 @@ jobs:
         shell: pwsh
         run: ./Publish-Clip.ps1 -FrameworkDependent -NoInstaller
 
-      - name: Build Command Palette extension package
-        shell: pwsh
-        run: |
-          $version = "${{ github.event.inputs.tag || github.ref_name }}".TrimStart("v")
-          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-            throw "Tag must look like v1.2.3 or v1.2.3.4 for Command Palette package versioning. Actual: $version"
-          }
-
-          if (($version -split '\.').Count -eq 3) {
-            $version = "$version.0"
-          }
-
-          ./tools/Build-ClipCommandPalettePackage.ps1 -Version $version
-
       - name: Verify artifacts exist
         shell: pwsh
         run: |
           $zip = "artifacts/publish/Clip-win-x64.zip"
           $frameworkZip = "artifacts/publish/Clip-win-x64-framework-dependent.zip"
-          $commandPalettePackage = Get-ChildItem "artifacts/command-palette/msix/Clip.CommandPalette_*.msix" -ErrorAction SilentlyContinue | Select-Object -First 1
           $setup = Get-ChildItem "artifacts/publish/Clip_*-Setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not (Test-Path $zip))   { throw "Missing $zip" }
           if (-not (Test-Path $frameworkZip)) { throw "Missing $frameworkZip" }
-          if (-not $commandPalettePackage) { throw "Missing Clip.CommandPalette_*.msix in artifacts/command-palette/msix" }
           if (-not $setup) { throw "Missing Clip_*-Setup.exe in artifacts/publish" }
-          Get-Item $zip, $frameworkZip, $commandPalettePackage.FullName, $setup.FullName | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
+          Get-Item $zip, $frameworkZip, $setup.FullName | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
 
       # ── SignPath code signing (enable once your free OSS subscription is approved) ──
       # 1. SignPath emails you: Organization ID, Project Slug, Signing Policy Slug, and an API token.
@@ -114,4 +98,3 @@ jobs:
             artifacts/publish/Clip_*-Setup.exe
             artifacts/publish/Clip-win-x64.zip
             artifacts/publish/Clip-win-x64-framework-dependent.zip
-            artifacts/command-palette/msix/Clip.CommandPalette_*.msix

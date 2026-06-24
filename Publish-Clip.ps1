@@ -115,34 +115,6 @@ dotnet publish (Join-Path $root "src\Clip.Shell\Clip.Shell.csproj") `
     -p:InformationalVersion=$Version `
     -o $publishDir
 
-$commandPublishDir = Join-Path $publishRoot "_command"
-if (Test-Path $commandPublishDir) {
-    Remove-Item -LiteralPath $commandPublishDir -Recurse -Force
-}
-
-dotnet publish (Join-Path $root "src\Clip.Command\Clip.Command.csproj") `
-    -c $Configuration `
-    -r $Runtime `
-    --self-contained $selfContained `
-    -p:PublishSingleFile=false `
-    -p:PublishReadyToRun=false `
-    -p:DebugType=None `
-    -p:DebugSymbols=false `
-    -p:Version=$Version `
-    -p:AssemblyVersion=$Version `
-    -p:FileVersion=$Version `
-    -p:InformationalVersion=$Version `
-    -o $commandPublishDir
-
-foreach ($name in @("Clip.Command.exe", "Clip.Command.dll", "Clip.Command.deps.json", "Clip.Command.runtimeconfig.json")) {
-    $source = Join-Path $commandPublishDir $name
-    if (Test-Path $source) {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $publishDir $name) -Force
-    }
-}
-
-Remove-Item -LiteralPath $commandPublishDir -Recurse -Force
-
 $windowsHistoryPublishDir = Join-Path $publishRoot "_windows-history"
 if (Test-Path $windowsHistoryPublishDir) {
     Remove-Item -LiteralPath $windowsHistoryPublishDir -Recurse -Force
@@ -197,10 +169,9 @@ foreach ($name in @("Clip.Launcher.exe", "Clip.Launcher.dll", "Clip.Launcher.dep
 Remove-Item -LiteralPath $launcherPublishDir -Recurse -Force
 
 # AssemblyName=Clip in Clip.Shell.csproj, so publish already produces Clip.exe + Clip.dll.
-# Keep Clip.Watcher.exe as the background host, Clip.Launcher.exe as the no-window shortcut path,
-# and Clip.Command.exe as the UI-free command path.
+# Keep Clip.Watcher.exe as the background host and Clip.Launcher.exe as the no-window shortcut path.
 
-# The watcher and command helper are hot paths. ReadyToRun only for those binaries gives
+# The watcher is a hot path. ReadyToRun only for that binary gives
 # a cold-start win without the package-size hit of compiling the full WPF shell.
 if (-not $FrameworkDependent) {
     $watcherReadyToRunDir = Join-Path $publishRoot "_watcher-r2r"
@@ -228,34 +199,6 @@ if (-not $FrameworkDependent) {
     }
 
     Remove-Item -LiteralPath $watcherReadyToRunDir -Recurse -Force
-
-    $commandReadyToRunDir = Join-Path $publishRoot "_command-r2r"
-    if (Test-Path $commandReadyToRunDir) {
-        Remove-Item -LiteralPath $commandReadyToRunDir -Recurse -Force
-    }
-
-    dotnet publish (Join-Path $root "src\Clip.Command\Clip.Command.csproj") `
-        -c $Configuration `
-        -r $Runtime `
-        --self-contained true `
-        -p:PublishSingleFile=false `
-        -p:PublishReadyToRun=true `
-        -p:DebugType=None `
-        -p:DebugSymbols=false `
-        -p:Version=$Version `
-        -p:AssemblyVersion=$Version `
-        -p:FileVersion=$Version `
-        -p:InformationalVersion=$Version `
-        -o $commandReadyToRunDir
-
-    foreach ($name in @("Clip.Command.exe", "Clip.Command.dll", "Clip.Command.deps.json", "Clip.Command.runtimeconfig.json")) {
-        $source = Join-Path $commandReadyToRunDir $name
-        if (Test-Path $source) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $publishDir $name) -Force
-        }
-    }
-
-    Remove-Item -LiteralPath $commandReadyToRunDir -Recurse -Force
 }
 
 # The launcher is the shortcut handoff path. Keep it native/tiny for both self-contained
