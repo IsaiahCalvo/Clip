@@ -6342,6 +6342,7 @@ public partial class MainWindow : Window
         SetBrush("Selected", useDark ? "#324068" : "#C9D3F5");
         SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
+        ApplySystemAccentBrushes(useDark);
         Background = (WpfBrush)FindResource("Bg");
         _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Bg")));
 
@@ -6699,6 +6700,69 @@ public partial class MainWindow : Window
 
             brush.Color = color;
         }
+    }
+
+    private void SetBrushColor(string key, System.Windows.Media.Color color)
+    {
+        if (Resources[key] is SolidColorBrush brush && !brush.IsFrozen)
+        {
+            brush.Color = color;
+        }
+        else
+        {
+            Resources[key] = new SolidColorBrush(color);
+        }
+    }
+
+    // Reads the user's chosen Windows accent color (HKCU\...\DWM\AccentColor, a DWORD stored as
+    // 0xAABBGGRR). Returns null if unavailable so callers keep their themed fallback accent.
+    internal static System.Windows.Media.Color? GetWindowsAccentColor()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+            if (key?.GetValue("AccentColor") is int raw)
+            {
+                var abgr = unchecked((uint)raw);
+                return System.Windows.Media.Color.FromRgb(
+                    (byte)(abgr & 0xFF),
+                    (byte)((abgr >> 8) & 0xFF),
+                    (byte)((abgr >> 16) & 0xFF));
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    // Mixes an accent color over a base surface color (overlayAmount 0..1) to build subtle tints
+    // for the selected-row background and active-filter chip.
+    internal static System.Windows.Media.Color BlendColors(System.Windows.Media.Color baseColor, System.Windows.Media.Color overlay, double overlayAmount)
+    {
+        overlayAmount = Math.Clamp(overlayAmount, 0, 1);
+        byte Mix(byte b, byte o) => (byte)Math.Round((b * (1 - overlayAmount)) + (o * overlayAmount));
+        return System.Windows.Media.Color.FromRgb(Mix(baseColor.R, overlay.R), Mix(baseColor.G, overlay.G), Mix(baseColor.B, overlay.B));
+    }
+
+    // Repaints the selection/accent brushes from the live Windows accent so the highlighted row and
+    // the active filter chip match the user's system accent. No-ops (keeps the themed fallback) when
+    // the accent can't be read.
+    private void ApplySystemAccentBrushes(bool useDark)
+    {
+        var accent = GetWindowsAccentColor();
+        if (accent is null)
+        {
+            return;
+        }
+
+        var ac = accent.Value;
+        var listBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#272727" : "#EDEDED");
+        SetBrushColor("Accent", ac);
+        SetBrushColor("SelectedBorder", ac);
+        SetBrushColor("Selected", BlendColors(listBg, ac, useDark ? 0.20 : 0.16));
+        SetBrushColor("AccentSoft", BlendColors(listBg, ac, useDark ? 0.26 : 0.20));
     }
 
     private string BrushHex(string key)
@@ -9529,6 +9593,13 @@ internal sealed class SettingsWindow : Window
             _ => MainWindow.IsWindowsDarkMode(),
         };
 
+        var accent = MainWindow.GetWindowsAccentColor();
+        var listBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#272727" : "#EDEDED");
+        var accentBrush = accent is null ? FrozenBrush(useDark ? "#8A9CCC" : "#3B5BDB") : FrozenColorBrush(accent.Value);
+        var selectedBorderBrush = accent is null ? FrozenBrush(useDark ? "#6878A8" : "#5C7CFA") : FrozenColorBrush(accent.Value);
+        var selectedBrush = accent is null ? FrozenBrush(useDark ? "#324068" : "#C9D3F5") : FrozenColorBrush(MainWindow.BlendColors(listBg, accent.Value, useDark ? 0.20 : 0.16));
+        var accentSoftBrush = accent is null ? FrozenBrush(useDark ? "#232A45" : "#E1E7FB") : FrozenColorBrush(MainWindow.BlendColors(listBg, accent.Value, useDark ? 0.26 : 0.20));
+
         return new SettingsPalette(
             FrozenBrush(useDark ? "#1A1A1A" : "#F7F7F7"),
             FrozenBrush(useDark ? "#212121" : "#FFFFFF"),
@@ -9538,15 +9609,22 @@ internal sealed class SettingsWindow : Window
             FrozenBrush(useDark ? "#989898" : "#646464"),
             FrozenBrush(useDark ? "#494949" : "#B8B8B8"),
             FrozenBrush(useDark ? "#5A5A5A" : "#989898"),
-            FrozenBrush(useDark ? "#8A9CCC" : "#3B5BDB"),
-            FrozenBrush(useDark ? "#232A45" : "#E1E7FB"),
-            FrozenBrush(useDark ? "#324068" : "#C9D3F5"),
-            FrozenBrush(useDark ? "#6878A8" : "#5C7CFA"));
+            accentBrush,
+            accentSoftBrush,
+            selectedBrush,
+            selectedBorderBrush);
     }
 
     private static SolidColorBrush FrozenBrush(string hex)
     {
         var brush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static SolidColorBrush FrozenColorBrush(System.Windows.Media.Color color)
+    {
+        var brush = new SolidColorBrush(color);
         brush.Freeze();
         return brush;
     }
