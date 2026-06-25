@@ -621,7 +621,6 @@ public partial class MainWindow : Window
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
-    private const int DwmwaCloak = 13; // DWMWA_CLOAK: hide the window from the compositor while it paints
     private const int RowIconDecodePixels = 48;
     private const int PreviewImageDecodePixels = 900;
     private const int MaxCachedRasterImages = 256;
@@ -1050,9 +1049,6 @@ public partial class MainWindow : Window
         _paletteSessionExitTimer.Stop();
         var watch = Stopwatch.StartNew();
         var ownHwnd = new WindowInteropHelper(this).Handle;
-        // Hide the window from the compositor while we (re)position and paint it below; uncloaked on
-        // the first rendered frame so Alt+V only ever reveals the finished palette (no open-flicker).
-        SetWindowCloaked(ownHwnd, true);
         var foreground = GetForegroundWindow();
         if (foreground != IntPtr.Zero && foreground != ownHwnd)
         {
@@ -1074,7 +1070,6 @@ public partial class MainWindow : Window
         EnsureChromeIcons();
         Opacity = 1;
         IsHitTestVisible = true;
-        ScheduleUncloak(ownHwnd);
         if (ShouldActivatePaletteWindow(_paletteNoActivate))
         {
             _ = Dispatcher.BeginInvoke(new Action(() => ActivatePaletteWindow(ownHwnd)), System.Windows.Threading.DispatcherPriority.Input);
@@ -1104,29 +1099,6 @@ public partial class MainWindow : Window
         {
             ScheduleDebugAutoConceal();
         }
-    }
-
-    // Uncloak the palette on the next composed frame, so the window is revealed only once its
-    // finished pixels exist. A Background-priority dispatcher call is queued as a safety net so the
-    // window can never remain stuck-cloaked (invisible) if the render tick doesn't fire.
-    private void ScheduleUncloak(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero)
-        {
-            return;
-        }
-
-        EventHandler? onRendering = null;
-        onRendering = (_, _) =>
-        {
-            System.Windows.Media.CompositionTarget.Rendering -= onRendering;
-            SetWindowCloaked(hwnd, false);
-        };
-        System.Windows.Media.CompositionTarget.Rendering += onRendering;
-
-        _ = Dispatcher.BeginInvoke(
-            new Action(() => SetWindowCloaked(hwnd, false)),
-            System.Windows.Threading.DispatcherPriority.Background);
     }
 
     public void HandleExternalShowPaletteSignal()
@@ -8148,28 +8120,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ShellLog.Error(ex, "rounded corners failed");
-        }
-    }
-
-    // Cloaks/uncloaks the window at the DWM level. While cloaked the window is fully invisible to
-    // the compositor (not just transparent), so the user never glimpses a half-drawn or
-    // mid-reposition palette during the Alt+V reveal. Degrades safely on the rare OS without the
-    // attribute (the call just returns a non-zero HRESULT and the existing Opacity gate still applies).
-    internal static void SetWindowCloaked(IntPtr hwnd, bool cloaked)
-    {
-        if (hwnd == IntPtr.Zero)
-        {
-            return;
-        }
-
-        try
-        {
-            var value = cloaked ? 1 : 0;
-            DwmSetWindowAttribute(hwnd, DwmwaCloak, ref value, sizeof(int));
-        }
-        catch (Exception ex)
-        {
-            ShellLog.Error(ex, "window cloak failed");
         }
     }
 }
