@@ -88,3 +88,29 @@ if you'd rather have the literal original.
   doesn't affect the app or build. Prune its `*CommandPalette*` functions when convenient.
 - Historical planning docs (`.claudehelper/BUILD-PLAN.md`, `GAP-REPORT.md`,
   `clip-palette-gap-analysis.json`) are left as a record of the experiment.
+
+## Fluidity & polish pass (2026-06-25) — installed live
+Commits on `feature/remove-command-palette`:
+- `0af78da` anti-flicker reveal: DWM cloak hides the window while it paints, uncloaks on first frame.
+- `2fee92e` selection now uses the **live Windows accent color** (selected row + active filter +
+  settings), falling back to the themed accent if the registry read fails.
+
+Both are **built, tested (266/0), and installed live** — Alt+V verified (watcher owns the hotkey).
+The pre-warmed window now sits ~120MB (was ~210MB) with the self-contained R2R Release.
+
+**Instant revert** if you dislike the look: the prior (cloak-only) build is saved at
+`%APPDATA%\Programs\Clip.backup-cloak`. To roll back:
+```powershell
+Get-Process Clip,Clip.Watcher | Stop-Process -Force
+Remove-Item "$env:APPDATA\Programs\Clip\*" -Recurse -Force
+Copy-Item "$env:APPDATA\Programs\Clip.backup-cloak\*" "$env:APPDATA\Programs\Clip" -Recurse -Force
+Start-Process "$env:APPDATA\Programs\Clip\Clip.Watcher.exe" -ArgumentList watch -WindowStyle Hidden
+```
+
+### Deliberately deferred (need your eyes / risk)
+- **Mica frosted backdrop** — requires `AllowsTransparency=True` + a transparent window/root, which
+  reworks contrast everywhere and gives up the perf win of avoiding WPF's software-render path.
+  Do it when you can see/approve it.
+- **List virtualization** — the list is hand-built; real virtualization is a core rewrite verifiable
+  only by GUI interaction. The app already lazy-loads rows + caps image memory, so low ROI for the risk.
+- The keyboard-hint footer the mockup showed **already existed** (Enter/Copy/Pin chips).
