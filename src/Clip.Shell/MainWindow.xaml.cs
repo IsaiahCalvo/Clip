@@ -689,10 +689,6 @@ public partial class MainWindow : Window
     private bool _paletteRequested;
     private bool _paletteOpen;
     private bool _paletteNoActivate;
-    private bool _palettePositionReady;
-    private System.Drawing.Rectangle _palettePositionWorkingArea;
-    private double _palettePositionWidth;
-    private double _palettePositionHeight;
     private bool _paletteSessionExitRequested;
     private bool _isClosing;
     private bool _chromeIconsReady;
@@ -5627,38 +5623,40 @@ public partial class MainWindow : Window
 
     private void PositionOnMouseScreen(bool log = true)
     {
-        var mouse = Forms.Control.MousePosition;
-        var screen = WorkingAreaForMouse(mouse);
-        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
-        var screenTopLeft = transform.Transform(new System.Windows.Point(screen.Left, screen.Top));
-        var screenBottomRight = transform.Transform(new System.Windows.Point(screen.Right, screen.Bottom));
-        var screenWidth = screenBottomRight.X - screenTopLeft.X;
-        var screenHeight = screenBottomRight.Y - screenTopLeft.Y;
-        var windowWidth = ActualWidth > 0 ? ActualWidth : Width;
-        var windowHeight = ActualHeight > 0 ? ActualHeight : Height;
-
-        if (_palettePositionReady &&
-            _palettePositionWorkingArea.Equals(screen) &&
-            Math.Abs(_palettePositionWidth - windowWidth) < 0.5 &&
-            Math.Abs(_palettePositionHeight - windowHeight) < 0.5)
+        // Center the palette on whichever monitor the mouse is on, using raw Win32 screen pixels
+        // for BOTH the monitor work area and the window size. Staying in one coordinate space makes
+        // it work across monitors with different display scaling (DPI). The previous WPF DIP-transform
+        // math used the window's current monitor scaling for a DIFFERENT target monitor, so on a
+        // differently-scaled second screen the window landed off-screen and never appeared.
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
         {
-            if (log)
-            {
-                ShellLog.Info($"position reused screenPx={screen.Left},{screen.Top},{screen.Width}x{screen.Height} mouse={mouse.X},{mouse.Y} size={windowWidth:0}x{windowHeight:0} left={Left:0} top={Top:0}");
-            }
-
             return;
         }
 
-        Left = screenTopLeft.X + Math.Max(0, (screenWidth - windowWidth) / 2);
-        Top = screenTopLeft.Y + Math.Max(0, (screenHeight - windowHeight) / 2);
-        _palettePositionReady = true;
-        _palettePositionWorkingArea = screen;
-        _palettePositionWidth = windowWidth;
-        _palettePositionHeight = windowHeight;
+        if (!GetCursorPos(out var cursor))
+        {
+            return;
+        }
+
+        var monitor = MonitorFromPoint(cursor, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref info) || !GetWindowRect(hwnd, out var windowRect))
+        {
+            return;
+        }
+
+        var work = info.Work;
+        var workWidth = work.Right - work.Left;
+        var workHeight = work.Bottom - work.Top;
+        var windowWidth = windowRect.Right - windowRect.Left;
+        var windowHeight = windowRect.Bottom - windowRect.Top;
+        var x = work.Left + Math.Max(0, (workWidth - windowWidth) / 2);
+        var y = work.Top + Math.Max(0, (workHeight - windowHeight) / 2);
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SetWindowPosNoSize | SetWindowPosNoZOrder | SetWindowPosNoActivate);
         if (log)
         {
-            ShellLog.Info($"position screenPx={screen.Left},{screen.Top},{screen.Width}x{screen.Height} screenDip={screenTopLeft.X:0},{screenTopLeft.Y:0},{screenWidth:0}x{screenHeight:0} mouse={mouse.X},{mouse.Y} size={windowWidth:0}x{windowHeight:0} left={Left:0} top={Top:0}");
+            ShellLog.Info($"position(win32) cursor={cursor.X},{cursor.Y} work={work.Left},{work.Top} {workWidth}x{workHeight} win={windowWidth}x{windowHeight} -> {x},{y}");
         }
     }
 
@@ -8057,6 +8055,9 @@ public partial class MainWindow : Window
     private const int ShowWindowRestore = 9;
     private const uint SetWindowPosNoSize = 0x0001;
     private const uint SetWindowPosNoMove = 0x0002;
+    private const uint SetWindowPosNoZOrder = 0x0004;
+    private const uint SetWindowPosNoActivate = 0x0010;
+    private const uint MonitorDefaultToNearest = 0x00000002;
     private const uint KeyEventKeyUp = 0x0002;
     private const ushort VirtualKeyControl = 0x11;
     private const ushort VirtualKeyEnter = 0x0D;
@@ -8086,6 +8087,15 @@ public partial class MainWindow : Window
         public IntPtr ExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X; public int Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo { public uint Size; public NativeRect Monitor; public NativeRect Work; public uint Flags; }
+
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -8100,6 +8110,10 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromPoint(NativePoint pt, uint flags);
+    [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo info);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint numberOfInputs, Input[] inputs, int sizeOfInputStructure);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)] private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)] private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr newLong);
