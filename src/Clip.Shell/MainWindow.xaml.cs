@@ -7032,8 +7032,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        ConcealPalette("deactivate");
-        ShellLog.Info("palette hidden on deactivate");
+        // Do NOT auto-hide on focus loss. In remote/RDP/RustDesk sessions the palette frequently
+        // can't hold foreground, so concealing here made it flash open and vanish (looked like
+        // "Alt+V doesn't work"). The palette still dismisses via Escape, a click outside it
+        // (HideIfMousePressedOutsidePalette), or after a paste.
+        ShellLog.Info("deactivate ignored (palette stays until escape/outside-click/paste)");
     }
 
     private static bool IsContextMenuOpen(DependencyObject root)

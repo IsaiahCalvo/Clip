@@ -16,7 +16,9 @@ if (-not $Version) {
     if ($tag -match '^v?(\d+\.\d+\.\d+)') {
         $Version = $Matches[1]
     } else {
-        $Version = "1.0.0"
+        # Default above the latest published GitHub release so local builds don't perpetually
+        # prompt to "update" to an older release.
+        $Version = "1.1.0"
     }
 }
 $deploymentMode = if ($FrameworkDependent) { "framework-dependent" } else { "self-contained" }
