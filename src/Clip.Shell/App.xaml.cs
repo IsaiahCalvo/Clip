@@ -61,6 +61,15 @@ public partial class App : System.Windows.Application
             ShellLog.Error(ex.Exception, "task unobserved exception");
             ex.SetObserved();
         };
+        // WinForms (the tray icon's message pump) otherwise shows a blocking "Unhandled exception"
+        // dialog for thread exceptions — e.g. transient display/clipboard "device not functioning"
+        // glitches that happen in RDP/remote sessions. Log the full stack and keep running instead
+        // of popping that dialog at the user.
+        System.Windows.Forms.Application.SetUnhandledExceptionMode(System.Windows.Forms.UnhandledExceptionMode.CatchException);
+        System.Windows.Forms.Application.ThreadException += (_, ex) =>
+        {
+            ShellLog.Error(ex.Exception, "winforms thread exception");
+        };
         var paletteSession = HasArg(e.Args, "--palette-session");
         var keepWarmSession = HasArg(e.Args, "--keep-warm");
         var prewarmSession = HasArg(e.Args, "--prewarm");
