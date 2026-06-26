@@ -56,6 +56,19 @@ public static class OpenWithAppDiscovery
         return _desktopAppCache ??= PackagedApps().Concat(StartMenuApps()).Concat(AppPathRegistryApps()).ToList();
     }
 
+    // Names whose presence (substring) marks a system/dev tool we hide from the Open With picker.
+    private static readonly string[] ExcludedNameSubstrings =
+    {
+        "help", "documentation", "dokumentation", "uninstall", "support", "update", "feedback",
+        "component services", "event viewer", "control panel", "command prompt", "console",
+        "debugging", "application verifier", "defragment", "disk cleanup", "global flags", "gflags",
+        "usb recovery", "administrative tools", "computer management", "license manager", "ghostscript",
+        "git bash", "git cmd", "git gui", "git for windows", "git release", "git faq", "idle (python",
+        "homepage", "faq", "get started", "live captions", "hyper-v quick create", "install additional tools",
+        "gpview", "iscsicli", "local security policy", "mail app wizard", "msoadfsb", "msoasb", "iediagcmd",
+        "importwizard", "iexpress", "diagnostic",
+    };
+
     private static bool IsUsefulOpenWithApp(AppChoice app)
     {
         if (app.IsDefault || app.IsRecent || app.Source == "Recommended")
@@ -69,53 +82,7 @@ public static class OpenWithAppDiscovery
             return false;
         }
 
-        if (name.Contains("help") ||
-            name.Contains("documentation") ||
-            name.Contains("dokumentation") ||
-            name.Contains("uninstall") ||
-            name.Contains("support") ||
-            name.Contains("update") ||
-            name.Contains("feedback") ||
-            name.Contains("component services") ||
-            name.Contains("event viewer") ||
-            name.Contains("control panel") ||
-            name.Contains("command prompt") ||
-            name.Contains("console") ||
-            name.Contains("debugging") ||
-            name.Contains("application verifier") ||
-            name.Contains("defragment") ||
-            name.Contains("disk cleanup") ||
-            name.Contains("global flags") ||
-            name.Contains("gflags") ||
-            name.Contains("usb recovery") ||
-            name.Contains("administrative tools") ||
-            name.Contains("computer management") ||
-            name.Contains("license manager") ||
-            name.Contains("ghostscript") ||
-            name.Contains("git bash") ||
-            name.Contains("git cmd") ||
-            name.Contains("git gui") ||
-            name.Contains("git for windows") ||
-            name.Contains("git release") ||
-            name.Contains("git faq") ||
-            name.Contains("idle (python") ||
-            name.Contains("homepage") ||
-            name.Contains("faq") ||
-            name.Contains("get started") ||
-            name.Contains("live captions") ||
-            name.Contains("hyper-v quick create") ||
-            name.Contains("install additional tools") ||
-            name.Contains("gpview") ||
-            name.Contains("iscsicli") ||
-            name.Contains("local security policy") ||
-            name.Contains("mail app wizard") ||
-            name.Contains("msoadfsb") ||
-            name.Contains("msoasb") ||
-            name.Contains("iediagcmd") ||
-            name.Equals("iexplore") ||
-            name.Contains("importwizard") ||
-            name.Contains("iexpress") ||
-            name.Contains("diagnostic"))
+        if (ExcludedNameSubstrings.Any(name.Contains) || name.Equals("iexplore"))
         {
             return false;
         }

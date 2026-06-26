@@ -520,18 +520,8 @@ public sealed class ClipboardHistoryStore
     private static byte ToLowerAscii(byte value) =>
         value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
 
-    private static bool IsAscii(string value)
-    {
-        foreach (var character in value)
-        {
-            if (character > 0x7F)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    // ponytail: stdlib does this (and vectorized).
+    private static bool IsAscii(string value) => System.Text.Ascii.IsValid(value);
 
     private static bool MatchesQuery(ClipboardHistoryItem item, string query) =>
         Contains(item.Preview, query) ||
