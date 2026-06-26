@@ -33,10 +33,13 @@ Get-ChildItem -LiteralPath $installDir -Force | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $sourceDir "*") $installDir -Recurse -Force
 
 $exe = Join-Path $installDir (Split-Path $sourceExe -Leaf)
-$hostExe = if (Test-Path $sourceHostExe) { Join-Path $installDir "Clip.Watcher.exe" } else { $exe }
-$launcherExe = if (Test-Path $sourceLauncherExe) { Join-Path $installDir "Clip.Launcher.exe" } else { $exe }
-$hostArguments = if ((Split-Path $hostExe -Leaf) -ieq "Clip.Watcher.exe") { "watch" } else { "" }
-$shortcutArguments = if ((Split-Path $launcherExe -Leaf) -ieq "Clip.exe") { "--palette-session" } else { "" }
+# Autostart the standalone shell itself (Clip.exe, no args). It owns Alt+V, the tray, clipboard
+# capture and the UI in one process. The old Clip.Watcher.exe "watch" host + hidden prewarmed
+# window proved unreliable (the hidden window got stuck and never showed), so we don't use it.
+$hostExe = $exe
+$launcherExe = $exe
+$hostArguments = ""
+$shortcutArguments = ""
 $icon = Join-Path $installDir "assets\app-icons\clip-tile-light.ico"
 if (-not (Test-Path $icon)) {
     $icon = $exe

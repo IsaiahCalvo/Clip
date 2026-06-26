@@ -121,15 +121,9 @@ public partial class App : System.Windows.Application
         _window.InitializeShell();
         if (!paletteSession)
         {
-            try
-            {
-                StartupRegistration.MigrateToLightweightHostIfNeeded();
-            }
-            catch (Exception ex)
-            {
-                ShellLog.Error(ex, "startup lightweight host migration failed");
-            }
-
+            // The standalone shell IS the app now: it owns Alt+V, the tray, clipboard capture, and
+            // the UI in one process. Do NOT migrate startup to the separate Clip.Watcher host — that
+            // watcher+prewarm+signal split was unreliable (the hidden window got stuck and never showed).
             Dispatcher.BeginInvoke(() =>
             {
                 if (_tray is not null && _window is not null)
