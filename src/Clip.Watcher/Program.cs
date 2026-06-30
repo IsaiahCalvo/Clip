@@ -948,7 +948,6 @@ internal sealed class WatcherSettings
                 : WatcherAppIconPreference.Light;
     }
 
-
     private static string? HotkeyProperty(JsonElement root)
     {
         if (!root.TryGetProperty("Hotkeys", out var hotkeys) ||
@@ -1261,7 +1260,6 @@ internal sealed class ClipboardWatcherForm : Form
         var watch = Stopwatch.StartNew();
         EnsureWatcherHooks(showWarning: true);
         _store.WarmHotIndexes();
-        ApplyOpenMode();
         Program.LogDebug($"Clip watcher started handle={Handle} hotkey={_registeredHotkey.DisplayText} registered={_hotkeyRegistered} win32={Marshal.GetLastWin32Error()} elapsedMs={watch.ElapsedMilliseconds}");
     }
 
@@ -1314,25 +1312,6 @@ internal sealed class ClipboardWatcherForm : Form
         }
     }
 
-    private void ApplyOpenMode()
-    {
-        EnsureStandaloneShellWarm();
-    }
-
-    private void EnsureStandaloneShellWarm()
-    {
-        if (Program.IsRichPaletteRunning())
-        {
-            Program.LogDebug("Standalone shell already warm");
-            return;
-        }
-
-        if (Program.TryLaunchRichPalette(WatcherTrayAction.OpenClip, keepWarm: true, startHidden: true))
-        {
-            Program.LogDebug("Standalone shell prewarm requested");
-        }
-    }
-
     private ContextMenuStrip CreateTrayMenu()
     {
         var menu = new ContextMenuStrip();
@@ -1364,7 +1343,7 @@ internal sealed class ClipboardWatcherForm : Form
                 case WatcherTrayAction.CheckForUpdates:
                 case WatcherTrayAction.SaveLogSnapshot:
                 case WatcherTrayAction.OpenSettings:
-                    Program.TryLaunchRichPalette(action, keepWarm: true);
+                    Program.TryLaunchRichPalette(action);
                     break;
                 case WatcherTrayAction.Exit:
                     Application.Exit();
@@ -1593,7 +1572,7 @@ internal sealed class ClipboardWatcherForm : Form
         {
             var watch = Stopwatch.StartNew();
             Program.LogDebug("Shell palette open requested");
-            if (Program.TryLaunchRichPalette(keepWarm: true))
+            if (Program.TryLaunchRichPalette())
             {
                 var launcherToShowMs = Program.LauncherToNowMs();
                 var launcherTiming = launcherToShowMs is null ? string.Empty : $" launcherToShellMs={launcherToShowMs}";
@@ -1885,7 +1864,6 @@ internal sealed class ClipboardWatcherForm : Form
     {
         var settings = RefreshSettings();
         ApplyTrayIcon(settings.AppIcon);
-        ApplyOpenMode();
 
         var desiredHotkey = WatcherHotkey.OpenHotkey(settings.OpenHotkey);
         if (!_hotkeyRegistered)

@@ -1408,6 +1408,7 @@ public partial class MainWindow : Window
         Opacity = 0;
         IsHitTestVisible = false;
         MoveOffscreen();
+        DisposeHtmlPreview();
         ShellLog.Info($"palette concealed reason={reason}");
         if (PaletteSessionMode && KeepWarmSession)
         {
@@ -1539,8 +1540,16 @@ public partial class MainWindow : Window
         }
         else if (msg == WmHotkey && wParam.ToInt32() == OpenHotkeyId)
         {
-            ShellLog.Info($"{_settings.Hotkeys.OpenClip} received");
-            ShowPalette();
+            ShellLog.Info($"{_settings.Hotkeys.OpenClip} received open={_paletteOpen}");
+            if (_paletteOpen)
+            {
+                ConcealPalette("hotkey-toggle");
+            }
+            else
+            {
+                ShowPalette();
+            }
+
             handled = true;
         }
         else if (msg == WmHotkey && wParam.ToInt32() == OpenOverrideHotkeyId)
@@ -5241,6 +5250,31 @@ public partial class MainWindow : Window
         htmlPreview.Visibility = Visibility.Visible;
         await htmlPreview.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
         htmlPreview.Source = new Uri(path);
+    }
+
+    // Tears down the WebView2 (and its Chromium processes) so nothing browser-related
+    // lingers while the palette is hidden. Recreated lazily on the next HTML preview.
+    private void DisposeHtmlPreview()
+    {
+        if (_htmlPreview is null)
+        {
+            return;
+        }
+
+        try
+        {
+            PreviewHost.Children.Remove(_htmlPreview);
+            (_htmlPreview as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "html preview dispose failed");
+        }
+        finally
+        {
+            _htmlPreview = null;
+            _setHtmlPreviewBackground = null;
+        }
     }
 
     private void HidePreviews()
