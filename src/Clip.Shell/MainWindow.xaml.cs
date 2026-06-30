@@ -1409,6 +1409,12 @@ public partial class MainWindow : Window
         Opacity = 0;
         IsHitTestVisible = false;
         MoveOffscreen();
+        // Truly hide the window instead of relying on Opacity=0 alone. An AllowsTransparency=False,
+        // topmost, dark-background WPF window left at Opacity=0 can leave a stale BLACK surface on a
+        // secondary monitor (DWM compositing glitch) until something forces a repaint. Hide() drops
+        // the surface entirely; ShowPalette re-shows via its `if (!IsVisible) Show()` path. The window
+        // object + already-arranged visual tree stay in memory, so the re-show is still fast/warm.
+        Hide();
         DisposeHtmlPreview();
         ShellLog.Info($"palette concealed reason={reason}");
         if (PaletteSessionMode && KeepWarmSession)
