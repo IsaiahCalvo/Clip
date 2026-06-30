@@ -469,11 +469,15 @@ internal sealed class ClipHotkeySettings
         CloseClip = NormalizeLocal(CloseClip, ClipHotkeyDefaults.CloseClip);
     }
 
+    // An empty value means the hotkey is intentionally unbound (no key) — preserve it as "" rather
+    // than snapping back to the default. Only a NON-empty, unparseable value falls back.
     private static string NormalizeLocal(string value, string fallback)
-        => ClipHotkeyGesture.TryParse(value, out var gesture) ? gesture.DisplayText : fallback;
+        => string.IsNullOrWhiteSpace(value) ? string.Empty
+            : ClipHotkeyGesture.TryParse(value, out var gesture) ? gesture.DisplayText : fallback;
 
     private static string NormalizeGlobal(string value, string fallback)
-        => ClipHotkeyGesture.TryParseGlobal(value, out var gesture) ? gesture.DisplayText : fallback;
+        => string.IsNullOrWhiteSpace(value) ? string.Empty
+            : ClipHotkeyGesture.TryParseGlobal(value, out var gesture) ? gesture.DisplayText : fallback;
 }
 
 internal static class ClipHotkeyDefaults
@@ -1765,6 +1769,14 @@ public partial class MainWindow : Window
     private static bool RegisterConfiguredHotkey(IntPtr hwnd, int id, string configured, string fallback, string name, string reason, out bool unavailable)
     {
         unavailable = false;
+        // Empty = the user intentionally unbound this hotkey: register nothing and report "done"
+        // (true) so the retry timer stops and no "unavailable" error is raised. Re-binding runs
+        // through ReRegisterHotkeys, which clears the flag and registers the new gesture.
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            ShellLog.Info($"hotkey unbound name={name} reason={reason}");
+            return true;
+        }
         if (!ClipHotkeyGesture.TryParseGlobal(configured, out var gesture) && !ClipHotkeyGesture.TryParseGlobal(fallback, out gesture))
         {
             ShellLog.Info($"hotkey register skipped name={name} configured={configured} reason={reason}");
@@ -10701,6 +10713,18 @@ internal sealed class SettingsWindow : Window
         };
         input.PreviewKeyDown += (_, e) =>
         {
+            var pressed = e.Key == Key.System ? e.SystemKey : e.Key;
+            // Delete / Backspace (no modifiers) unbinds the hotkey — no key for this action.
+            if ((pressed == Key.Delete || pressed == Key.Back) && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                current = string.Empty;
+                input.Text = string.Empty;
+                apply(string.Empty);
+                Keyboard.ClearFocus();
+                e.Handled = true;
+                return;
+            }
+
             if (!TryCreateGestureFromKeyEvent(e, requireModifier, out var gesture))
             {
                 input.Text = requireModifier ? "Use Ctrl, Alt, Shift, or Win" : "Invalid shortcut";
@@ -10708,6 +10732,7 @@ internal sealed class SettingsWindow : Window
                 return;
             }
 
+            current = gesture.DisplayText;
             input.Text = gesture.DisplayText;
             apply(gesture.DisplayText);
             Keyboard.ClearFocus();
