@@ -749,6 +749,7 @@ public partial class MainWindow : Window
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
     internal event Action<string>? UserNotificationRequested;
+    internal event Action<string>? UpdateNotification;
 
     public MainWindow()
     {
@@ -1387,7 +1388,7 @@ public partial class MainWindow : Window
 
     public void CheckForUpdatesFromTray()
     {
-        _ = CheckForUpdatesAsync(showToastWhenCurrent: true, promptIfAvailable: true);
+        _ = CheckForUpdatesAsync(showToastWhenCurrent: true, promptIfAvailable: true, nativeNotify: true);
     }
 
     public void InstallKnownUpdateFromTray()
@@ -6054,7 +6055,7 @@ public partial class MainWindow : Window
         _ = CheckForUpdatesAsync(showToastWhenCurrent: true, updateStatus);
     }
 
-    private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null, bool promptIfAvailable = false)
+    private async Task CheckForUpdatesAsync(bool showToastWhenCurrent, Action<ClipUpdateStatus>? updateStatus = null, bool promptIfAvailable = false, bool nativeNotify = false)
     {
         if (_updateCheckInProgress)
         {
@@ -6065,6 +6066,11 @@ public partial class MainWindow : Window
         _updateCheckInProgress = true;
         try
         {
+            if (nativeNotify)
+            {
+                UpdateNotification?.Invoke("Checking for updates…");
+            }
+
             ShellLog.Info("update check started");
             var status = await _updates.CheckAsync();
             await Dispatcher.InvokeAsync(() =>
@@ -6075,7 +6081,7 @@ public partial class MainWindow : Window
 
                 if (status.State == "Update available")
                 {
-                    ShowToast(status.Message);
+                    if (nativeNotify) { UpdateNotification?.Invoke(status.Message); } else { ShowToast(status.Message); }
                     if (promptIfAvailable)
                     {
                         PromptForKnownUpdate();
@@ -6083,7 +6089,7 @@ public partial class MainWindow : Window
                 }
                 else if (showToastWhenCurrent)
                 {
-                    ShowToast(status.Message);
+                    if (nativeNotify) { UpdateNotification?.Invoke(status.Message); } else { ShowToast(status.Message); }
                 }
             });
         }

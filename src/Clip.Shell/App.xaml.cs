@@ -102,6 +102,7 @@ public partial class App : System.Windows.Application
                 }
             };
             _window.UserNotificationRequested += message => _tray?.ShowBalloonTip(3000, "Clip", message, System.Windows.Forms.ToolTipIcon.Warning);
+            _window.UpdateNotification += message => _tray?.ShowBalloonTip(3000, "Clip", message, System.Windows.Forms.ToolTipIcon.Info);
             _tray.DoubleClick += (_, _) => _window.ShowPalette();
 
             var menu = new System.Windows.Forms.ContextMenuStrip();

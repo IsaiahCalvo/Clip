@@ -11,9 +11,7 @@
 #define MyAppPublisher "Isaiah Calvo"
 #define MyAppURL "https://github.com/IsaiahCalvo/Clip"
 #define MyAppExeName "Clip.exe"
-#define MyAppHostExeName "Clip.Watcher.exe"
 #define MyAppLauncherExeName "Clip.Launcher.exe"
-#define MyAppHostArgs "watch"
 
 [Setup]
 AppId={{B5A7C821-94E1-4D2F-B0C8-8F0B16B6C0D4}
@@ -55,6 +53,7 @@ Name: "startupentry"; Description: "Launch {#MyAppName} when I sign in to Window
 
 [Files]
 Source: "..\artifacts\publish\Clip-win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "register-autostart.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\Clip.exe.WebView2"
@@ -100,11 +99,19 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncherExeName}"; IconFil
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Clip"; ValueData: """{app}\{#MyAppHostExeName}"" {#MyAppHostArgs}"; Tasks: startupentry; Flags: uninsdeletevalue
-
 [Run]
+; Durable autostart: register a per-user logon Scheduled Task instead of the HKCU "Run"
+; key. Windows 11 throttles/delays Run-key startup apps, and the in-app updater runs this
+; same installer, so a Run key here would silently regress the task-based fix on every update.
+; The helper also strips any legacy Run value. runhidden keeps the PowerShell window invisible.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\register-autostart.ps1"" -Exe ""{app}\{#MyAppExeName}"" -TaskName ""Clip Autostart"" -RunValueName ""Clip"""; Tasks: startupentry; Flags: runhidden
+; Interactive launch only. Under a silent update, RestartApplications=yes + the updater's
+; /RESTARTAPPLICATIONS flag have the restart manager relaunch Clip, so no skipifnotsilent
+; launch here (that would double-launch against the restarted process).
 Filename: "{app}\{#MyAppLauncherExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "schtasks.exe"; Parameters: "/delete /tn ""Clip Autostart"" /f"; Flags: runhidden; RunOnceId: "DeleteClipAutostartTask"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

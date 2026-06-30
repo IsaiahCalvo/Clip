@@ -46,8 +46,16 @@ if (-not (Test-Path $icon)) {
 }
 $quotedHost = if ($hostArguments) { "`"$hostExe`" $hostArguments" } else { "`"$hostExe`"" }
 
-New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
-Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -Value $quotedHost
+# Autostart via a logon Scheduled Task. Windows 11 throttles/delays HKCU "Run" startup apps
+# (they often don't launch promptly, or at all, after a reboot), so use a logon task instead.
+# Remove any legacy Run-key entry so the two mechanisms can't both fire and double-launch.
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -ErrorAction SilentlyContinue
+$autoAction    = New-ScheduledTaskAction -Execute $hostExe -WorkingDirectory $installDir
+$autoTrigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$autoTrigger.Delay = "PT3S"
+$autoSettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+$autoPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName "Clip Autostart" -Action $autoAction -Trigger $autoTrigger -Settings $autoSettings -Principal $autoPrincipal -Force | Out-Null
 
 $oldTaskName = "Clip Clipboard Watcher"
 if (Get-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue) {
