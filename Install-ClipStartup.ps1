@@ -17,9 +17,6 @@ $sourceExe = Join-Path $sourceDir "Clip.exe"
 if (-not (Test-Path $sourceExe)) {
     $sourceExe = Join-Path $sourceDir "Clip.Shell.exe"
 }
-$sourceHostExe = Join-Path $sourceDir "Clip.Watcher.exe"
-$sourceLauncherExe = Join-Path $sourceDir "Clip.Launcher.exe"
-$sourceIcon = Join-Path $sourceDir "assets\app-icons\clip-tile-light.ico"
 
 if (-not (Test-Path $sourceExe)) {
     throw "Clip executable was not found."
@@ -38,13 +35,10 @@ $exe = Join-Path $installDir (Split-Path $sourceExe -Leaf)
 # window proved unreliable (the hidden window got stuck and never showed), so we don't use it.
 $hostExe = $exe
 $launcherExe = $exe
-$hostArguments = ""
-$shortcutArguments = ""
 $icon = Join-Path $installDir "assets\app-icons\clip-tile-light.ico"
 if (-not (Test-Path $icon)) {
     $icon = $exe
 }
-$quotedHost = if ($hostArguments) { "`"$hostExe`" $hostArguments" } else { "`"$hostExe`"" }
 
 # Autostart via a logon Scheduled Task. Windows 11 throttles/delays HKCU "Run" startup apps
 # (they often don't launch promptly, or at all, after a reboot), so use a logon task instead.
@@ -72,7 +66,7 @@ function New-ClipShortcut {
 
     $shortcut = $shell.CreateShortcut($Path)
     $shortcut.TargetPath = $launcherExe
-    $shortcut.Arguments = $shortcutArguments
+    $shortcut.Arguments = ""
     $shortcut.WorkingDirectory = $installDir
     $shortcut.IconLocation = $icon
     $shortcut.WindowStyle = 7
@@ -92,12 +86,7 @@ if (Test-Path $startupShortcut) {
     Remove-Item -LiteralPath $startupShortcut -Force
 }
 
-if ($hostArguments) {
-    Start-Process -FilePath $hostExe -ArgumentList $hostArguments -WindowStyle Hidden
-}
-else {
-    Start-Process -FilePath $hostExe -WindowStyle Hidden
-}
+Start-Process -FilePath $hostExe -WindowStyle Hidden
 
 Write-Output "Clip installed to $installDir"
 Write-Output "Desktop shortcut: $desktopShortcut"
