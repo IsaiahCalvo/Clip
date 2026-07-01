@@ -143,25 +143,6 @@ internal static class Program
         return null;
     }
 
-    private static string? ArgValue(string[] args, string name)
-    {
-        for (var index = 0; index < args.Length; index++)
-        {
-            var arg = args[index];
-            if (arg.Equals(name, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
-            {
-                return args[index + 1];
-            }
-
-            if (arg.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
-            {
-                return arg[(name.Length + 1)..];
-            }
-        }
-
-        return null;
-    }
-
     private static int RunCommand(string[] args)
     {
         try

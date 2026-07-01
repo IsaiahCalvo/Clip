@@ -20,10 +20,6 @@ public sealed class ClipboardHistoryStore
     private const int TopSummaryTextCharacterLimit = 1_024;
     private const int TopSummaryIndexItemLimit = 64;
 
-    private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.General)
-    {
-        WriteIndented = true,
-    };
     private readonly object _sync = new();
     private readonly bool _enableLoadMaintenance;
     private readonly bool _retainLoadedItems;

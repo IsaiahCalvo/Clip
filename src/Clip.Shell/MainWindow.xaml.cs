@@ -5748,8 +5748,6 @@ public partial class MainWindow : Window
         if (_selected.Kind == ClipboardItemKind.Text) EditText(_selected);
         else OpenItem(_selected);
     }
-    private void OnCloseClick(object sender, RoutedEventArgs e) => ConcealPalette("close");
-    private void OnMinimizeClick(object sender, RoutedEventArgs e) => ConcealPalette("minimize");
     private void OnSettingsClick(object sender, RoutedEventArgs e) => OpenSettingsInternal(showPaletteOnClose: true);
 
     public void OpenSettingsFromTray() => OpenSettingsInternal(showPaletteOnClose: false);
@@ -6831,13 +6829,6 @@ public partial class MainWindow : Window
     private static System.Drawing.Color ToDrawingColor(SolidColorBrush brush) =>
         System.Drawing.Color.FromArgb(brush.Color.A, brush.Color.R, brush.Color.G, brush.Color.B);
 
-    private static string ThemeLabel(ClipThemePreference preference) => preference switch
-    {
-        ClipThemePreference.Light => "Light",
-        ClipThemePreference.Dark => "Dark",
-        _ => "System",
-    };
-
     internal static ClipThemePreference NextThemeTogglePreference(ClipThemePreference current, bool systemIsDark)
     {
         var currentlyDark = current switch
@@ -6878,14 +6869,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ShellLog.Error(ex, "shortcut icon update failed");
-        }
-    }
-
-    private void OnActionsClick(object sender, RoutedEventArgs e)
-    {
-        if (_selected is not null)
-        {
-            ShowActionMenu(_selected);
         }
     }
 
@@ -9536,20 +9519,6 @@ internal sealed class SettingsWindow : Window
         _accentSoft = palette.AccentSoft;
         _selected = palette.Selected;
         _selectedBorder = palette.SelectedBorder;
-    }
-
-    private static SolidColorBrush FrozenBrush(string hex)
-    {
-        var brush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
-        brush.Freeze();
-        return brush;
-    }
-
-    private static SolidColorBrush FrozenColorBrush(System.Windows.Media.Color color)
-    {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
     }
 
     private void RefreshTheme(bool rebuildPage = true)
