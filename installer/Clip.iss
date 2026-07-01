@@ -105,10 +105,14 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncherExeName}"; I
 ; same installer, so a Run key here would silently regress the task-based fix on every update.
 ; The helper also strips any legacy Run value. runhidden keeps the PowerShell window invisible.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\register-autostart.ps1"" -Exe ""{app}\{#MyAppExeName}"" -TaskName ""Clip Autostart"" -RunValueName ""Clip"""; Tasks: startupentry; Flags: runhidden
-; Interactive launch only. Under a silent update, RestartApplications=yes + the updater's
-; /RESTARTAPPLICATIONS flag have the restart manager relaunch Clip, so no skipifnotsilent
-; launch here (that would double-launch against the restarted process).
+; Interactive install: offer to launch Clip from the wizard's Finished page.
 Filename: "{app}\{#MyAppLauncherExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+; Silent updates (the one-click in-app updater runs Setup.exe /SILENT) never fire postinstall
+; entries, so the line above can't relaunch Clip — which is why it stayed dead after an update.
+; This entry runs ONLY under a silent install and starts the shell (Clip.exe) hidden, so Clip
+; comes back to the tray without popping a window. Clip is single-instance, so if the restart
+; manager also relaunches, the duplicate just signals the survivor and exits.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runhidden skipifnotsilent
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/delete /tn ""Clip Autostart"" /f"; Flags: runhidden; RunOnceId: "DeleteClipAutostartTask"
