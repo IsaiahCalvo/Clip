@@ -118,8 +118,6 @@ dotnet publish (Join-Path $root "src\Clip.WindowsHistory\Clip.WindowsHistory.csp
     --self-contained $selfContained `
     -p:PublishSingleFile=false `
     -p:PublishReadyToRun=false `
-    -p:DebugType=None `
-    -p:DebugSymbols=false `
     -p:Version=$Version `
     -p:AssemblyVersion=$Version `
     -p:FileVersion=$Version `
@@ -143,8 +141,6 @@ dotnet publish (Join-Path $root "src\Clip.Launcher\Clip.Launcher.csproj") `
     --self-contained $selfContained `
     -p:PublishSingleFile=false `
     -p:PublishReadyToRun=false `
-    -p:DebugType=None `
-    -p:DebugSymbols=false `
     -p:Version=$Version `
     -p:AssemblyVersion=$Version `
     -p:FileVersion=$Version `
