@@ -131,15 +131,6 @@ public sealed class ClipboardHistoryStore
         }
     }
 
-    private bool ReconcileCachedItems(List<ClipboardHistoryItem> items)
-    {
-        var changed = ReconcileExternalAssetRenames(items);
-        changed |= EnsureFriendlyAssetNames(items);
-        changed |= EnsureSidecars(items);
-        CleanupEmptyFileCategoryFolders();
-        return changed;
-    }
-
     public ClipboardHistoryItem? GetItem(string id)
     {
         var item = GetItems().FirstOrDefault(item => item.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
@@ -465,7 +456,7 @@ public sealed class ClipboardHistoryStore
             return true;
         }
 
-        if (!reader.HasValueSequence && IsAscii(query))
+        if (!reader.HasValueSequence && System.Text.Ascii.IsValid(query))
         {
             var value = reader.ValueSpan;
             if (query.Length > value.Length)
@@ -519,9 +510,6 @@ public sealed class ClipboardHistoryStore
 
     private static byte ToLowerAscii(byte value) =>
         value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
-
-    // ponytail: stdlib does this (and vectorized).
-    private static bool IsAscii(string value) => System.Text.Ascii.IsValid(value);
 
     private static bool MatchesQuery(ClipboardHistoryItem item, string query) =>
         Contains(item.Preview, query) ||
@@ -752,29 +740,6 @@ public sealed class ClipboardHistoryStore
             var keptUnpinnedIds = TryKeptUnpinnedIdsFromSummary(item, maxItems, out var summaryTrimCurrent);
             json ??= File.ReadAllBytes(HistoryFilePath);
             return AddNewWithoutRetention(json, item, maxItems, keptUnpinnedIds, summaryTrimCurrent);
-        }
-    }
-
-    private List<ClipboardHistoryItem>? TryLoadCurrentSummaryItems()
-    {
-        if (!File.Exists(HistoryFilePath) || new FileInfo(HistoryFilePath).Length == 0)
-        {
-            return null;
-        }
-
-        if (!IsSummaryIndexCurrent())
-        {
-            return null;
-        }
-
-        try
-        {
-            var json = File.ReadAllBytes(HistoryIndexFilePath);
-            return JsonSerializer.Deserialize(json, ClipboardHistorySummaryJsonContext.Default.ListClipboardHistoryItem) ?? [];
-        }
-        catch
-        {
-            return null;
         }
     }
 
@@ -1341,11 +1306,6 @@ public sealed class ClipboardHistoryStore
         catch
         {
         }
-    }
-
-    private List<ClipboardHistoryItem>? TryLoadCurrentTopSummaryItems()
-    {
-        return TryLoadCurrentTopSummaryItems(out _);
     }
 
     private List<ClipboardHistoryItem>? TryLoadCurrentTopSummaryItems(out bool needsCompaction)
@@ -3174,5 +3134,4 @@ internal sealed class ClipboardAssetMetadata
     public string Id { get; set; } = string.Empty;
     public string Kind { get; set; } = string.Empty;
     public string? ContentHash { get; set; }
-    public string? Text { get; set; }
 }
