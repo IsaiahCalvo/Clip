@@ -130,12 +130,12 @@ internal sealed class WindowsClipboardHistorySource : IClipboardHistorySource
             }
 
             var path = reserveImagePath(".png");
-            using var reader = new DataReader(stream.GetInputStreamAt(0));
-            var loaded = await reader.LoadAsync((uint)stream.Size);
-            var bytes = new byte[loaded];
-            reader.ReadBytes(bytes);
-            cancellationToken.ThrowIfCancellationRequested();
-            await File.WriteAllBytesAsync(path, bytes, cancellationToken);
+            using (var source = stream.GetInputStreamAt(0).AsStreamForRead())
+            using (var destination = File.Create(path))
+            {
+                await source.CopyToAsync(destination, cancellationToken);
+            }
+
             return (path, null, null);
         }
         catch
