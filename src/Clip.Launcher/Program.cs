@@ -28,7 +28,7 @@ internal static class Program
                 return 0;
             }
 
-            return StartWatcher(show);
+            return StartShell(show);
         }
         catch
         {
@@ -54,20 +54,26 @@ internal static class Program
         }
     }
 
-    private static int StartWatcher(bool show = false)
+    private static int StartShell(bool show = false)
     {
         var baseDirectory = AppContext.BaseDirectory;
-        var watcherPath = Path.Combine(baseDirectory, "Clip.Watcher.exe");
-        if (!File.Exists(watcherPath))
+        var shellPath = Path.Combine(baseDirectory, "Clip.exe");
+        if (!File.Exists(shellPath))
         {
             return 2;
         }
 
-        var commandLine = new StringBuilder(Quote(watcherPath));
-        commandLine.Append(" watch");
+        // Start the single-process shell (Clip.exe) as the RESIDENT host: it owns the Alt+V
+        // global hotkey AND its open/close toggle, the tray, and clipboard capture. Do NOT start
+        // "Clip.Watcher.exe watch" here — that legacy low-idle host has no Alt+V toggle (its
+        // hotkey only ever re-shows), so whenever it won the hotkey the palette could never be
+        // closed with Alt+V. No --palette-session, so this is the resident, not a transient
+        // palette. "--tray-action Open Clip" makes a cold shortcut launch also pop the palette so
+        // clicking the Clip shortcut still opens it.
+        var commandLine = new StringBuilder(Quote(shellPath));
         if (show)
         {
-            commandLine.Append(" --show");
+            commandLine.Append(" --tray-action ").Append(Quote("Open Clip"));
         }
 
         return StartProcess(commandLine, baseDirectory);

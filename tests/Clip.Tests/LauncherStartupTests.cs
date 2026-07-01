@@ -3,14 +3,17 @@ namespace Clip.Tests;
 public sealed class LauncherStartupTests
 {
     [Fact]
-    public void ManagedLauncherStartsWatcherWithShowWhenOpeningClip()
+    public void ManagedLauncherStartsShellAsResidentWhenOpeningClip()
     {
+        // The launcher must start the single-process shell (Clip.exe) as the resident host so it
+        // owns the Alt+V toggle — NOT "Clip.Watcher.exe watch", the legacy host whose hotkey only
+        // ever re-shows (which broke closing the palette with Alt+V).
         var source = File.ReadAllText(RepoPath("src", "Clip.Launcher", "Program.cs"));
 
-        Assert.Contains("return StartWatcher(show);", source);
-        Assert.Contains("commandLine.Append(\" watch\")", source);
-        Assert.Contains("commandLine.Append(\" --show\")", source);
-        Assert.DoesNotContain("commandLine.Append(\" --palette-session\")", source);
+        Assert.Contains("return StartShell(show);", source);
+        Assert.Contains("\"Clip.exe\"", source);
+        Assert.Contains("--tray-action", source);
+        Assert.DoesNotContain("commandLine.Append(\" watch\")", source);
     }
 
     [Fact]
