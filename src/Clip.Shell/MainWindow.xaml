@@ -343,7 +343,7 @@
                     <Border x:Name="FilesFilterShell" CornerRadius="5" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" Margin="4,0,0,0">
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="FilesButton" Content="File" Style="{StaticResource PillSegmentLeft}" Click="OnFilesFilterClick" Background="Transparent" Width="38"/>
-                            <Border x:Name="FilesDivider" Width="1" Background="{DynamicResource Line2}" Opacity="0.55"/>
+                            <Border Width="1" Background="{DynamicResource Line2}" Opacity="0.55"/>
                             <Button x:Name="FileDropButton" Style="{StaticResource PillSegmentRight}" Click="OnFileDropClick" Background="Transparent" Padding="0" Width="18">
                                 <Image x:Name="FileDropIcon" Width="11" Height="11" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
                             </Button>
@@ -491,8 +491,7 @@
             </Popup>
 
             <Popup x:Name="ShareSubmenuPopup" AllowsTransparency="True" Placement="Right" StaysOpen="False">
-                <Border x:Name="ShareSubmenuBorder"
-                        Background="{DynamicResource Surface}"
+                <Border Background="{DynamicResource Surface}"
                         CornerRadius="8"
                         Padding="4"
                         MinWidth="178"
@@ -539,7 +538,7 @@
                         </Image.Effect>
                     </Image>
                     <Rectangle Fill="#CC000000" IsHitTestVisible="False"/>
-                    <Canvas x:Name="ExpandedImageCanvas" Background="Transparent">
+                    <Canvas Background="Transparent">
                         <Image x:Name="ExpandedImage"
                                Stretch="Fill"
                                SnapsToDevicePixels="True"
