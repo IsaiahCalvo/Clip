@@ -7513,34 +7513,6 @@ public partial class MainWindow : Window
         return source;
     }
 
-    private ImageSource RenderGeneratedFileIcon(string ext, int size)
-    {
-        var cacheKey = $"generated-file|{ext}|{size}";
-        if (TryGetCachedRaster(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
-        var label = Regex.Replace((ext ?? "file").ToUpperInvariant(), @"[^A-Z0-9+#-]", "");
-        if (label.Length == 0) label = "FILE";
-        if (label.Length > 5) label = label[..5];
-        var fontSize = label.Length <= 3 ? 92 : label.Length == 4 ? 72 : 58;
-        var color = "#F4EEE7";
-        var svg = $"""
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <path fill="{color}" d="M378.413,0H208.297h-13.182L185.8,9.314L57.02,138.102l-9.314,9.314v13.176v265.514c0,47.36,38.528,85.895,85.896,85.895h244.811c47.353,0,85.881-38.535,85.881-85.895V85.896C464.294,38.528,425.766,0,378.413,0z M432.497,426.105c0,29.877-24.214,54.091-54.084,54.091H133.602c-29.884,0-54.098-24.214-54.098-54.091V160.591h83.716c24.885,0,45.077-20.178,45.077-45.07V31.804h170.116c29.87,0,54.084,24.214,54.084,54.092V426.105z"/>
-  <text x="256" y="330" text-anchor="middle" dominant-baseline="middle" font-family="Segoe UI,Arial,sans-serif" font-weight="900" font-size="{fontSize}" fill="{color}">{System.Security.SecurityElement.Escape(label)}</text>
-</svg>
-""";
-        using var bitmap = new System.Drawing.Bitmap(size, size);
-        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-        graphics.Clear(System.Drawing.Color.Transparent);
-        var document = SvgDocument.FromSvg<SvgDocument>(svg);
-        using var rendered = document.Draw(size, size);
-        graphics.DrawImage(rendered, 0, 0, size, size);
-        return RememberRaster(cacheKey, BitmapFromDrawingImage(bitmap));
-    }
-
     private static WpfBrush BrushFromHex(string hex)
     {
         try
@@ -7860,24 +7832,6 @@ public partial class MainWindow : Window
         }
 
         return after.Contains(expectedText, StringComparison.Ordinal);
-    }
-
-    private static string AutomationSummary(AutomationElement? element)
-    {
-        if (element is null)
-        {
-            return "none";
-        }
-
-        try
-        {
-            var current = element.Current;
-            return $"type={current.ControlType?.ProgrammaticName ?? "unknown"} name={SafeLogValue(current.Name)} automationId={SafeLogValue(current.AutomationId)} hwnd={current.NativeWindowHandle}";
-        }
-        catch
-        {
-            return "unavailable";
-        }
     }
 
     private static string WindowTitle(IntPtr hwnd)
@@ -8400,31 +8354,6 @@ internal sealed class OpenWithWindow : Window
     private readonly WpfListBox _apps = new();
     private readonly TextBlock _status = new();
     private List<WatcherAppChoice> _allApps = [];
-
-    public static void WarmCacheAsync()
-    {
-        LoadPersistedCache();
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                var watch = Stopwatch.StartNew();
-                var target = Path.Combine(Path.GetTempPath(), "clip-openwith-warmup.txt");
-                var apps = WatcherAppDiscovery.GetApps(target).ToList();
-                lock (CacheGate)
-                {
-                    AppCache[CacheKey(target)] = apps;
-                }
-
-                SavePersistedCache();
-                ShellLog.Info($"open-with warm cache completed count={apps.Count} elapsedMs={watch.ElapsedMilliseconds}");
-            }
-            catch (Exception ex)
-            {
-                ShellLog.Error(ex, "open-with warm cache failed");
-            }
-        });
-    }
 
     public OpenWithWindow(string targetPath, WpfBrush bg, WpfBrush surface, WpfBrush surface2, WpfBrush surface3, WpfBrush text, WpfBrush muted, WpfBrush line, WpfBrush selected, WpfBrush accentSoft, WpfBrush selectedBorder)
     {
@@ -9609,37 +9538,6 @@ internal sealed class SettingsWindow : Window
         _selectedBorder = palette.SelectedBorder;
     }
 
-    private static SettingsPalette PaletteForTheme(ClipThemePreference preference)
-    {
-        var useDark = preference switch
-        {
-            ClipThemePreference.Light => false,
-            ClipThemePreference.Dark => true,
-            _ => MainWindow.IsWindowsDarkMode(),
-        };
-
-        var accent = MainWindow.GetWindowsAccentColor();
-        var listBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#272727" : "#EDEDED");
-        var accentBrush = accent is null ? FrozenBrush(useDark ? "#8A9CCC" : "#3B5BDB") : FrozenColorBrush(accent.Value);
-        var selectedBorderBrush = accent is null ? FrozenBrush(useDark ? "#6878A8" : "#5C7CFA") : FrozenColorBrush(accent.Value);
-        var selectedBrush = accent is null ? FrozenBrush(useDark ? "#324068" : "#C9D3F5") : FrozenColorBrush(MainWindow.BlendColors(listBg, accent.Value, useDark ? 0.20 : 0.16));
-        var accentSoftBrush = accent is null ? FrozenBrush(useDark ? "#232A45" : "#E1E7FB") : FrozenColorBrush(MainWindow.BlendColors(listBg, accent.Value, useDark ? 0.26 : 0.20));
-
-        return new SettingsPalette(
-            FrozenBrush(useDark ? "#1A1A1A" : "#F7F7F7"),
-            FrozenBrush(useDark ? "#212121" : "#FFFFFF"),
-            FrozenBrush(useDark ? "#272727" : "#EDEDED"),
-            FrozenBrush(useDark ? "#323232" : "#DCDCDC"),
-            FrozenBrush(useDark ? "#F1F1F1" : "#1A1A1A"),
-            FrozenBrush(useDark ? "#989898" : "#646464"),
-            FrozenBrush(useDark ? "#494949" : "#B8B8B8"),
-            FrozenBrush(useDark ? "#5A5A5A" : "#989898"),
-            accentBrush,
-            accentSoftBrush,
-            selectedBrush,
-            selectedBorderBrush);
-    }
-
     private static SolidColorBrush FrozenBrush(string hex)
     {
         var brush = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
@@ -10004,27 +9902,6 @@ internal sealed class SettingsWindow : Window
         };
     }
 
-    private Border PrivacyNote()
-    {
-        return new Border
-        {
-            Background = _surface2,
-            BorderBrush = _line,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 0, 12),
-            Child = new TextBlock
-            {
-                Text = "Apps listed here are excluded from future Clip history to help prevent saving copied information from sensitive apps, such as password managers, banking apps, and private browsers.",
-                Foreground = _muted,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-                LineHeight = 18,
-            },
-        };
-    }
-
     private Border AddExcludedAppRow()
     {
         var button = SecondaryButton("Add app");
@@ -10077,27 +9954,6 @@ internal sealed class SettingsWindow : Window
     {
         _applyPrivacy(privacy);
         _settings.Privacy = privacy;
-    }
-
-    private Border AppOverrideNote()
-    {
-        return new Border
-        {
-            Background = _surface2,
-            BorderBrush = _line,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 0, 12),
-            Child = new TextBlock
-            {
-                Text = "Apps here will use custom hotkeys for two actions: Open Clip (which key opens Clip while that app is focused) and Paste (which key Clip sends when pasting into that app). For example, if Photoshop already uses Alt+V, you can override Open Clip to a different shortcut while in Photoshop, or change Paste to send a different keystroke. Add an app, pick the action, and set the hotkey.",
-                Foreground = _muted,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-                LineHeight = 18,
-            },
-        };
     }
 
     private Border AddAppOverrideRow()
@@ -10593,30 +10449,6 @@ internal sealed class SettingsWindow : Window
                 _settings.DefaultPasteFormat = preference;
                 _applyDefaultPasteFormat(preference);
             }));
-    }
-
-    private Border ResetAllSettingsRow()
-    {
-        var button = SecondaryButton("Reset");
-        button.Click += (_, _) =>
-        {
-            var confirm = System.Windows.MessageBox.Show(
-                this,
-                "Reset all settings to their defaults? This restores startup, updates, appearance, paste format, history limit, max item size, clipboard folder, hotkeys, and privacy exclusions.",
-                "Reset settings",
-                System.Windows.MessageBoxButton.YesNo,
-                System.Windows.MessageBoxImage.Warning);
-
-            if (confirm != System.Windows.MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            _resetAllSettings();
-            ShowPage("General");
-        };
-
-        return ControlRow("Reset all settings", "Restore defaults for every settings section.", button);
     }
 
     private Border ResetDefaultsFooter()
@@ -11871,8 +11703,6 @@ internal sealed class RenameWindow : Window
             _box.SelectAll();
         };
     }
-
-    private static bool IsLightBrush(WpfBrush brush) => MainWindow.IsLightBackground(brush);
 
     private static WpfButton ModalButton(string text, WpfBrush foreground, WpfBrush line, WpfBrush fieldBackground, WpfBrush primaryBackground, WpfBrush primaryBorder, WpfBrush hoverBackground, bool primary)
     {
