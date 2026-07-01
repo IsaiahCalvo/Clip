@@ -56,6 +56,14 @@ jobs:
           if (-not $setup) { throw "Missing Clip_*-Setup.exe in artifacts/publish" }
           Get-Item $zip, $frameworkZip, $setup.FullName | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,2)}}
 
+      - name: Copy installer to a stable name for the always-latest download link
+        shell: pwsh
+        run: |
+          # A version-independent copy so README's
+          # releases/latest/download/Clip-Setup.exe link always fetches the newest installer.
+          $setup = Get-ChildItem "artifacts/publish/Clip_*-Setup.exe" | Select-Object -First 1
+          Copy-Item $setup.FullName "artifacts/publish/Clip-Setup.exe" -Force
+
       # ── SignPath code signing (enable once your free OSS subscription is approved) ──
       # 1. SignPath emails you: Organization ID, Project Slug, Signing Policy Slug, and an API token.
       # 2. Add the API token as a GitHub Actions secret named SIGNPATH_API_TOKEN.
@@ -96,5 +104,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             artifacts/publish/Clip_*-Setup.exe
+            artifacts/publish/Clip-Setup.exe
             artifacts/publish/Clip-win-x64.zip
             artifacts/publish/Clip-win-x64-framework-dependent.zip

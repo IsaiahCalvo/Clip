@@ -9,9 +9,11 @@ Clip is a free, open-source Windows clipboard history app inspired by Raycast's 
 
 It runs locally, opens with `Alt+V`, and keeps clipboard history on your own device.
 
-## Install
+## Download
 
-**[Get the latest installer](https://github.com/IsaiahCalvo/Clip/releases/latest)**, download `Clip_X.Y.Z-Setup.exe` from the Assets list, then double-click it and follow the wizard.
+[![Download Clip for Windows](https://img.shields.io/badge/⬇_Download-Clip_for_Windows-2ea44f?style=for-the-badge)](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-Setup.exe)
+
+**[Click here to download the latest Clip installer.](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-Setup.exe)** Then open the downloaded `Clip-Setup.exe` and follow the prompts — that's it. The button always downloads the newest version.
 
 The installer:
 
