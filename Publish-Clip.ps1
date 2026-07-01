@@ -7,8 +7,7 @@ param(
     [switch]$NoInstaller,
     [switch]$UseNativeLauncher,
     [switch]$RequireNativeLauncher,
-    [switch]$NoNativeLauncher,
-    [switch]$NoNetFxLauncher
+    [switch]$NoNativeLauncher
 )
 
 if (-not $Version) {
@@ -72,15 +71,6 @@ function Test-NativeAotToolchain {
 
     $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
     return -not [string]::IsNullOrWhiteSpace($installPath)
-}
-
-function Get-NetFxCscPath {
-    $candidates = @(
-        (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
-        (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe")
-    )
-
-    return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
 function Remove-ManagedLauncherSidecars {
@@ -254,27 +244,7 @@ if ($UseNativeLauncher) {
     }
 }
 
-$netFxLauncherPublished = $false
-if (-not $nativeLauncherPublished -and -not $NoNetFxLauncher) {
-    $csc = Get-NetFxCscPath
-    if ($csc) {
-        $launcherNetFxExe = Join-Path $publishDir "Clip.Launcher.exe"
-        & $csc /nologo /optimize+ /target:winexe /platform:x64 "/out:$launcherNetFxExe" (Join-Path $root "src\Clip.Launcher.NetFx\Program.cs")
-        if ($LASTEXITCODE -eq 0) {
-            Remove-ManagedLauncherSidecars $publishDir
-            $netFxLauncherPublished = $true
-            Write-Output "Published .NET Framework launcher."
-        }
-        else {
-            Write-Warning ".NET Framework launcher compile failed (exit $LASTEXITCODE). Falling back to ReadyToRun launcher."
-        }
-    }
-    else {
-        Write-Warning ".NET Framework compiler was not found. Falling back to ReadyToRun launcher."
-    }
-}
-
-if (-not $nativeLauncherPublished -and -not $netFxLauncherPublished) {
+if (-not $nativeLauncherPublished) {
     $launcherReadyToRunDir = Join-Path $publishRoot "_launcher-r2r"
     if (Test-Path $launcherReadyToRunDir) {
         Remove-Item -LiteralPath $launcherReadyToRunDir -Recurse -Force

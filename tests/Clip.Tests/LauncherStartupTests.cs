@@ -14,17 +14,6 @@ public sealed class LauncherStartupTests
     }
 
     [Fact]
-    public void NetFxLauncherStartsWatcherWithShowWhenOpeningClip()
-    {
-        var source = File.ReadAllText(RepoPath("src", "Clip.Launcher.NetFx", "Program.cs"));
-
-        Assert.Contains("return StartWatcher(show);", source);
-        Assert.Contains("commandLine.Append(\" watch\")", source);
-        Assert.Contains("commandLine.Append(\" --show\")", source);
-        Assert.DoesNotContain("commandLine.Append(\" --palette-session\")", source);
-    }
-
-    [Fact]
     public void PowerShellLauncherShowsThroughWatcher()
     {
         var source = File.ReadAllText(RepoPath("Start-Clip.ps1"));
