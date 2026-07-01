@@ -131,6 +131,10 @@ public partial class App : System.Windows.Application
         _window.InitializeShell();
         if (!paletteSession)
         {
+            // Turn on Windows' built-in clipboard history (Win+V) if it's off, so Clip can import it
+            // and Windows keeps capturing even when Clip isn't running. Best-effort, off the UI thread.
+            _ = Task.Run(WindowsClipboardHistory.EnsureEnabled);
+
             // The standalone shell IS the app now: it owns Alt+V, the tray, clipboard capture, and
             // the UI in one process. Do NOT migrate startup to the separate Clip.Watcher host — that
             // watcher+prewarm+signal split was unreliable (the hidden window got stuck and never showed).
