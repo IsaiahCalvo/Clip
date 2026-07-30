@@ -34,6 +34,9 @@ jobs:
             8.0.x
             9.0.x
 
+      - name: Run tests
+        run: dotnet test tests/Clip.Tests/Clip.Tests.csproj -c Release --nologo
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
