@@ -3579,7 +3579,11 @@ public partial class MainWindow : Window
         {
             if (Directory.Exists(path))
             {
-                await Dispatcher.InvokeAsync(() => ShowPlaceholder(item, path));
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (token != _previewToken) return;
+                    ShowPlaceholder(item, path);
+                });
                 return;
             }
 
@@ -3661,13 +3665,24 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await Dispatcher.InvokeAsync(() => ShowPlaceholder(item, path));
+            // Guarded like every other branch: a slow render that finishes after the user has
+            // moved on must not repaint the panel, which is how a Visio ended up showing under a
+            // selected PDF.
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (token != _previewToken) return;
+                ShowPlaceholder(item, path);
+            });
             ShellLog.Info($"preview fallback file path={path} elapsedMs={watch.ElapsedMilliseconds}");
         }
         catch (Exception ex)
         {
             ShellLog.Error(ex, $"file preview failed path={path}");
-            await Dispatcher.InvokeAsync(() => ShowPlaceholder(item, "Preview unavailable"));
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (token != _previewToken) return;
+                ShowPlaceholder(item, "Preview unavailable");
+            });
         }
     }
 
@@ -7753,6 +7768,15 @@ public partial class MainWindow : Window
         ImageSource source;
         if (ShouldUseWindowsFileIcon(ext))
         {
+            // The old path asked the shell for its "large" icon, which is 32x32, and the
+            // placeholder then drew it at 128 — a six-fold blowup. Go through the same resolver
+            // the source-app icons use, which requests a real size and stays crisp.
+            var crisp = SourceAppIcons.Resolve(null, path, size, VisualTreeHelper.GetDpi(this).DpiScaleX);
+            if (crisp is not null)
+            {
+                return RememberRaster(cacheKey, crisp);
+            }
+
             var windowsIcon = WatcherShellIconReader.TryGetIcon(path, large: size >= 48);
             if (windowsIcon is not null)
             {

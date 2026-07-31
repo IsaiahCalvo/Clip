@@ -2743,20 +2743,32 @@ internal static class PdfPreviewRenderer
         image = new Bitmap(1, 1);
         try
         {
-            var tool = FindTool("pdftoppm.exe");
-            if (tool is null)
-            {
-                Program.LogDebug("PDF preview skipped: pdftoppm.exe not found");
-                image.Dispose();
-                return false;
-            }
-
             var cacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip", "pdf-previews");
             Directory.CreateDirectory(cacheRoot);
             dpi = Math.Clamp(dpi, 72, 400);
             var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length + "|" + dpi)));
             var outputPrefix = Path.Combine(cacheRoot, fingerprint);
             var outputFile = outputPrefix + ".png";
+
+            // Windows renders PDF pages itself, so this must be tried before giving up on a
+            // missing pdftoppm. That single missing tool is what silently killed PDF, Word, Excel
+            // and PowerPoint previews at once, since the Office formats are exported to PDF first.
+            if (File.Exists(outputFile) || WindowsPdfRenderer.TryRenderFirstPageToFile(path, outputFile, dpi))
+            {
+                using var rendered = Image.FromFile(outputFile);
+                image.Dispose();
+                image = new Bitmap(rendered);
+                return true;
+            }
+
+            var tool = FindTool("pdftoppm.exe");
+            if (tool is null)
+            {
+                Program.LogDebug("PDF preview skipped: Windows renderer failed and pdftoppm.exe not found");
+                image.Dispose();
+                return false;
+            }
+
             if (!File.Exists(outputFile))
             {
                 using var process = Process.Start(new ProcessStartInfo
