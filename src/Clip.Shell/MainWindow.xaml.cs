@@ -1914,9 +1914,10 @@ public partial class MainWindow : Window
                     SourceAppUserModelId = source.Aumid,
                 };
             }
-            else if (System.Windows.Clipboard.ContainsImage())
+            else if (System.Windows.Clipboard.ContainsImage() ||
+                     System.Windows.Clipboard.ContainsData("PNG"))
             {
-                var image = System.Windows.Clipboard.GetImage();
+                var image = ClipboardImageReader.Read();
                 if (image is not null)
                 {
                     QueueImageClipboardCapture(image, source);
@@ -3095,7 +3096,9 @@ public partial class MainWindow : Window
 
         var icon = new WpfImage
         {
-            Source = IconFor(item, 96, preferRichPreview: false),
+            // Rich preview means an image row shows a thumbnail of the actual image rather than a
+            // generic picture glyph, which is what makes a list of screenshots scannable.
+            Source = IconFor(item, 96, preferRichPreview: true),
             Width = item.Kind == ClipboardItemKind.Text ? 32 : 28,
             Height = item.Kind == ClipboardItemKind.Text ? 32 : 28,
             Stretch = Stretch.Uniform,
@@ -3673,6 +3676,19 @@ public partial class MainWindow : Window
         InfoHost.Children.Clear();
         AddInfo("Source", SourceDisplayName(item), SourceIcon(item));
         AddInfo("Content type", ContentType(item));
+
+        // For an image the dimensions are the most useful fact about it, so they belong near the
+        // top rather than after the copy counts where they scrolled out of view.
+        if (item.Kind == ClipboardItemKind.Image)
+        {
+            if (item.ImageWidth is not null && item.ImageHeight is not null)
+            {
+                AddInfo("Dimensions", $"{item.ImageWidth} x {item.ImageHeight}");
+            }
+
+            AddInfo("Image size", FormatBytes(item.AssetSizeBytes ?? SizeOf(item.AssetPath)));
+        }
+
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
         {
             AddInfo("Saved format", ClipboardPasteData.HasOriginalFormatting(item) ? "Plain text + formatting" : "Plain text");
@@ -3690,16 +3706,6 @@ public partial class MainWindow : Window
         if (item.Kind == ClipboardItemKind.Color)
         {
             AddInfo("Hex", TextPayload(item));
-        }
-
-        if (item.Kind == ClipboardItemKind.Image)
-        {
-            if (item.ImageWidth is not null && item.ImageHeight is not null)
-            {
-                AddInfo("Dimensions", $"{item.ImageWidth} x {item.ImageHeight}");
-            }
-
-            AddInfo("Image size", FormatBytes(item.AssetSizeBytes ?? SizeOf(item.AssetPath)));
         }
 
         if (item.Kind == ClipboardItemKind.Files)
