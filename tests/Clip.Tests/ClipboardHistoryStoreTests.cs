@@ -132,7 +132,11 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
         Assert.DoesNotContain('\n', compactIndex);
         Assert.DoesNotContain("\"HtmlText\"", compactIndex);
         Assert.DoesNotContain("\"AssetPath\"", compactIndex);
-        Assert.DoesNotContain("\"SourceApplicationPath\"", compactIndex);
+
+        // The source path is deliberately kept in the summary index: the list needs it to draw
+        // the source app's real icon, and it is small next to the payload fields dropped above.
+        Assert.Contains("\"SourceApplicationPath\"", compactIndex);
+        Assert.Equal(item.SourceApplicationPath, summary.SourceApplicationPath);
     }
 
     [Fact]

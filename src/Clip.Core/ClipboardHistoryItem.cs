@@ -42,6 +42,12 @@ public sealed class ClipboardHistoryItem
 
     public string? SourceApplicationPath { get; set; }
 
+    /// <summary>
+    /// AppUserModelID of the source app. Packaged (MSIX) apps have no usable executable path,
+    /// so this is the only way to resolve their real name and icon.
+    /// </summary>
+    public string? SourceAppUserModelId { get; set; }
+
     public long? AssetSizeBytes { get; set; }
 
     public int? ImageWidth { get; set; }

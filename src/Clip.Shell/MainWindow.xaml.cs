@@ -624,6 +624,51 @@ public partial class MainWindow : Window
     private const int WmClipboardUpdate = 0x031D;
     private const int ClipboardReadAttempts = 4;
     private const int ClipboardReadRetryDelayMs = 90;
+
+    private static PROPERTYKEY PkeyAppUserModelId => new()
+    {
+        fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),
+        pid = 5,
+    };
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROPERTYKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROPVARIANT
+    {
+        public ushort vt;
+        public ushort reserved1;
+        public ushort reserved2;
+        public ushort reserved3;
+        public IntPtr data;
+        public IntPtr data2;
+    }
+
+    [ComImport]
+    [Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+        [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+        [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+        [PreserveSig] int Commit();
+    }
+
+    [DllImport("shell32.dll", PreserveSig = true)]
+    private static extern int SHGetPropertyStoreForWindow(
+        IntPtr hwnd,
+        ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out object store);
+
+    [DllImport("ole32.dll")]
+    private static extern int PropVariantClear(ref PROPVARIANT value);
     private static readonly TimeSpan PendingTextRescueThreshold = TimeSpan.FromMilliseconds(250);
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
@@ -1853,6 +1898,7 @@ public partial class MainWindow : Window
                     ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
                     SourceApplication = source.Name,
                     SourceApplicationPath = source.Path,
+                    SourceAppUserModelId = source.Aumid,
                 };
             }
             else if (System.Windows.Clipboard.ContainsImage())
@@ -1882,6 +1928,7 @@ public partial class MainWindow : Window
                         RtfText = rtfText,
                         SourceApplication = source.Name,
                         SourceApplicationPath = source.Path,
+                        SourceAppUserModelId = source.Aumid,
                     };
                 }
                 else
@@ -1896,6 +1943,7 @@ public partial class MainWindow : Window
                         RtfText = rtfText,
                         SourceApplication = source.Name,
                         SourceApplicationPath = source.Path,
+                        SourceAppUserModelId = source.Aumid,
                     };
                 }
             }
@@ -2128,7 +2176,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void QueueImageClipboardCapture(BitmapSource image, (string? Name, string? Path) source)
+    private void QueueImageClipboardCapture(BitmapSource image, (string? Name, string? Path, string? Aumid) source)
     {
         var capturedAt = DateTimeOffset.Now;
         var width = image.PixelWidth;
@@ -2174,7 +2222,7 @@ public partial class MainWindow : Window
         }, TaskScheduler.Default);
     }
 
-    private static ClipboardHistoryItem CreateImageClipboardItem(BitmapSource image, string path, int width, int height, (string? Name, string? Path) source, DateTimeOffset capturedAt)
+    private static ClipboardHistoryItem CreateImageClipboardItem(BitmapSource image, string path, int width, int height, (string? Name, string? Path, string? Aumid) source, DateTimeOffset capturedAt)
     {
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));
@@ -2193,6 +2241,7 @@ public partial class MainWindow : Window
             ImageHeight = height,
             SourceApplication = source.Name,
             SourceApplicationPath = source.Path,
+            SourceAppUserModelId = source.Aumid,
             CreatedAt = capturedAt,
             LastUsedAt = capturedAt,
             FirstCopiedAt = capturedAt,
@@ -7491,32 +7540,23 @@ public partial class MainWindow : Window
         }
     }
 
-    private ImageSource? SourceIcon(ClipboardHistoryItem item)
+    private ImageSource? SourceIcon(ClipboardHistoryItem item) => SourceIcon(item, 16);
+
+    private ImageSource? SourceIcon(ClipboardHistoryItem item, int logicalSize)
     {
         try
         {
-            if (item.SourceApplicationPath is not null && File.Exists(item.SourceApplicationPath))
-            {
-                var cacheKey = RasterCacheKey("source", item.SourceApplicationPath, 32);
-                if (TryGetCachedRaster(cacheKey, out var cached))
-                {
-                    return cached;
-                }
-
-                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(item.SourceApplicationPath);
-                if (icon is not null)
-                {
-                    using var bitmap = icon.ToBitmap();
-                    return RememberRaster(cacheKey, BitmapFromDrawingImage(bitmap));
-                }
-            }
+            return SourceAppIcons.Resolve(
+                item.SourceAppUserModelId,
+                item.SourceApplicationPath,
+                logicalSize,
+                VisualTreeHelper.GetDpi(this).DpiScaleX);
         }
         catch (Exception ex)
         {
             ShellLog.Error(ex, "source icon failed");
+            return null;
         }
-
-        return null;
     }
 
     private ImageSource RenderFileSvg(string path, int size)
@@ -7785,20 +7825,71 @@ public partial class MainWindow : Window
 """));
     }
 
-    private static (string? Name, string? Path) ForegroundSource()
+    private static (string? Name, string? Path, string? Aumid) ForegroundSource()
     {
+        var hwnd = GetForegroundWindow();
+        // Read the AUMID from the window rather than the process: packaged apps are often hosted
+        // by ApplicationFrameHost, so the process path would name the host, not the real app.
+        var aumid = WindowAppUserModelId(hwnd);
+
         try
         {
-            var hwnd = GetForegroundWindow();
             GetWindowThreadProcessId(hwnd, out var pid);
             using var process = Process.GetProcessById((int)pid);
             var path = process.MainModule?.FileName;
             var name = !string.IsNullOrWhiteSpace(path) ? System.IO.Path.GetFileNameWithoutExtension(path) : process.ProcessName;
-            return (DisplaySourceName(name), path);
+            return (DisplaySourceName(name), path, aumid);
         }
         catch
         {
-            return ("Unknown", null);
+            return ("Unknown", null, aumid);
+        }
+    }
+
+    private static string? WindowAppUserModelId(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        object? store = null;
+        try
+        {
+            var iid = typeof(IPropertyStore).GUID;
+            if (SHGetPropertyStoreForWindow(hwnd, ref iid, out store) != 0 || store is not IPropertyStore properties)
+            {
+                return null;
+            }
+
+            var key = PkeyAppUserModelId;
+            if (properties.GetValue(ref key, out var value) != 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                // VT_LPWSTR
+                return value.vt == 31 && value.data != IntPtr.Zero
+                    ? Marshal.PtrToStringUni(value.data)
+                    : null;
+            }
+            finally
+            {
+                PropVariantClear(ref value);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (store is not null && Marshal.IsComObject(store))
+            {
+                Marshal.ReleaseComObject(store);
+            }
         }
     }
 

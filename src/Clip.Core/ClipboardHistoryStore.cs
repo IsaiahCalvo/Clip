@@ -1464,7 +1464,10 @@ public sealed class ClipboardHistoryStore
             LastCopiedAt = item.LastCopiedAt,
             CopyCount = item.CopyCount,
             SourceApplication = item.SourceApplication,
-            SourceApplicationPath = null,
+            // The list needs these to draw the source app's real icon. Nulling the path here is
+            // why the detail pane's source icon almost never appeared.
+            SourceApplicationPath = item.SourceApplicationPath,
+            SourceAppUserModelId = item.SourceAppUserModelId,
             AssetSizeBytes = item.AssetSizeBytes,
             ImageWidth = item.ImageWidth,
             ImageHeight = item.ImageHeight,
