@@ -75,6 +75,104 @@ internal static class SourceAppIcons
         }
     }
 
+    /// <summary>
+    /// Cache-only lookup. Returns false when the icon has not been resolved yet, so a caller on
+    /// the UI thread can paint a placeholder instead of blocking on the shell.
+    /// </summary>
+    public static bool TryGetCached(string? aumid, string? exePath, int logicalSize, double dpiScale, out ImageSource? icon)
+    {
+        icon = null;
+        var parsingName = ParsingNameFor(aumid, exePath);
+        if (parsingName is null)
+        {
+            return false;
+        }
+
+        lock (Gate)
+        {
+            if (!Cache.TryGetValue($"{parsingName}|{NativeSizeFor(logicalSize, dpiScale)}", out icon))
+            {
+                return false;
+            }
+
+            Touch($"{parsingName}|{NativeSizeFor(logicalSize, dpiScale)}");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Resolves off the UI thread and invokes <paramref name="onResolved"/> on the worker.
+    /// Shell extensions require STA, so this uses a dedicated STA thread rather than the thread
+    /// pool. Newest request first, so a fast scroll resolves what is on screen rather than what
+    /// has already scrolled past.
+    /// </summary>
+    public static void ResolveAsync(string? aumid, string? exePath, int logicalSize, double dpiScale, Action<ImageSource?> onResolved)
+    {
+        if (ParsingNameFor(aumid, exePath) is null)
+        {
+            return;
+        }
+
+        lock (PendingGate)
+        {
+            Pending.AddFirst(() => onResolved(Resolve(aumid, exePath, logicalSize, dpiScale)));
+            EnsureWorker();
+            PendingSignal.Set();
+        }
+    }
+
+    private static readonly object PendingGate = new();
+    private static readonly LinkedList<Action> Pending = new();
+    private static readonly System.Threading.AutoResetEvent PendingSignal = new(false);
+    private static System.Threading.Thread? Worker;
+
+    private static void EnsureWorker()
+    {
+        if (Worker is not null)
+        {
+            return;
+        }
+
+        Worker = new System.Threading.Thread(WorkerLoop)
+        {
+            IsBackground = true,
+            Name = "ClipSourceIcons",
+        };
+        Worker.SetApartmentState(System.Threading.ApartmentState.STA);
+        Worker.Start();
+    }
+
+    private static void WorkerLoop()
+    {
+        while (true)
+        {
+            Action? next = null;
+            lock (PendingGate)
+            {
+                if (Pending.First is { } first)
+                {
+                    next = first.Value;
+                    Pending.RemoveFirst();
+                }
+            }
+
+            if (next is null)
+            {
+                PendingSignal.WaitOne();
+                continue;
+            }
+
+            try
+            {
+                next();
+            }
+            catch
+            {
+                // A single unresolvable icon must never take down the worker.
+            }
+        }
+    }
+
     private static string? ParsingNameFor(string? aumid, string? exePath)
     {
         if (!string.IsNullOrWhiteSpace(aumid))
@@ -93,6 +191,12 @@ internal static class SourceAppIcons
     private static int NativeSizeFor(int logicalSize, double dpiScale)
     {
         var wanted = (int)Math.Ceiling(logicalSize * (dpiScale <= 0 ? 1.0 : dpiScale));
+
+        // Never ask the shell for a 16 or 20 px asset. Apps author those as separate, heavily
+        // simplified bitmaps, so a detailed logo comes back as an unreadable smudge. Ask for at
+        // least 32 and let WPF downscale a good image instead.
+        wanted = Math.Max(wanted * 2, 32);
+
         foreach (var size in NativeSizes)
         {
             if (size >= wanted)
@@ -174,65 +278,42 @@ internal static class SourceAppIcons
     /// </summary>
     private static ImageSource? FromHBitmap(IntPtr bitmap)
     {
-        if (GetObject(bitmap, Marshal.SizeOf<BITMAP>(), out var info) == 0 || info.bmBitsPixel != 32)
+        // Read the DIB section's own bits rather than going through GetDIBits. GetDIBits does not
+        // reliably carry the alpha channel across, which produces a washed-out halo instead of a
+        // clean icon. The shell hands back a 32bpp top-down DIB with premultiplied alpha.
+        var dibSize = Marshal.SizeOf<DIBSECTION>();
+        if (GetObject(bitmap, dibSize, out DIBSECTION dib) != dibSize ||
+            dib.dsBm.bmBitsPixel != 32 ||
+            dib.dsBm.bmBits == IntPtr.Zero)
         {
             return null;
         }
 
-        var width = info.bmWidth;
-        var height = info.bmHeight;
+        var width = dib.dsBm.bmWidth;
+        var height = Math.Abs(dib.dsBm.bmHeight);
         if (width <= 0 || height <= 0)
         {
             return null;
         }
 
+        var sourceStride = dib.dsBm.bmWidthBytes;
         var stride = width * 4;
         var pixels = new byte[stride * height];
+        // A positive biHeight means the rows are stored bottom-up and have to be flipped.
+        var bottomUp = dib.dsBmih.biHeight > 0;
 
-        var header = new BITMAPINFOHEADER
+        for (var row = 0; row < height; row++)
         {
-            biSize = Marshal.SizeOf<BITMAPINFOHEADER>(),
-            biWidth = width,
-            // Negative height requests a top-down DIB, matching WPF's row order.
-            biHeight = -height,
-            biPlanes = 1,
-            biBitCount = 32,
-            biCompression = 0,
-        };
-
-        var screen = GetDC(IntPtr.Zero);
-        try
-        {
-            if (GetDIBits(screen, bitmap, 0, (uint)height, pixels, ref header, 0) == 0)
-            {
-                return null;
-            }
-        }
-        finally
-        {
-            ReleaseDC(IntPtr.Zero, screen);
+            var sourceRow = bottomUp ? height - 1 - row : row;
+            Marshal.Copy(dib.dsBm.bmBits + (sourceRow * sourceStride), pixels, row * stride, stride);
         }
 
-        // The shell returns premultiplied alpha, so Pbgra32 is the matching format. A fully
-        // zero alpha channel means the source had no alpha at all; treat it as opaque rather
-        // than rendering an invisible icon.
-        var format = HasAlpha(pixels) ? PixelFormats.Pbgra32 : PixelFormats.Bgr32;
-        var source = BitmapSource.Create(width, height, 96, 96, format, null, pixels, stride);
+        // Bgra32, not Pbgra32. Despite the documentation, what comes back here is straight alpha —
+        // declaring it premultiplied makes every semi-transparent edge pixel render too bright,
+        // which shows up as a white halo around the icon on a dark background.
+        var source = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
         source.Freeze();
         return source;
-    }
-
-    private static bool HasAlpha(byte[] pixels)
-    {
-        for (var i = 3; i < pixels.Length; i += 4)
-        {
-            if (pixels[i] != 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     [Flags]
@@ -264,6 +345,18 @@ internal static class SourceAppIcons
         public ushort bmPlanes;
         public ushort bmBitsPixel;
         public IntPtr bmBits;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DIBSECTION
+    {
+        public BITMAP dsBm;
+        public BITMAPINFOHEADER dsBmih;
+        public uint dsBitfields0;
+        public uint dsBitfields1;
+        public uint dsBitfields2;
+        public IntPtr dshSection;
+        public uint dsOffset;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -299,24 +392,8 @@ internal static class SourceAppIcons
         [MarshalAs(UnmanagedType.Interface)] out object item);
 
     [DllImport("gdi32.dll")]
-    private static extern int GetObject(IntPtr handle, int count, out BITMAP info);
-
-    [DllImport("gdi32.dll")]
-    private static extern int GetDIBits(
-        IntPtr dc,
-        IntPtr bitmap,
-        uint startScan,
-        uint scanLines,
-        byte[] bits,
-        ref BITMAPINFOHEADER info,
-        uint usage);
+    private static extern int GetObject(IntPtr handle, int count, out DIBSECTION info);
 
     [DllImport("gdi32.dll")]
     private static extern bool DeleteObject(IntPtr handle);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetDC(IntPtr hwnd);
-
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
 }
