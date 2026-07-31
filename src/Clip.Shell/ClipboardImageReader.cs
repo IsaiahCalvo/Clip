@@ -19,9 +19,38 @@ namespace Clip.Shell;
 /// </summary>
 internal static class ClipboardImageReader
 {
+    // CF_DIBV5. Only this format actually defines an alpha channel.
+    private const string DibV5Format = "Format17";
+
     public static BitmapSource? Read()
     {
-        return TryReadPng() ?? Repair(TryReadDib());
+        if (TryReadPng() is { } png)
+        {
+            return png;
+        }
+
+        var dib = TryReadDib();
+        if (dib is null)
+        {
+            return null;
+        }
+
+        // A plain CF_DIB has no alpha channel: in a 32-bit BI_RGB bitmap the fourth byte is
+        // reserved and undefined, and plenty of apps leave it at zero. Honouring it is what made
+        // captures come out invisible. Only trust alpha when the app actually published a DIBV5.
+        return HasDibV5() ? RepairFullyTransparent(dib) : ForceOpaque(dib);
+    }
+
+    private static bool HasDibV5()
+    {
+        try
+        {
+            return System.Windows.Clipboard.ContainsData(DibV5Format);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -118,16 +147,19 @@ internal static class ClipboardImageReader
     }
 
     /// <summary>
-    /// If every pixel claims to be fully transparent, the alpha channel is meaningless rather than
-    /// the image being blank. Rebuild it as opaque.
+    /// Discards the alpha channel entirely, keeping the colour. Used when the source was a plain
+    /// CF_DIB, where alpha carries no meaning.
     /// </summary>
-    private static BitmapSource? Repair(BitmapSource? source)
-    {
-        if (source is null)
-        {
-            return null;
-        }
+    private static BitmapSource? ForceOpaque(BitmapSource source) => Rebuild(source, alwaysOpaque: true);
 
+    /// <summary>
+    /// Only rescues the degenerate case where a DIBV5 claims every single pixel is invisible.
+    /// Genuine transparency is left alone.
+    /// </summary>
+    private static BitmapSource? RepairFullyTransparent(BitmapSource source) => Rebuild(source, alwaysOpaque: false);
+
+    private static BitmapSource? Rebuild(BitmapSource source, bool alwaysOpaque)
+    {
         try
         {
             var converted = source.Format == PixelFormats.Bgra32
@@ -138,29 +170,36 @@ internal static class ClipboardImageReader
             var height = converted.PixelHeight;
             if (width <= 0 || height <= 0)
             {
-                return source;
+                return Detach(source);
             }
 
             var stride = width * 4;
             var pixels = new byte[stride * (long)height];
             converted.CopyPixels(pixels, stride, 0);
 
-            for (var i = 3; i < pixels.Length; i += 4)
+            var makeOpaque = alwaysOpaque;
+            if (!makeOpaque)
             {
-                if (pixels[i] != 0)
+                makeOpaque = true;
+                for (var i = 3; i < pixels.Length; i += 4)
                 {
-                    // Real alpha somewhere, so the image is fine — but still hand back a detached
-                    // copy so the caller can use it off the UI thread.
-                    return Detach(source);
+                    if (pixels[i] != 0)
+                    {
+                        makeOpaque = false;
+                        break;
+                    }
                 }
             }
 
-            for (var i = 3; i < pixels.Length; i += 4)
+            if (makeOpaque)
             {
-                pixels[i] = 255;
+                for (var i = 3; i < pixels.Length; i += 4)
+                {
+                    pixels[i] = 255;
+                }
             }
 
-            var repaired = BitmapSource.Create(
+            var rebuilt = BitmapSource.Create(
                 width,
                 height,
                 converted.DpiX > 0 ? converted.DpiX : 96,
@@ -169,12 +208,12 @@ internal static class ClipboardImageReader
                 null,
                 pixels,
                 stride);
-            repaired.Freeze();
-            return repaired;
+            rebuilt.Freeze();
+            return rebuilt;
         }
         catch
         {
-            return source;
+            return Detach(source);
         }
     }
 }
