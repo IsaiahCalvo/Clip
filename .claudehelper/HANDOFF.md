@@ -4,7 +4,37 @@ _Last updated: 2026-07-31_
 
 ---
 
-## 2026-07-31 (later) — SDK installed, capture bug fixed, UI pass shipped locally
+## 2026-07-31 (latest) — icons, OCR, version fix; all pushed
+
+Everything is on `origin/ui/grayscale-text-rendering` (10 commits). 262 tests pass. Version
+1.1.9 published and installed to `%APPDATA%\Programs\Clip`.
+
+- **Source-app icons** via `IShellItemImageFactory` (`src/Clip.Shell/SourceAppIcons.cs`).
+  Two gotchas found the hard way: never request a 16/20 px asset (apps author those as
+  separate simplified bitmaps and they come back as smudges — floor at 32 and downscale),
+  and the returned data is **straight alpha, not premultiplied** despite the docs, verified
+  against `Icon.ExtractAssociatedIcon` pixel-for-pixel. Read the DIB section's bits directly;
+  `GetDIBits` drops alpha. A row badge was built and then **removed at the user's request** —
+  he did not want an app icon on the list glyphs.
+- **OCR** via `Windows.Media.Ocr` (`Clip.Core/OcrTextExtractor.cs` + `Clip.Shell/OcrQueue.cs`).
+  Off by default, Settings → "Search text in images". Backfills history when enabled.
+  Both suggested GitHub projects were rejected (6 GB GPU VLM; Docker service needing a cloud LLM).
+- **Version fix:** `Publish-Clip.ps1` hardcoded a 1.1.0 local default while the newest release
+  was 1.1.8, so every local install was "outdated" and the updater offered to downgrade it.
+  Now derives from the newest tag + 1.
+
+**Virtualization was measured and skipped.** Palette shows in 33 ms; 93 rows render in ~17 ms
+via the existing deferred renderer. Rewriting `BuildRow` into a DataTemplate would be a large
+risky refactor of an 11.8k-line file for no measurable gain at these list sizes.
+
+**Still open:** accent overuse (one blue on search border + All pill + Open button + every
+footer hotkey), single-line rows, favicons (decided: zero-network monogram tiles by default,
+real fetching opt-in — contradicts PRIVACY.md otherwise). Inno Setup is not installed, so
+local publishes produce the zip but no `Clip-Setup.exe`.
+
+---
+
+## 2026-07-31 (earlier) — SDK installed, capture bug fixed, UI pass shipped locally
 
 .NET 8 SDK **8.0.423 is now installed** (winget `Microsoft.DotNet.SDK.8`). `dotnet build`
 and `dotnet test` both work. **258 tests pass.** The fixed build has been published and
