@@ -78,6 +78,15 @@ internal sealed class ClipShellSettings
     /// </summary>
     public bool ExtractTextFromImages { get; set; }
 
+    /// <summary>
+    /// Fetch each link's real site icon. This is a network request to the site itself, so it is
+    /// a setting rather than always-on.
+    /// </summary>
+    public bool ShowLinkFavicons { get; set; } = true;
+
+    /// <summary>Show the source app on a second line under each list item.</summary>
+    public bool ShowSourceAppInList { get; set; } = true;
+
     public string? ClipboardFolderPath { get; set; }
     public ClipHotkeySettings Hotkeys { get; set; } = new();
     public ClipPrivacySettings Privacy { get; set; } = new();
@@ -109,6 +118,8 @@ internal sealed class ClipShellSettings
         CheckForUpdatesOnStartup = true;
         InstallUpdatesAutomatically = true;
         ExtractTextFromImages = false;
+        ShowLinkFavicons = true;
+        ShowSourceAppInList = true;
         ClipboardFolderPath = null;
         Hotkeys = new ClipHotkeySettings();
         Hotkeys.ResetToDefaults();
@@ -3013,6 +3024,54 @@ public partial class MainWindow : Window
         return text.FontWeight == FontWeights.SemiBold || text.FontSize >= 13;
     }
 
+    /// <summary>
+    /// Swaps a link row's monogram for the site's real icon. The monogram is what shows until the
+    /// fetch lands, and what stays if the site has no usable icon, so a row is never blank.
+    /// </summary>
+    private void AttachFavicon(WpfImage target, ClipboardHistoryItem item)
+    {
+        if (item.Kind != ClipboardItemKind.Link || !_settings.ShowLinkFavicons)
+        {
+            return;
+        }
+
+        var host = FaviconCache.HostOf(TextPayload(item));
+        if (host is null)
+        {
+            return;
+        }
+
+        target.Tag = host;
+
+        if (FaviconCache.TryGetCached(host, out var cached))
+        {
+            if (cached is not null)
+            {
+                target.Source = cached;
+            }
+
+            return;
+        }
+
+        FaviconCache.FetchAsync(host, resolved =>
+        {
+            if (resolved is null)
+            {
+                return;
+            }
+
+            Dispatcher.BeginInvoke(() =>
+            {
+                // Rows are rebuilt on every filter and search change, so only paint if this
+                // element still belongs to the host we fetched for.
+                if (Equals(target.Tag, host))
+                {
+                    target.Source = resolved;
+                }
+            }, System.Windows.Threading.DispatcherPriority.Background);
+        });
+    }
+
     private Border BuildRow(ClipboardHistoryItem item)
     {
         var row = new Border
@@ -3044,6 +3103,7 @@ public partial class MainWindow : Window
             SnapsToDevicePixels = true,
         };
         RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
+        AttachFavicon(icon, item);
         grid.Children.Add(icon);
 
         var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center, ClipToBounds = true };
@@ -3066,7 +3126,10 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.NoWrap,
         };
         textStack.Children.Add(title);
-        textStack.Children.Add(subtitle);
+        if (_settings.ShowSourceAppInList)
+        {
+            textStack.Children.Add(subtitle);
+        }
         Grid.SetColumn(textStack, 2);
         grid.Children.Add(textStack);
 
@@ -5996,7 +6059,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ApplyExtractTextFromImages, ResetAllSettings, CurrentSettingsPalette)
+    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ApplyExtractTextFromImages, ApplyLinkFavicons, ApplySourceAppInList, ResetAllSettings, CurrentSettingsPalette)
     {
         Owner = this,
     };
@@ -6441,6 +6504,29 @@ public partial class MainWindow : Window
         _settings.Save();
         ShellLog.Info($"privacy changed excludedApps={privacy.ExcludedApps.Count}");
         ShowToast("Privacy settings updated");
+    }
+
+    private void ApplyLinkFavicons(bool enabled)
+    {
+        _settings.ShowLinkFavicons = enabled;
+        _settings.Save();
+        if (!enabled)
+        {
+            // Turning it off should also drop what was already fetched, otherwise "off" only
+            // means "no new requests" and stale icons linger.
+            FaviconCache.Clear();
+        }
+
+        QueueLoadItems(selectFirst: false, "link-favicons-changed");
+        ShowToast(enabled ? "Site icons on" : "Site icons off");
+    }
+
+    private void ApplySourceAppInList(bool enabled)
+    {
+        _settings.ShowSourceAppInList = enabled;
+        _settings.Save();
+        QueueLoadItems(selectFirst: false, "source-app-in-list-changed");
+        ShowToast(enabled ? "Source app shown" : "Source app hidden");
     }
 
     private void ApplyExtractTextFromImages(bool enabled)
@@ -9469,6 +9555,8 @@ internal sealed class SettingsWindow : Window
     private readonly Action<ClipPrivacySettings> _applyPrivacy;
     private readonly Action<PasteFormatPreference> _applyDefaultPasteFormat;
     private readonly Action<bool> _applyExtractTextFromImages;
+    private readonly Action<bool> _applyLinkFavicons;
+    private readonly Action<bool> _applySourceAppInList;
     private readonly Action _resetAllSettings;
     private readonly Func<SettingsPalette> _paletteProvider;
     private readonly System.Windows.Threading.DispatcherTimer _themeApplyTimer = new(System.Windows.Threading.DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(16) };
@@ -9497,7 +9585,7 @@ internal sealed class SettingsWindow : Window
     private Action? _hostClose;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action<bool> applyExtractTextFromImages, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action<bool> applyExtractTextFromImages, Action<bool> applyLinkFavicons, Action<bool> applySourceAppInList, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
@@ -9519,6 +9607,8 @@ internal sealed class SettingsWindow : Window
         _applyPrivacy = applyPrivacy;
         _applyDefaultPasteFormat = applyDefaultPasteFormat;
         _applyExtractTextFromImages = applyExtractTextFromImages;
+        _applyLinkFavicons = applyLinkFavicons;
+        _applySourceAppInList = applySourceAppInList;
         _resetAllSettings = resetAllSettings;
         _paletteProvider = paletteProvider;
         ApplyPalette(_paletteProvider());
@@ -9862,6 +9952,8 @@ internal sealed class SettingsWindow : Window
             panel.Children.Add(UpdateCheckRow());
             panel.Children.Add(DefaultPasteFormatRow());
             panel.Children.Add(ExtractTextFromImagesRow());
+            panel.Children.Add(LinkFaviconsRow());
+            panel.Children.Add(SourceAppInListRow());
         }
 
         if (string.Equals(page, "Appearance", StringComparison.OrdinalIgnoreCase))
@@ -10668,6 +10760,48 @@ internal sealed class SettingsWindow : Window
         {
             label.Foreground = selected ? _accent : _muted;
         }
+    }
+
+    private Border LinkFaviconsRow()
+    {
+        return ControlRow(
+            "Show site icons for links",
+            "Fetch each link's real icon from its website. Icons are cached on your PC; only the site name is requested, never the full link.",
+            StyledDropdown(
+                _settings.ShowLinkFavicons ? "On" : "Off",
+                new[] { "On", "Off" },
+                selected =>
+                {
+                    var enabled = string.Equals(selected, "On", StringComparison.OrdinalIgnoreCase);
+                    if (enabled == _settings.ShowLinkFavicons)
+                    {
+                        return;
+                    }
+
+                    _settings.ShowLinkFavicons = enabled;
+                    _applyLinkFavicons(enabled);
+                }));
+    }
+
+    private Border SourceAppInListRow()
+    {
+        return ControlRow(
+            "Show source app in the list",
+            "Display the app each item was copied from on a second line under it.",
+            StyledDropdown(
+                _settings.ShowSourceAppInList ? "On" : "Off",
+                new[] { "On", "Off" },
+                selected =>
+                {
+                    var enabled = string.Equals(selected, "On", StringComparison.OrdinalIgnoreCase);
+                    if (enabled == _settings.ShowSourceAppInList)
+                    {
+                        return;
+                    }
+
+                    _settings.ShowSourceAppInList = enabled;
+                    _applySourceAppInList(enabled);
+                }));
     }
 
     private Border ExtractTextFromImagesRow()
