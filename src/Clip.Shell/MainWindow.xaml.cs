@@ -7590,7 +7590,14 @@ public partial class MainWindow : Window
                 return RenderItemVectorIcon(ItemVectorIconKind.Image, size);
             }
 
-            if (item.Kind == ClipboardItemKind.Link) return RenderItemVectorIcon(ItemVectorIconKind.Link, size);
+            if (item.Kind == ClipboardItemKind.Link)
+            {
+                // Every link otherwise renders the same chain glyph, so a list of links is a wall
+                // of identical rows. The monogram is drawn locally — no favicon is fetched.
+                return DomainMonogram.For(TextPayload(item), size)
+                    ?? RenderItemVectorIcon(ItemVectorIconKind.Link, size);
+            }
+
             if (item.Kind == ClipboardItemKind.Text) return RenderItemVectorIcon(ItemVectorIconKind.Text, size);
             if (item.Kind == ClipboardItemKind.Files && item.FilePaths.Count == 1)
             {
