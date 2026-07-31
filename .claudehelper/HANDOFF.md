@@ -1,6 +1,102 @@
 # Clip — Command Palette removal → standalone-only — HANDOFF
 
-_Last updated: 2026-06-30_
+_Last updated: 2026-07-31_
+
+---
+
+## 2026-07-31 (later) — SDK installed, capture bug fixed, UI pass shipped locally
+
+.NET 8 SDK **8.0.423 is now installed** (winget `Microsoft.DotNet.SDK.8`). `dotnet build`
+and `dotnet test` both work. **258 tests pass.** The fixed build has been published and
+installed over `%APPDATA%\Programs\Clip` via `Publish-Clip.ps1` + `Install-ClipStartup.ps1`,
+and is the live running Clip. Note `Publish-Clip.ps1` warns that Inno Setup (ISCC.exe) is
+not installed, so no `Clip-Setup.exe` is produced locally — the zip is.
+
+Commits on branch `ui/grayscale-text-rendering` (still local, **not pushed** — no `gh`, no
+cached git credentials):
+
+- `2679941` grayscale text AA instead of ClearType
+- `393cf26` remove title bar, settings gear moved to footer bottom-right
+- `286186a` drop the border box around the preview
+- `0d88a81` color-capture regression + three capture-reliability defects
+- `b8d549b` bounded PDF tool search + watcher mirror of the capture fixes
+
+**Root cause of "colors don't get captured" (was a regression):** commit `e9036d1` added a
+900 ms settle debounce. Pending text items are re-compared to the live clipboard before
+saving with an ordinal `string.Equals` against `item.Text` — and Color is the only kind
+whose capture rewrites `Text` to canonical `#RRGGBB` uppercase. So lowercase, shorthand,
+bare, or newline-terminated hex failed the compare and the item was dropped **entirely**,
+not even saved as text. History held 67 items and zero colors. Fixed via
+`Clip.Core/ClipboardCaptureMatch.cs` (kind-aware matcher). Verified live: `#3b5bdb` →
+`Kind=Color`, `#3B5BDB.png` swatch.
+
+**Capture also lives in the SHELL, not the watcher** (since `45a0212`). `Clip.Watcher` holds
+a dormant near-duplicate. Three reliability defects fixed in `MainWindow.xaml.cs`: no retry
+on transient clipboard lock, sequence number consumed before the read succeeded (making one
+failure permanent), and the single pending slot silently destroying an earlier copy.
+
+Also added: per-item **Paste as Plain Text** (Ctrl+Shift+V) in the action menu. The global
+Settings → Default paste format already existed; only the per-item override was missing.
+Note this change got swept into commit `0d88a81` rather than its own commit.
+
+**Correction to the earlier backlog below:** date grouping already exists (the "TODAY 35"
+header). Only the two-line row shape differs from Raycast.
+
+**Next up, not started:** source-app icons (needs data capture first — exe path is
+privacy-gated off by default and stripped from list summaries, and MSIX apps like Claude /
+Raycast / Codex need an AUMID that is never captured; `IShellItemImageFactory` is the right
+API and machinery already exists in `Clip.Watcher/Program.cs:2262`; existing
+`BitmapFromDrawingImage` drops the alpha channel). Then list virtualization, OCR
+(`Windows.Media.Ocr` — free, offline, already available on the current TFM; the two GitHub
+projects the user linked are both disqualified: one is a 6 GB GPU VLM, the other is Docker
+server middleware requiring a cloud LLM), accent discipline, single-line rows.
+
+Favicon decision made: default to a zero-network monogram tile; real favicon fetching stays
+an off-by-default opt-in because fetching per copied link contradicts `PRIVACY.md`.
+
+---
+
+## 2026-07-31 — Raycast UI comparison + text-rendering fix
+
+Isaiah asked how Clip's palette compares to Raycast's Clipboard History (which now
+ships on Windows) and how to improve the look/color/rendering. Both were captured
+live and compared pixel-for-pixel on the same 150%-DPI display.
+
+**Done (committed, local branch `ui/grayscale-text-rendering`, commit `2679941`, NOT pushed):**
+- Switched all palette text rendering from ClearType to Grayscale AA, with
+  `TextFormattingMode=Ideal` and `TextHintingMode=Auto`, in `MainWindow.xaml`
+  (window + shell border) and `MainWindow.xaml.cs:4350-4352, 11721-11723, 11738-11740`.
+- Dropped the forced `RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Enabled)`
+  at `MainWindow.xaml.cs:762` → `ClearTypeHint.Auto`.
+- Reason: 5x crops proved Clip's glyphs carry orange/blue subpixel fringing on the
+  near-black surface while Raycast's are clean grayscale. This is the single biggest
+  cause of "Raycast renders a little better."
+
+**NOT VERIFIED — blocker:** this machine has .NET **runtimes only**, no SDK and no
+Visual Studio MSBuild, so `dotnet build` fails ("No .NET SDKs were found"). The change
+compiles-by-inspection but has not been built or smoke-tested. `gh` is also absent and
+git has no cached GitHub credentials, so the branch could not be pushed.
+
+**Next steps:**
+1. Install the .NET 8 SDK (or push the branch and let `.github/workflows/ci.yml` build it),
+   then run Clip and confirm the fringing is gone at Alt+V.
+2. Then work the ranked UI backlog below, highest payoff first:
+   - Delete the 36px "Clip" title bar; move the settings gear into the header row next to
+     the filters. Raycast has zero window chrome — this is pure reclaimed space.
+   - Collapse the six filter buttons + two chevrons into one "All Types" dropdown
+     (Raycast's pattern); the header currently reads as a toolbar, not a search bar.
+   - Drop the always-on blue 1px border on the search field; make it borderless, larger
+     type, focus-only affordance.
+   - Stop spending the accent on four things at once (search border, All pill, Open
+     button, every footer hotkey). Pick one primary.
+   - List rows: single line, ~38px logical, rounded 8px inset selection with margin —
+     not full-bleed two-line rows. Add "Today"/"Yesterday" section headers.
+   - Show the real source-app icon and link favicons instead of generic type glyphs.
+   - Remove the border box around the preview and the fixed 180px INFORMATION panel;
+     let preview + info share one scroll like Raycast.
+   - Add `VirtualizingStackPanel` to the list (`ItemsHost` is a plain StackPanel).
+3. Feature gaps worth stealing from Raycast: OCR on copied images so screenshots become
+   searchable, and paste-as-plain-text. Everything else Clip already matches or beats.
 
 ---
 
