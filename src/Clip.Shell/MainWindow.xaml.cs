@@ -3615,6 +3615,18 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (IsVideoFile(ext) || IsAudioFile(ext))
+            {
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    if (token != _previewToken) return;
+                    HidePreviews();
+                    await ShowMediaPreviewAsync(path, IsVideoFile(ext));
+                });
+                ShellLog.Info($"preview media path={path} video={IsVideoFile(ext)} elapsedMs={watch.ElapsedMilliseconds}");
+                return;
+            }
+
             if (IsTextFile(ext))
             {
                 var text = await TextFilePreviewReader.ReadAsync(path, TextPreviewCharacterLimit);
@@ -3789,7 +3801,12 @@ public partial class MainWindow : Window
         items = _kindFilter switch
         {
             "text" => items.Where(i => i.Kind == ClipboardItemKind.Text),
-            "images" => items.Where(i => i.Kind == ClipboardItemKind.Image || (i.Kind == ClipboardItemKind.Files && i.FilePaths.Any(p => IsImageFile(Path.GetExtension(p).ToLowerInvariant())))),
+            // "images" is the Media bucket: pasted images plus any copied image, video or audio
+            // file. The sub-filters below narrow it to one kind.
+            "images" => items.Where(i => i.Kind == ClipboardItemKind.Image || (i.Kind == ClipboardItemKind.Files && i.FilePaths.Any(p => IsMediaFile(Path.GetExtension(p).ToLowerInvariant())))),
+            "media-images" => items.Where(i => i.Kind == ClipboardItemKind.Image || (i.Kind == ClipboardItemKind.Files && i.FilePaths.Any(p => IsImageFile(Path.GetExtension(p).ToLowerInvariant())))),
+            "media-videos" => items.Where(i => i.Kind == ClipboardItemKind.Files && i.FilePaths.Any(p => IsVideoFile(Path.GetExtension(p).ToLowerInvariant()))),
+            "media-audio" => items.Where(i => i.Kind == ClipboardItemKind.Files && i.FilePaths.Any(p => IsAudioFile(Path.GetExtension(p).ToLowerInvariant()))),
             "links" => items.Where(i => i.Kind == ClipboardItemKind.Link),
             "files" => items.Where(i => i.Kind == ClipboardItemKind.Files),
             "colors" => items.Where(i => i.Kind == ClipboardItemKind.Color),
@@ -5487,10 +5504,30 @@ public partial class MainWindow : Window
         PlaceholderPreview.Visibility = Visibility.Visible;
     }
 
+    private static Task<CoreWebView2Environment>? _webView2Environment;
+
+    /// <summary>
+    /// One environment per process. Creating a fresh one each time and handing it to
+    /// <c>EnsureCoreWebView2Async</c> throws "already initialized with a different
+    /// CoreWebView2Environment" on the second preview, which silently left the previous file's
+    /// page on screen.
+    /// </summary>
     private static Task<CoreWebView2Environment> CreateWebView2EnvironmentAsync()
     {
         Directory.CreateDirectory(ClipStoragePaths.WebView2UserDataFolderPath);
-        return CoreWebView2Environment.CreateAsync(userDataFolder: ClipStoragePaths.WebView2UserDataFolderPath);
+        return _webView2Environment ??= CoreWebView2Environment.CreateAsync(
+            userDataFolder: ClipStoragePaths.WebView2UserDataFolderPath);
+    }
+
+    /// <summary>Initializes the WebView2 once; later calls just wait for it to be ready.</summary>
+    private static async Task EnsureWebViewReadyAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
+    {
+        if (view.CoreWebView2 is not null)
+        {
+            return;
+        }
+
+        await view.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
     }
 
     private FrameworkElement EnsureHtmlPreview()
@@ -5515,9 +5552,58 @@ public partial class MainWindow : Window
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
         htmlPreview.Visibility = Visibility.Visible;
-        await htmlPreview.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
+        await EnsureWebViewReadyAsync(htmlPreview);
         htmlPreview.Source = new Uri(path);
     }
+
+    /// <summary>
+    /// Shows a video or audio file in a small player. The WebView2 that already backs HTML
+    /// previews supplies real playback controls — scrubbing, volume, speed — so Clip does not need
+    /// a media stack of its own.
+    /// </summary>
+    private async Task ShowMediaPreviewAsync(string path, bool isVideo)
+    {
+        var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+        htmlPreview.Visibility = Visibility.Visible;
+        await EnsureWebViewReadyAsync(htmlPreview);
+
+        // A generated page has no file-system origin, so the media is served from a virtual host
+        // mapped to the file's own folder rather than referenced as file://.
+        var folder = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            return;
+        }
+
+        // Re-mapping a host that is already mapped throws, which would abort before navigating and
+        // leave the previously selected file's player on screen. Always clear first.
+        try
+        {
+            htmlPreview.CoreWebView2.ClearVirtualHostNameToFolderMapping(MediaVirtualHost);
+        }
+        catch
+        {
+            // Nothing was mapped yet.
+        }
+
+        htmlPreview.CoreWebView2.SetVirtualHostNameToFolderMapping(
+            MediaVirtualHost,
+            folder,
+            CoreWebView2HostResourceAccessKind.Allow);
+
+        var mediaUrl = $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}";
+        var html = MediaPreviewPage.Build(
+            path,
+            mediaUrl,
+            isVideo,
+            BrushHex("Surface"),
+            BrushHex("Text"),
+            BrushHex("Accent"));
+
+        htmlPreview.CoreWebView2.NavigateToString(html);
+    }
+
+    private const string MediaVirtualHost = "clip-media.local";
 
     // Tears down the WebView2 (and its Chromium processes) so nothing browser-related
     // lingers while the palette is hidden. Recreated lazily on the next HTML preview.
@@ -6716,6 +6802,7 @@ public partial class MainWindow : Window
         SettingsIcon.Source = RenderChromeIcon(ChromeIconKind.Settings, "Muted2");
         DateDropIcon.Source = RenderChromeIcon(ChromeIconKind.ChevronDown, _kindFilter == "all" ? "Text" : "Muted2");
         FileDropIcon.Source = RenderChromeIcon(ChromeIconKind.ChevronDown, _kindFilter == "files" ? "Text" : "Muted2");
+        MediaDropIcon.Source = RenderChromeIcon(ChromeIconKind.ChevronDown, IsMediaFilter(_kindFilter) ? "Text" : "Muted2");
         ExpandImageIcon.Source = RenderChromeIcon(ChromeIconKind.Expand, "Muted2");
         _chromeIconsReady = true;
     }
@@ -7198,6 +7285,18 @@ public partial class MainWindow : Window
         ShowStyledMenu(actions, AllFilterShell);
     }
 
+    private void OnMediaDropClick(object sender, RoutedEventArgs e)
+    {
+        var actions = new[]
+        {
+            new MenuAction("All media", () => SetFilter("images")),
+            new MenuAction("Images", () => SetFilter("media-images")),
+            new MenuAction("Videos", () => SetFilter("media-videos")),
+            new MenuAction("Audio", () => SetFilter("media-audio")),
+        };
+        ShowStyledMenu(actions, MediaFilterShell);
+    }
+
     private void OnFileDropClick(object sender, RoutedEventArgs e)
     {
         var keys = _allItems.SelectMany(i => i.FilePaths).Select(FileKindKey).Distinct(StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -7428,7 +7527,7 @@ public partial class MainWindow : Window
     {
         SetFilterVisual(AllButton, AllFilterShell, _kindFilter == "all");
         SetFilterVisual(TextButton, null, _kindFilter == "text");
-        SetFilterVisual(ImageButton, null, _kindFilter == "images");
+        SetFilterVisual(ImageButton, MediaFilterShell, IsMediaFilter(_kindFilter));
         SetFilterVisual(LinksButton, null, _kindFilter == "links");
         SetFilterVisual(ColorButton, null, _kindFilter == "colors");
         SetFilterVisual(FilesButton, FilesFilterShell, _kindFilter == "files");
@@ -7436,8 +7535,13 @@ public partial class MainWindow : Window
         DateDropButton.Background = _kindFilter == "all" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         FileDropButton.Foreground = _kindFilter == "files" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
         FileDropButton.Background = _kindFilter == "files" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
+        MediaDropButton.Foreground = IsMediaFilter(_kindFilter) ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
+        MediaDropButton.Background = IsMediaFilter(_kindFilter) ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         RefreshChromeIconsIfReady();
     }
+
+    private static bool IsMediaFilter(string filter) =>
+        filter is "images" or "media-images" or "media-videos" or "media-audio";
 
     private void SetFilterVisual(WpfButton button, Border? shell, bool selected)
     {
@@ -7666,6 +7770,9 @@ public partial class MainWindow : Window
     };
 
     private static bool IsImageFile(string ext) => ext is ".jpg" or ".jpeg" or ".png" or ".gif" or ".bmp" or ".webp";
+    private static bool IsVideoFile(string ext) => ext is ".mp4" or ".m4v" or ".webm" or ".mov" or ".mkv" or ".avi" or ".ogv" or ".wmv";
+    private static bool IsAudioFile(string ext) => ext is ".mp3" or ".m4a" or ".wav" or ".ogg" or ".oga" or ".flac" or ".aac" or ".wma";
+    private static bool IsMediaFile(string ext) => IsImageFile(ext) || IsVideoFile(ext) || IsAudioFile(ext);
     private static bool IsHtmlFile(string ext) => ext is ".html" or ".htm";
     private static bool IsOfficeOrVisio(string ext) => ext is ".doc" or ".docx" or ".xls" or ".xlsx" or ".xlsm" or ".ppt" or ".pptx" or ".vsd" or ".vsdx";
     private static bool IsTextFile(string ext) => ext is ".txt" or ".log" or ".md" or ".csv" or ".json" or ".xml" or ".css" or ".js" or ".ts" or ".cs" or ".bat" or ".cmd" or ".ps1" or ".py" or ".html" or ".htm";
