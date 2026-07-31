@@ -15,9 +15,15 @@ if (-not $Version) {
     if ($tag -match '^v?(\d+\.\d+\.\d+)') {
         $Version = $Matches[1]
     } else {
-        # Default above the latest published GitHub release so local builds don't perpetually
-        # prompt to "update" to an older release.
-        $Version = "1.1.0"
+        # Local build. Derive from the newest release tag and bump the patch, so a local build is
+        # always newer than anything published. A hardcoded default goes stale the moment a new
+        # release ships, and then the updater offers to replace a local build with an older one.
+        $latestTag = (git tag --sort=-v:refname 2>$null | Where-Object { $_ -match '^v?\d+\.\d+\.\d+$' } | Select-Object -First 1)
+        if ($latestTag -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+            $Version = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+        } else {
+            $Version = "9.9.9"
+        }
     }
 }
 $deploymentMode = if ($FrameworkDependent) { "framework-dependent" } else { "self-contained" }
