@@ -622,6 +622,9 @@ public partial class MainWindow : Window
     private const int ErrorHotkeyAlreadyRegistered = 1409;
     private const int WmHotkey = 0x0312;
     private const int WmClipboardUpdate = 0x031D;
+    private const int ClipboardReadAttempts = 4;
+    private const int ClipboardReadRetryDelayMs = 90;
+    private static readonly TimeSpan PendingTextRescueThreshold = TimeSpan.FromMilliseconds(250);
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
@@ -669,6 +672,7 @@ public partial class MainWindow : Window
     private IReadOnlyList<ClipboardHistoryItem> _allItems = [];
     private ClipboardHistoryItem? _selected;
     private ClipboardHistoryItem? _pendingTextClipboardItem;
+    private DateTime _pendingTextClipboardItemAt;
     private uint _lastClipboardSequenceNumber;
     private HwndSource? _source;
     private bool _openHotkeyRegistered;
@@ -1577,22 +1581,29 @@ public partial class MainWindow : Window
         }
         else if (msg == WmClipboardUpdate)
         {
-            if (ShouldSkipClipboardSequence())
+            var sequence = GetClipboardSequenceNumber();
+            if (IsDuplicateClipboardSequence(sequence))
             {
                 handled = true;
                 return IntPtr.Zero;
             }
 
-            CaptureClipboard();
+            // Only consume the sequence once the read actually succeeded. Marking it up front
+            // meant a single transient clipboard lock lost the copy permanently, because the
+            // retry notification for the same sequence was then discarded as a duplicate.
+            if (CaptureClipboard() && sequence != 0)
+            {
+                _lastClipboardSequenceNumber = sequence;
+            }
+
             handled = true;
         }
 
         return IntPtr.Zero;
     }
 
-    private bool ShouldSkipClipboardSequence()
+    private bool IsDuplicateClipboardSequence(uint sequence)
     {
-        var sequence = GetClipboardSequenceNumber();
         if (sequence == 0)
         {
             return false;
@@ -1604,7 +1615,6 @@ public partial class MainWindow : Window
             return true;
         }
 
-        _lastClipboardSequenceNumber = sequence;
         return false;
     }
 
@@ -1790,9 +1800,39 @@ public partial class MainWindow : Window
         return registered;
     }
 
-    private void CaptureClipboard()
+    /// <summary>
+    /// Reads the clipboard and captures whatever is on it. Returns false only when the
+    /// clipboard could not be read at all, so the caller knows not to consume the sequence
+    /// number. Another process holding the clipboard lock is normal and transient on Windows,
+    /// so the read is retried rather than dropped.
+    /// </summary>
+    private bool CaptureClipboard()
     {
-        try
+        for (var attempt = 1; attempt <= ClipboardReadAttempts; attempt++)
+        {
+            try
+            {
+                ReadAndCaptureClipboard();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (attempt == ClipboardReadAttempts)
+                {
+                    ShellLog.Error(ex, $"clipboard capture failed after {attempt} attempts");
+                    return false;
+                }
+
+                ShellLog.Info($"clipboard capture retry {attempt} error={ex.GetType().Name}");
+                System.Threading.Thread.Sleep(ClipboardReadRetryDelayMs);
+            }
+        }
+
+        return false;
+    }
+
+    private void ReadAndCaptureClipboard()
+    {
         {
             ClipboardHistoryItem? item = null;
             var source = ForegroundSource();
@@ -1867,17 +1907,24 @@ public partial class MainWindow : Window
 
             CaptureClipboardItem(item);
         }
-        catch (Exception ex)
-        {
-            ShellLog.Error(ex, "clipboard capture failed");
-        }
     }
 
     private void CaptureClipboardItem(ClipboardHistoryItem item)
     {
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
         {
+            // Two real copies inside the settle window used to silently destroy the first one.
+            // An app rewriting its own clipboard in a burst is what the debounce is for, so only
+            // rescue a pending item that has been sitting long enough to look like a user action.
+            if (_pendingTextClipboardItem is not null &&
+                DateTime.UtcNow - _pendingTextClipboardItemAt >= PendingTextRescueThreshold)
+            {
+                ShellLog.Info($"clipboard text rescued before supersede preview={_pendingTextClipboardItem.Preview}");
+                SavePendingTextClipboardItem(requireStillOnClipboard: false);
+            }
+
             _pendingTextClipboardItem = item;
+            _pendingTextClipboardItemAt = DateTime.UtcNow;
             _clipboardSettleTimer.Stop();
             _clipboardSettleTimer.Start();
             ShellLog.Info($"clipboard text pending kind={item.Kind} source={item.SourceApplication} preview={item.Preview}");
@@ -1913,7 +1960,9 @@ public partial class MainWindow : Window
             : $"{item.Kind}:{item.ContentHash}";
     }
 
-    private void SavePendingTextClipboardItem()
+    private void SavePendingTextClipboardItem() => SavePendingTextClipboardItem(requireStillOnClipboard: true);
+
+    private void SavePendingTextClipboardItem(bool requireStillOnClipboard)
     {
         var pending = _pendingTextClipboardItem;
         _pendingTextClipboardItem = null;
@@ -1922,7 +1971,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!ClipboardStillContains(pending))
+        if (requireStillOnClipboard && !ClipboardStillContains(pending))
         {
             ShellLog.Info($"clipboard text skipped transient source={pending.SourceApplication} preview={pending.Preview}");
             return;
@@ -2225,19 +2274,33 @@ public partial class MainWindow : Window
 
     private static bool ClipboardStillContains(ClipboardHistoryItem item)
     {
-        try
+        // A transient clipboard lock must not look like "the user replaced it" — that would
+        // silently discard the pending item. Retry, and if the clipboard stays unreadable,
+        // prefer keeping the capture over dropping it.
+        for (var attempt = 0; attempt < ClipboardReadAttempts; attempt++)
         {
-            if (!System.Windows.Clipboard.ContainsText())
+            try
             {
-                return false;
-            }
+                if (!System.Windows.Clipboard.ContainsText())
+                {
+                    return false;
+                }
 
-            return string.Equals(System.Windows.Clipboard.GetText(), item.Text, StringComparison.Ordinal);
+                return ClipboardCaptureMatch.MatchesClipboardText(item, System.Windows.Clipboard.GetText());
+            }
+            catch (Exception ex) when (attempt < ClipboardReadAttempts - 1)
+            {
+                ShellLog.Info($"clipboard settle read retry {attempt + 1} error={ex.GetType().Name}");
+                System.Threading.Thread.Sleep(ClipboardReadRetryDelayMs);
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Error(ex, "clipboard settle read failed, keeping pending item");
+                return true;
+            }
         }
-        catch
-        {
-            return false;
-        }
+
+        return true;
     }
 
     private void QueueLoadItems(bool selectFirst, string reason)
@@ -3013,6 +3076,15 @@ public partial class MainWindow : Window
             MenuAction.Separator,
         };
 
+        if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
+        {
+            actions.Insert(2, new MenuAction(
+                "Paste as Plain Text",
+                () => PasteSelected(PasteFormatPreference.PlainText),
+                true,
+                shortcut: "Ctrl+Shift+V"));
+        }
+
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
         {
             actions.Add(new MenuAction("Edit Text", () => EditText(item), true, shortcut: _settings.Hotkeys.EditSelected));
@@ -3687,14 +3759,21 @@ public partial class MainWindow : Window
         ShellLog.Info($"copy selected id={_selected.Id}");
     }
 
-    private void PasteSelected()
+    private void PasteSelected() => PasteSelected(null);
+
+    /// <summary>
+    /// Pastes the selection. <paramref name="formatOverride"/> forces a format for this one
+    /// paste without touching the saved default, which is what "Paste as Plain Text" uses.
+    /// </summary>
+    private void PasteSelected(PasteFormatPreference? formatOverride)
     {
         if (_selected is null) return;
-        var selected = ClipboardItemForPasteFormat(_selected);
+        var pasteFormat = formatOverride ?? _settings.DefaultPasteFormat;
+        var selected = ClipboardItemForPasteFormat(_selected, pasteFormat);
         var payload = selected.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color
-            ? ClipboardPasteData.Create(selected, _settings.DefaultPasteFormat)
+            ? ClipboardPasteData.Create(selected, pasteFormat)
             : null;
-        SetClipboard(selected, _settings.DefaultPasteFormat);
+        SetClipboard(selected, pasteFormat);
         ConcealPalette("paste");
         RestoreReturnFocus();
 
@@ -3734,10 +3813,13 @@ public partial class MainWindow : Window
         ShellLog.Info($"paste selected id={selected.Id} keys={pasteKeys} action={actionKey} override={overrideHotkey ?? "none"} verified={verified}");
     }
 
-    private ClipboardHistoryItem ClipboardItemForPasteFormat(ClipboardHistoryItem item)
+    private ClipboardHistoryItem ClipboardItemForPasteFormat(ClipboardHistoryItem item) =>
+        ClipboardItemForPasteFormat(item, _settings.DefaultPasteFormat);
+
+    private ClipboardHistoryItem ClipboardItemForPasteFormat(ClipboardHistoryItem item, PasteFormatPreference pasteFormat)
     {
         if (NeedsFullText(item) ||
-            (_settings.DefaultPasteFormat == PasteFormatPreference.OriginalFormatting &&
+            (pasteFormat == PasteFormatPreference.OriginalFormatting &&
             ClipboardPasteData.HasOriginalFormatting(item)))
         {
             return _store.GetItem(item.Id) ?? item;
@@ -6928,6 +7010,11 @@ public partial class MainWindow : Window
         if (MatchesHotkey(e, _settings.Hotkeys.SaveDebugLog))
         {
             WriteDebugSnapshot("keyboard");
+            e.Handled = true;
+        }
+        else if (MatchesHotkey(e, "Ctrl+Shift+V"))
+        {
+            PasteSelected(PasteFormatPreference.PlainText);
             e.Handled = true;
         }
         else if (MatchesHotkey(e, _settings.Hotkeys.PasteSelected))

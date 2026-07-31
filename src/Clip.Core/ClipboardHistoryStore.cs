@@ -2978,39 +2978,8 @@ public sealed class ClipboardHistoryStore
             extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryNormalizeColorText(string? text, string? source, out string hex)
-    {
-        hex = string.Empty;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        var trimmed = text.Trim();
-        var match = Regex.Match(trimmed, @"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$");
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        var sourceLooksLikeColorPicker = source?.Contains("ColorPicker", StringComparison.OrdinalIgnoreCase) == true ||
-            source?.Contains("PowerToys", StringComparison.OrdinalIgnoreCase) == true ||
-            source?.Equals("Clip", StringComparison.OrdinalIgnoreCase) == true ||
-            source?.Equals("Clip.Shell", StringComparison.OrdinalIgnoreCase) == true;
-        if (!trimmed.StartsWith('#') && !sourceLooksLikeColorPicker)
-        {
-            return false;
-        }
-
-        var value = match.Groups[1].Value;
-        if (value.Length == 3)
-        {
-            value = string.Concat(value.Select(ch => $"{ch}{ch}"));
-        }
-
-        hex = "#" + value.ToUpperInvariant();
-        return true;
-    }
+    private static bool TryNormalizeColorText(string? text, string? source, out string hex) =>
+        ClipboardColorDetector.TryNormalize(text, source, out hex);
 
     private static void NormalizeSource(ClipboardHistoryItem item)
     {
