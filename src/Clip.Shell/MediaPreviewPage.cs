@@ -17,12 +17,11 @@ internal static class MediaPreviewPage
     /// URL the player loads from. This is a virtual-host address rather than a file:// path,
     /// because a generated page has no file-system origin and the browser would refuse it.
     /// </param>
-    public static string Build(string filePath, string mediaUrl, bool isVideo, string backgroundHex, string textHex, string accentHex)
+    public static string Build(string filePath, string mediaUrl, bool isVideo, string backgroundHex, string textHex)
     {
         var uri = mediaUrl;
         var mime = MimeFor(Path.GetExtension(filePath));
         var element = isVideo ? "video" : "audio";
-        var name = System.Net.WebUtility.HtmlEncode(Path.GetFileName(filePath));
 
         var page = new StringBuilder();
         page.Append(
@@ -53,45 +52,21 @@ internal static class MediaPreviewPage
               }
               video { max-width: 100%; max-height: calc(100% - 46px); border-radius: 6px; background: #000; }
               audio { width: min(560px, 100%); }
-              .name { font-size: 12px; opacity: .72; text-align: center; word-break: break-all; }
-              .speed { display: flex; gap: 6px; align-items: center; font-size: 12px; opacity: .85; }
-              .speed button {
-                background: transparent;
-                color: inherit;
-                border: 1px solid rgba(255,255,255,.22);
-                border-radius: 5px;
-                padding: 2px 8px;
-                font: inherit;
-                cursor: pointer;
-              }
-              .speed button.on { border-color: {{accentHex}}; color: {{accentHex}}; }
-              .missing { font-size: 13px; opacity: .7; }
+              .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
             </style>
             </head>
             <body>
               <div class="wrap">
+                <!-- The browser's own controls already cover play/pause, seeking, volume and
+                     playback speed, so no extra controls are drawn under them. -->
                 <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls preload="metadata"></{{element}}>
-                <div class="speed">
-                  <span>Speed</span>
-                  <button data-rate="0.5">0.5x</button>
-                  <button data-rate="1" class="on">1x</button>
-                  <button data-rate="1.5">1.5x</button>
-                  <button data-rate="2">2x</button>
-                </div>
-                <div class="name">{{name}}</div>
               </div>
               <script>
                 const player = document.getElementById('player');
-                const buttons = [...document.querySelectorAll('.speed button')];
-                buttons.forEach(b => b.addEventListener('click', () => {
-                  player.playbackRate = parseFloat(b.dataset.rate);
-                  buttons.forEach(o => o.classList.toggle('on', o === b));
-                }));
                 player.addEventListener('error', () => {
                   document.querySelector('.wrap').innerHTML =
                     '<div class="missing">This format cannot be played here. Use Open to play it in your default app.</div>';
                 });
-                // Space toggles playback the way a media viewer should.
                 document.addEventListener('keydown', e => {
                   if (e.code === 'Space') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
                 });

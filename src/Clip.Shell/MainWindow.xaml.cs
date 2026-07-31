@@ -3627,6 +3627,19 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // Source files get a coloured, scrollable, selectable page instead of flat text.
+            if (CodePreviewPage.IsCodeFile(ext))
+            {
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    if (token != _previewToken) return;
+                    HidePreviews();
+                    await ShowCodePreviewAsync(path);
+                });
+                ShellLog.Info($"preview code path={path} elapsedMs={watch.ElapsedMilliseconds}");
+                return;
+            }
+
             if (IsTextFile(ext))
             {
                 var text = await TextFilePreviewReader.ReadAsync(path, TextPreviewCharacterLimit);
@@ -5556,6 +5569,22 @@ public partial class MainWindow : Window
         htmlPreview.Source = new Uri(path);
     }
 
+    private async Task ShowCodePreviewAsync(string path)
+    {
+        var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+        htmlPreview.Visibility = Visibility.Visible;
+        await EnsureWebViewReadyAsync(htmlPreview);
+
+        var html = CodePreviewPage.Build(
+            path,
+            BrushHex("Surface"),
+            BrushHex("Text"),
+            BrushHex("Muted"),
+            BrushHex("Accent"));
+
+        htmlPreview.CoreWebView2.NavigateToString(html);
+    }
+
     /// <summary>
     /// Shows a video or audio file in a small player. The WebView2 that already backs HTML
     /// previews supplies real playback controls — scrubbing, volume, speed — so Clip does not need
@@ -5597,8 +5626,7 @@ public partial class MainWindow : Window
             mediaUrl,
             isVideo,
             BrushHex("Surface"),
-            BrushHex("Text"),
-            BrushHex("Accent"));
+            BrushHex("Text"));
 
         htmlPreview.CoreWebView2.NavigateToString(html);
     }
@@ -7832,6 +7860,17 @@ public partial class MainWindow : Window
                     return LoadCachedBitmap(path, RowIconDecodePixels);
                 }
 
+                // A video should show a frame from itself, the way File Explorer does, rather than
+                // a generic film glyph. Falls back to the type icon when Windows has no thumbnail.
+                if (IsVideoFile(Path.GetExtension(path).ToLowerInvariant()))
+                {
+                    var frame = SourceAppIcons.Thumbnail(path, size, VisualTreeHelper.GetDpi(this).DpiScaleX);
+                    if (frame is not null)
+                    {
+                        return frame;
+                    }
+                }
+
                 return RenderFileSvg(path, size);
             }
 
@@ -7895,7 +7934,10 @@ public partial class MainWindow : Window
             }
         }
 
-        var name = string.IsNullOrWhiteSpace(ext) ? "file-60.svg" : $"file-icon-{ext}.svg";
+        // Every audio format shares one mark rather than a different glyph per container.
+        var name = IsAudioFile("." + ext)
+            ? "file-icon-audio.svg"
+            : string.IsNullOrWhiteSpace(ext) ? "file-60.svg" : $"file-icon-{ext}.svg";
         source = File.Exists(AssetIconPath(name)) ? RenderSvg(name, size) : RenderItemVectorIcon(ItemVectorIconKind.File, size);
         return RememberRaster(cacheKey, source);
     }

@@ -76,6 +76,42 @@ internal static class SourceAppIcons
     }
 
     /// <summary>
+    /// Returns a real thumbnail for a file — a frame from a video, a page from a document —
+    /// rather than its type icon. Same shell call, minus the icon-only flag, which is exactly how
+    /// File Explorer fills its thumbnail view.
+    /// </summary>
+    public static ImageSource? Thumbnail(string filePath, int logicalSize, double dpiScale)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return null;
+        }
+
+        var pixelSize = NativeSizeFor(logicalSize, dpiScale);
+        var key = $"thumb|{filePath}|{pixelSize}";
+
+        lock (Gate)
+        {
+            if (Cache.TryGetValue(key, out var cached))
+            {
+                Touch(key);
+                return cached;
+            }
+        }
+
+        var resolved = TryLoad(filePath, pixelSize, thumbnail: true);
+
+        lock (Gate)
+        {
+            Cache[key] = resolved;
+            Touch(key);
+            Evict();
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
     /// Cache-only lookup. Returns false when the icon has not been resolved yet, so a caller on
     /// the UI thread can paint a placeholder instead of blocking on the shell.
     /// </summary>
@@ -229,7 +265,7 @@ internal static class SourceAppIcons
         }
     }
 
-    private static ImageSource? TryLoad(string parsingName, int pixelSize)
+    private static ImageSource? TryLoad(string parsingName, int pixelSize, bool thumbnail = false)
     {
         object? factoryObject = null;
         var bitmap = IntPtr.Zero;
@@ -245,7 +281,8 @@ internal static class SourceAppIcons
             var size = new SIZE { cx = pixelSize, cy = pixelSize };
             // BIGGERSIZEOK lets the shell hand back a larger native asset that we scale down.
             // SCALEUP is deliberately not set — it would blur small icons back up.
-            hr = factory.GetImage(size, SIIGBF.ICONONLY | SIIGBF.BIGGERSIZEOK, out bitmap);
+            var flags = thumbnail ? SIIGBF.BIGGERSIZEOK : (SIIGBF.ICONONLY | SIIGBF.BIGGERSIZEOK);
+            hr = factory.GetImage(size, flags, out bitmap);
             if (hr != 0 || bitmap == IntPtr.Zero)
             {
                 return null;
