@@ -6403,9 +6403,11 @@ public partial class MainWindow : Window
 
     private void ApplyWindowTitleIcon(AppIconPreference preference)
     {
-        AppHeaderIcon.Source = RenderAppTileIcon(preference);
+        // The palette has no title bar, so the chosen icon lands on the window itself
+        // (alt-tab and taskbar) rather than on an in-window header.
+        Icon = RenderAppTileIcon(preference);
         _appHeaderIconReady = true;
-        ShellLog.Info($"window header icon applied icon={preference}");
+        ShellLog.Info($"window icon applied icon={preference}");
     }
 
     private void EnsureAppHeaderIcon()

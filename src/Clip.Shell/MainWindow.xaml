@@ -269,28 +269,12 @@
             ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="36"/>
                 <RowDefinition Height="53"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="34"/>
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Background="{DynamicResource Surface2}" MouseLeftButtonDown="OnChromeMouseDown">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <Image x:Name="AppHeaderIcon" Width="16" Height="16" Margin="14,0,8,0" VerticalAlignment="Center" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
-                <TextBlock Grid.Column="1" Text="Clip" Foreground="{DynamicResource Muted2}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center"/>
-                <Button x:Name="SettingsButton" Grid.Column="2" Style="{StaticResource IconButton}" Click="OnSettingsClick" ToolTip="Settings" Margin="0,0,16,0">
-                    <Image x:Name="SettingsIcon" Width="16" Height="16" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
-                </Button>
-            </Grid>
-
-            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource Line}"/>
-
-            <Grid Grid.Row="1" Background="{DynamicResource Bg}" Margin="12,10">
+            <Grid Grid.Row="0" Background="{DynamicResource Bg}" Margin="12,10" MouseLeftButtonDown="OnChromeMouseDown">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -351,9 +335,9 @@
                     </Border>
                 </StackPanel>
             </Grid>
-            <Border Grid.Row="1" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource Line}"/>
+            <Border Grid.Row="0" VerticalAlignment="Bottom" Height="1" Background="{DynamicResource Line}"/>
 
-            <Grid Grid.Row="2">
+            <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="320"/>
                     <ColumnDefinition Width="*"/>
@@ -446,7 +430,7 @@
                 </Grid>
             </Grid>
 
-            <Border Grid.Row="3" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
+            <Border Grid.Row="2" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0">
                 <Grid Margin="12,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -472,6 +456,15 @@
                         </Border>
                         <TextBlock Text="Pin" Foreground="{DynamicResource Muted}" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" Margin="7,0,0,0"/>
                     </StackPanel>
+                    <Button x:Name="SettingsButton"
+                            Grid.Column="3"
+                            Style="{StaticResource IconButton}"
+                            Click="OnSettingsClick"
+                            ToolTip="Settings"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                        <Image x:Name="SettingsIcon" Width="16" Height="16" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Button>
                 </Grid>
             </Border>
 
@@ -505,7 +498,7 @@
             </Popup>
 
             <Border x:Name="Toast"
-                    Grid.RowSpan="4"
+                    Grid.RowSpan="3"
                     Visibility="Collapsed"
                     Background="{DynamicResource Text}"
                     CornerRadius="8"
@@ -517,7 +510,7 @@
             </Border>
 
             <Border x:Name="ExpandedImageOverlay"
-                    Grid.RowSpan="4"
+                    Grid.RowSpan="3"
                     Visibility="Collapsed"
                     Background="Transparent"
                     ClipToBounds="True"
