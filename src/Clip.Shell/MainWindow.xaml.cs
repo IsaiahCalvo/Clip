@@ -8007,9 +8007,39 @@ public partial class MainWindow : Window
 """));
     }
 
+    /// <summary>
+    /// Identifies the app an item was copied from.
+    ///
+    /// Windows records which window actually called SetClipboardData, and that is the honest
+    /// answer. The foreground window is only a guess: take a screenshot with a capture tool while
+    /// a browser is on screen and the foreground says "Chrome" even though Chrome had nothing to
+    /// do with it. The owner is not always available — an app that has since closed, or one using
+    /// delayed rendering, leaves it empty — so the foreground window stays as the fallback.
+    /// </summary>
     private static (string? Name, string? Path, string? Aumid) ForegroundSource()
     {
-        var hwnd = GetForegroundWindow();
+        var owner = DescribeWindowSource(GetClipboardOwner());
+        if (owner.Name is not null && !IsOwnProcessName(owner.Name))
+        {
+            return owner;
+        }
+
+        var foreground = DescribeWindowSource(GetForegroundWindow());
+        return foreground.Name is not null ? foreground : ("Unknown", null, null);
+    }
+
+    private static bool IsOwnProcessName(string name) =>
+        name.Equals("Clip", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("Clip.Shell", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("Clip.Watcher", StringComparison.OrdinalIgnoreCase);
+
+    private static (string? Name, string? Path, string? Aumid) DescribeWindowSource(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return (null, null, null);
+        }
+
         // Read the AUMID from the window rather than the process: packaged apps are often hosted
         // by ApplicationFrameHost, so the process path would name the host, not the real app.
         var aumid = WindowAppUserModelId(hwnd);
@@ -8017,6 +8047,11 @@ public partial class MainWindow : Window
         try
         {
             GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0)
+            {
+                return (null, null, aumid);
+            }
+
             using var process = Process.GetProcessById((int)pid);
             var path = process.MainModule?.FileName;
             var name = !string.IsNullOrWhiteSpace(path) ? System.IO.Path.GetFileNameWithoutExtension(path) : process.ProcessName;
@@ -8024,7 +8059,7 @@ public partial class MainWindow : Window
         }
         catch
         {
-            return ("Unknown", null, aumid);
+            return (null, null, aumid);
         }
     }
 
@@ -8459,6 +8494,7 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetClipboardOwner();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr SetActiveWindow(IntPtr hWnd);
