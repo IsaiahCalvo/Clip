@@ -134,10 +134,37 @@ internal static class MediaPreviewPage
               .panel.show { display: block; }
 
               .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
+
+              /* Corner buttons. Hidden normally, shown when the player is fullscreen or has been
+                 moved into a picture-in-picture window. */
+              .corner {
+                position: absolute;
+                top: 10px;
+                display: none;
+                background: rgba(0,0,0,.62);
+                border: 1px solid rgba(255,255,255,.25);
+                color: #fff;
+                border-radius: 5px;
+                padding: 3px 8px;
+                font-size: 13px;
+                line-height: 1;
+                cursor: pointer;
+                z-index: 10;
+              }
+              .corner:hover { background: rgba(0,0,0,.85); }
+              #back { left: 10px; }
+              #close { right: 10px; }
+              .wrap.detached #back, .wrap.detached #close { display: block; }
+              .wrap:fullscreen #close { display: block; }
+              .wrap:fullscreen { background: #000; padding: 0; gap: 0; }
+              .wrap:fullscreen .bar { border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+              .wrap:fullscreen .fs { display: none; }
             </style>
             </head>
             <body>
-              <div class="wrap">
+              <div class="wrap" id="wrap">
+                <button class="corner" id="back" title="Back to Clip">↙</button>
+                <button class="corner" id="close" title="Close">✕</button>
                 <div class="stage {{(isVideo ? "" : "audio")}}">
                   <{{element}} id="player" src="{{mediaUrl}}" type="{{mime}}" preload="metadata"></{{element}}>
                   {{fullscreenButton}}
@@ -221,13 +248,62 @@ internal static class MediaPreviewPage
                   closeMenu();
                 }));
 
+                const wrap = document.getElementById('wrap');
+                let pipWindow = null;
+
+                const restoreFromPip = () => {
+                  if (!pipWindow) return;
+                  document.body.appendChild(wrap);
+                  wrap.classList.remove('detached');
+                  const w = pipWindow;
+                  pipWindow = null;
+                  try { w.close(); } catch {}
+                };
+
+                // The plain picture-in-picture window is drawn by the browser and cannot carry
+                // custom controls — that is where the stray Settings and dead "Back to tab"
+                // buttons came from. Document picture-in-picture opens a real window we own, so
+                // the whole player moves across intact.
                 document.getElementById('pip').addEventListener('click', async () => {
                   closeMenu();
+                  if (pipWindow) { restoreFromPip(); return; }
+
                   try {
-                    await (document.pictureInPictureElement
-                      ? document.exitPictureInPicture()
-                      : p.requestPictureInPicture());
-                  } catch {}
+                    if (window.documentPictureInPicture) {
+                      const rect = p.getBoundingClientRect();
+                      pipWindow = await documentPictureInPicture.requestWindow({
+                        width: Math.max(320, Math.round(rect.width) || 480),
+                        height: Math.max(200, Math.round(rect.height) + 48 || 320),
+                      });
+
+                      // Styles do not follow the element, so copy them into the new document.
+                      for (const sheet of document.styleSheets) {
+                        try {
+                          const css = [...sheet.cssRules].map(r => r.cssText).join('');
+                          const style = pipWindow.document.createElement('style');
+                          style.textContent = css;
+                          pipWindow.document.head.appendChild(style);
+                        } catch {}
+                      }
+
+                      pipWindow.document.body.style.margin = '0';
+                      pipWindow.document.body.style.background = '#000';
+                      pipWindow.document.body.appendChild(wrap);
+                      wrap.classList.add('detached');
+                      pipWindow.addEventListener('pagehide', restoreFromPip);
+                      return;
+                    }
+
+                    await p.requestPictureInPicture();
+                  } catch {
+                    pipWindow = null;
+                  }
+                });
+
+                document.getElementById('back').addEventListener('click', restoreFromPip);
+                document.getElementById('close').addEventListener('click', () => {
+                  if (pipWindow) { restoreFromPip(); return; }
+                  if (document.fullscreenElement) document.exitFullscreen();
                 });
 
                 document.getElementById('dl').addEventListener('click', () => {
@@ -240,8 +316,10 @@ internal static class MediaPreviewPage
 
                 const fs = document.getElementById('fs');
                 if (fs) fs.addEventListener('click', () => {
+                  // Fullscreen the whole player, not the video element. Fullscreening the video
+                  // alone leaves these controls behind and falls back to Chromium's.
                   if (document.fullscreenElement) document.exitFullscreen();
-                  else p.requestFullscreen();
+                  else wrap.requestFullscreen();
                 });
 
                 document.addEventListener('keydown', e => {
