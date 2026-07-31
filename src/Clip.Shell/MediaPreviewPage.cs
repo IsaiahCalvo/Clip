@@ -1,15 +1,14 @@
 using System;
 using System.IO;
-using System.Text;
 
 namespace Clip.Shell;
 
 /// <summary>
-/// Builds the little player page shown for video and audio files.
+/// Builds the player page shown for video and audio files.
 ///
-/// Clip already hosts a WebView2 for HTML previews, so the browser's own media element gives real
-/// playback — seeking, speed, volume — without adding a media stack to the app. Everything is
-/// local: the page is generated here and the file is loaded straight off disk.
+/// The controls are drawn here rather than using the browser's own. Chromium no longer exposes
+/// its media-control internals to page CSS, so its overflow menu could not be resized and its
+/// speed list needed scrolling inside a preview pane.
 /// </summary>
 internal static class MediaPreviewPage
 {
@@ -19,14 +18,15 @@ internal static class MediaPreviewPage
     /// </param>
     public static string Build(string filePath, string mediaUrl, bool isVideo, string backgroundHex, string textHex)
     {
-        var uri = mediaUrl;
         var mime = MimeFor(Path.GetExtension(filePath));
         var element = isVideo ? "video" : "audio";
-        var fullscreenItem = isVideo ? "<button id=\"fs\">Full screen</button>" : string.Empty;
 
-        var page = new StringBuilder();
-        page.Append(
-            $$"""
+        // The fullscreen button sits on the video itself, so it has no meaning for audio.
+        var fullscreenButton = isVideo
+            ? """<button id="fs" class="fs" title="Full screen">⛶</button>"""
+            : string.Empty;
+
+        return $$"""
             <!doctype html>
             <html>
             <head>
@@ -42,32 +42,45 @@ internal static class MediaPreviewPage
                 overflow: hidden;
               }
               .wrap {
-                position: relative;
                 height: 100%;
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
-                gap: 14px;
+                gap: 10px;
                 padding: 12px;
                 box-sizing: border-box;
               }
-              /* Video fills the pane by default rather than sitting small in the middle. */
-              video { width: 100%; flex: 1; min-height: 0; object-fit: contain; border-radius: 6px; background: #000; }
-              /* The audio player should use the pane rather than sit in a narrow strip. */
-              audio { display: none; }
-              .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
 
-              /* Chromium no longer exposes its media-control internals to page CSS, so the speed
-                 list could not be resized. The whole bar is drawn here instead — same controls,
-                 sized to fit a preview pane. */
+              /* The stage is exactly the video box, so the fullscreen button can be pinned to the
+                 picture's own bottom-right corner rather than to the pane. */
+              .stage { position: relative; display: flex; min-height: 0; flex: 1; width: 100%; }
+              .stage.audio { flex: none; height: 0; }
+              video { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: #000; }
+              audio { display: none; }
+
+              .fs {
+                position: absolute;
+                right: 10px;
+                bottom: 10px;
+                background: rgba(0,0,0,.6);
+                border: 1px solid rgba(255,255,255,.25);
+                color: #fff;
+                border-radius: 5px;
+                padding: 3px 7px;
+                font-size: 13px;
+                line-height: 1;
+                cursor: pointer;
+              }
+              .fs:hover { background: rgba(0,0,0,.8); }
+
               .bar {
                 position: relative;
                 display: flex;
                 align-items: center;
                 gap: 10px;
-                width: 94%;
-                padding: 7px 12px;
+                width: 100%;
+                padding: 6px 12px;
                 box-sizing: border-box;
                 background: rgba(0,0,0,.55);
                 border: 1px solid rgba(255,255,255,.13);
@@ -80,81 +93,92 @@ internal static class MediaPreviewPage
                 border: 0;
                 color: #fff;
                 cursor: pointer;
-                padding: 2px 5px;
+                padding: 2px 6px;
                 border-radius: 4px;
                 font: inherit;
                 line-height: 1;
               }
               .bar button:hover { background: rgba(255,255,255,.14); }
-              .icon { font-size: 14px; }
-              .time { font-variant-numeric: tabular-nums; opacity: .88; white-space: nowrap; }
-              input[type=range] {
-                flex: 1;
-                accent-color: #8ab4ff;
-                height: 3px;
-                cursor: pointer;
-              }
-              .vol { width: 66px; flex: none; }
+              #play { font-size: 13px; }
+              #more { font-size: 15px; }
+              .time { font-variant-numeric: tabular-nums; opacity: .9; white-space: nowrap; }
+              #seek { flex: 1; accent-color: #8ab4ff; height: 3px; cursor: pointer; }
+
               .menu {
                 display: none;
                 position: absolute;
                 right: 8px;
-                bottom: 38px;
+                bottom: 34px;
                 background: rgba(32,32,34,.98);
                 border: 1px solid rgba(255,255,255,.16);
                 border-radius: 6px;
                 padding: 3px;
                 box-shadow: 0 6px 18px rgba(0,0,0,.55);
-                min-width: 96px;
+                min-width: 132px;
               }
               .menu.open { display: block; }
               .menu button {
-                display: block;
+                display: flex;
+                justify-content: space-between;
+                gap: 14px;
                 width: 100%;
                 text-align: left;
-                /* The whole point: rows this tight fit every option with no scrolling. */
-                padding: 3px 9px;
+                /* Tight rows so every speed option fits without scrolling. */
+                padding: 4px 9px;
                 white-space: nowrap;
               }
+              .menu .chev { opacity: .6; }
+              .menu .back { border-bottom: 1px solid rgba(255,255,255,.12); margin-bottom: 2px; padding-bottom: 5px; }
               .menu button.on { color: #8ab4ff; font-weight: 600; }
-              .menu .sep { height: 1px; background: rgba(255,255,255,.12); margin: 3px 2px; }
+              .panel { display: none; }
+              .panel.show { display: block; }
+
               .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
             </style>
             </head>
             <body>
               <div class="wrap">
-                <{{element}} id="player" src="{{uri}}" type="{{mime}}" preload="metadata"></{{element}}>
+                <div class="stage {{(isVideo ? "" : "audio")}}">
+                  <{{element}} id="player" src="{{mediaUrl}}" type="{{mime}}" preload="metadata"></{{element}}>
+                  {{fullscreenButton}}
+                </div>
+
                 <div class="bar">
-                  <button id="play" class="icon" title="Play/pause">▶</button>
+                  <button id="play" title="Play/pause">▶</button>
                   <span class="time" id="time">0:00 / 0:00</span>
                   <input type="range" id="seek" value="0" min="0" max="1000" step="1">
-                  <button id="mute" class="icon" title="Mute">🔊</button>
-                  <input type="range" class="vol" id="vol" min="0" max="1" step="0.01" value="1">
-                  <button id="more" class="icon" title="More">⋮</button>
+                  <button id="more" title="More">⋮</button>
+
                   <div class="menu" id="menu">
-                    <button data-rate="0.25">0.25x</button>
-                    <button data-rate="0.5">0.5x</button>
-                    <button data-rate="0.75">0.75x</button>
-                    <button data-rate="1" class="on">Normal</button>
-                    <button data-rate="1.25">1.25x</button>
-                    <button data-rate="1.5">1.5x</button>
-                    <button data-rate="2">2x</button>
-                    <div class="sep"></div>
-                    <button id="pip">Picture in picture</button>
-                    <button id="dl">Download</button>
-                    {{fullscreenItem}}
+                    <div class="panel show" id="mainPanel">
+                      <button id="dl"><span>Download</span></button>
+                      <button id="pip"><span>Picture in picture</span></button>
+                      <button id="speedOpen"><span>Playback speed</span><span class="chev">›</span></button>
+                    </div>
+                    <div class="panel" id="speedPanel">
+                      <button class="back" id="speedBack"><span>‹&nbsp; Playback speed</span></button>
+                      <button data-rate="0.25"><span>0.25</span></button>
+                      <button data-rate="0.5"><span>0.5</span></button>
+                      <button data-rate="0.75"><span>0.75</span></button>
+                      <button data-rate="1" class="on"><span>Normal</span></button>
+                      <button data-rate="1.25"><span>1.25</span></button>
+                      <button data-rate="1.5"><span>1.5</span></button>
+                      <button data-rate="1.75"><span>1.75</span></button>
+                      <button data-rate="2"><span>2</span></button>
+                    </div>
                   </div>
                 </div>
               </div>
+
               <script>
                 const p = document.getElementById('player');
                 const play = document.getElementById('play');
                 const seek = document.getElementById('seek');
                 const time = document.getElementById('time');
-                const vol = document.getElementById('vol');
-                const mute = document.getElementById('mute');
                 const more = document.getElementById('more');
                 const menu = document.getElementById('menu');
+                const mainPanel = document.getElementById('mainPanel');
+                const speedPanel = document.getElementById('speedPanel');
 
                 const fmt = s => {
                   if (!isFinite(s)) return '0:00';
@@ -172,39 +196,59 @@ internal static class MediaPreviewPage
                 p.addEventListener('timeupdate', sync);
                 p.addEventListener('loadedmetadata', sync);
                 seek.addEventListener('input', () => { if (p.duration) p.currentTime = (seek.value / 1000) * p.duration; });
-                vol.addEventListener('input', () => { p.volume = vol.value; p.muted = vol.value == 0; });
-                mute.addEventListener('click', () => { p.muted = !p.muted; mute.textContent = p.muted ? '🔇' : '🔊'; });
 
-                more.addEventListener('click', e => { e.stopPropagation(); menu.classList.toggle('open'); });
+                const showPanel = speed => {
+                  mainPanel.classList.toggle('show', !speed);
+                  speedPanel.classList.toggle('show', speed);
+                };
+                const closeMenu = () => { menu.classList.remove('open'); showPanel(false); };
+
+                more.addEventListener('click', e => {
+                  e.stopPropagation();
+                  if (menu.classList.contains('open')) { closeMenu(); return; }
+                  showPanel(false);
+                  menu.classList.add('open');
+                });
                 menu.addEventListener('click', e => e.stopPropagation());
-                document.addEventListener('click', () => menu.classList.remove('open'));
+                document.addEventListener('click', closeMenu);
 
-                menu.querySelectorAll('button[data-rate]').forEach(b => b.addEventListener('click', () => {
+                document.getElementById('speedOpen').addEventListener('click', () => showPanel(true));
+                document.getElementById('speedBack').addEventListener('click', () => showPanel(false));
+
+                speedPanel.querySelectorAll('button[data-rate]').forEach(b => b.addEventListener('click', () => {
                   p.playbackRate = parseFloat(b.dataset.rate);
-                  menu.querySelectorAll('button[data-rate]').forEach(o => o.classList.toggle('on', o === b));
-                  menu.classList.remove('open');
+                  speedPanel.querySelectorAll('button[data-rate]').forEach(o => o.classList.toggle('on', o === b));
+                  closeMenu();
                 }));
 
                 document.getElementById('pip').addEventListener('click', async () => {
-                  menu.classList.remove('open');
-                  try { await (document.pictureInPictureElement ? document.exitPictureInPicture() : p.requestPictureInPicture()); } catch {}
+                  closeMenu();
+                  try {
+                    await (document.pictureInPictureElement
+                      ? document.exitPictureInPicture()
+                      : p.requestPictureInPicture());
+                  } catch {}
                 });
+
                 document.getElementById('dl').addEventListener('click', () => {
-                  menu.classList.remove('open');
+                  closeMenu();
                   const a = document.createElement('a');
-                  a.href = p.currentSrc; a.download = '';
+                  a.href = p.currentSrc;
+                  a.download = '';
                   a.click();
                 });
+
                 const fs = document.getElementById('fs');
                 if (fs) fs.addEventListener('click', () => {
-                  menu.classList.remove('open');
-                  if (document.fullscreenElement) document.exitFullscreen(); else p.requestFullscreen();
+                  if (document.fullscreenElement) document.exitFullscreen();
+                  else p.requestFullscreen();
                 });
 
                 document.addEventListener('keydown', e => {
-                  if (e.code === 'Escape') menu.classList.remove('open');
+                  if (e.code === 'Escape') closeMenu();
                   if (e.code === 'Space') { e.preventDefault(); p.paused ? p.play() : p.pause(); }
                 });
+
                 p.addEventListener('error', () => {
                   document.querySelector('.wrap').innerHTML =
                     '<div class="missing">This format cannot be played here. Use Open to play it in your default app.</div>';
@@ -212,9 +256,7 @@ internal static class MediaPreviewPage
               </script>
             </body>
             </html>
-            """);
-
-        return page.ToString();
+            """;
     }
 
     private static string MimeFor(string extension) => extension.ToLowerInvariant() switch
