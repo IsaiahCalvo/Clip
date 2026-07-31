@@ -8040,7 +8040,8 @@ public partial class MainWindow : Window
                     ?? RenderItemVectorIcon(ItemVectorIconKind.Link, size);
             }
 
-            if (item.Kind == ClipboardItemKind.Text) return RenderItemVectorIcon(ItemVectorIconKind.Text, size);
+            // Copied text gets its own mark, distinct from the document glyph used for text files.
+            if (item.Kind == ClipboardItemKind.Text) return RenderSvg("file-icon-plaintext.svg", size);
             if (item.Kind == ClipboardItemKind.Files && item.FilePaths.Count == 1)
             {
                 var path = item.FilePaths[0];

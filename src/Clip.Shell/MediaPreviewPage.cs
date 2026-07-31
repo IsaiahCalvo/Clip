@@ -53,21 +53,91 @@ internal static class MediaPreviewPage
               }
               /* Video fills the pane by default rather than sitting small in the middle. */
               video { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: #000; }
-              audio { width: min(560px, 100%); }
+              /* The audio player should use the pane rather than sit in a narrow strip. */
+              audio { width: 94%; }
               .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
 
+              /* Only the speed list is replaced. Chrome draws it as widely spaced rows that need
+                 scrolling in a pane this size and cannot be restyled from the page. Download and
+                 picture-in-picture stay in the native overflow menu. */
+              .rate { position: absolute; right: 16px; bottom: 14px; z-index: 5; }
+              .rate-btn {
+                background: rgba(0,0,0,.66);
+                color: #fff;
+                border: 1px solid rgba(255,255,255,.3);
+                border-radius: 4px;
+                padding: 1px 7px;
+                font: 600 11px/1.5 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                cursor: pointer;
+              }
+              .rate-menu {
+                display: none;
+                position: absolute;
+                right: 0;
+                bottom: 24px;
+                background: rgba(30,30,32,.98);
+                border: 1px solid rgba(255,255,255,.18);
+                border-radius: 5px;
+                padding: 2px;
+                box-shadow: 0 4px 14px rgba(0,0,0,.55);
+              }
+              .rate-menu.open { display: block; }
+              .rate-menu button {
+                display: block;
+                width: 100%;
+                text-align: left;
+                background: transparent;
+                color: #fff;
+                border: 0;
+                border-radius: 3px;
+                padding: 2px 10px 2px 8px;
+                font: 11px/1.45 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                white-space: nowrap;
+                cursor: pointer;
+              }
+              .rate-menu button:hover { background: rgba(255,255,255,.14); }
+              .rate-menu button.on { color: #8ab4ff; font-weight: 600; }
             </style>
             </head>
             <body>
-              <!-- Full native controls, including the overflow menu with playback speed, picture
-                   in picture and download. The menu is kept in bounds by the page zoom the host
-                   applies rather than by removing controls. -->
               <div class="wrap">
-                <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls preload="metadata"></{{element}}>
+                <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls controlsList="noplaybackrate" preload="metadata"></{{element}}>
+                <div class="rate">
+                  <button class="rate-btn" id="rateBtn">1x</button>
+                  <div class="rate-menu" id="rateMenu">
+                    <button data-rate="0.25">0.25x</button>
+                    <button data-rate="0.5">0.5x</button>
+                    <button data-rate="0.75">0.75x</button>
+                    <button data-rate="1" class="on">1x</button>
+                    <button data-rate="1.25">1.25x</button>
+                    <button data-rate="1.5">1.5x</button>
+                    <button data-rate="2">2x</button>
+                  </div>
+                </div>
               </div>
               <script>
                 const player = document.getElementById('player');
+                const rateBtn = document.getElementById('rateBtn');
+                const rateMenu = document.getElementById('rateMenu');
+
+                rateBtn.addEventListener('click', e => {
+                  e.stopPropagation();
+                  rateMenu.classList.toggle('open');
+                });
+
+                rateMenu.addEventListener('click', e => {
+                  const hit = e.target.closest('button[data-rate]');
+                  if (!hit) return;
+                  e.stopPropagation();
+                  player.playbackRate = parseFloat(hit.dataset.rate);
+                  rateBtn.textContent = hit.textContent;
+                  [...rateMenu.querySelectorAll('button')].forEach(b => b.classList.toggle('on', b === hit));
+                  rateMenu.classList.remove('open');
+                });
+
+                document.addEventListener('click', () => rateMenu.classList.remove('open'));
                 document.addEventListener('keydown', e => {
+                  if (e.code === 'Escape') rateMenu.classList.remove('open');
                   if (e.code === 'Space') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
                 });
                 player.addEventListener('error', () => {
