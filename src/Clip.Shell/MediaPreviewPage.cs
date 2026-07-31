@@ -22,6 +22,7 @@ internal static class MediaPreviewPage
         var uri = mediaUrl;
         var mime = MimeFor(Path.GetExtension(filePath));
         var element = isVideo ? "video" : "audio";
+        var fullscreenItem = isVideo ? "<button id=\"fs\">Full screen</button>" : string.Empty;
 
         var page = new StringBuilder();
         page.Append(
@@ -52,46 +53,159 @@ internal static class MediaPreviewPage
                 box-sizing: border-box;
               }
               /* Video fills the pane by default rather than sitting small in the middle. */
-              video { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: #000; }
+              video { width: 100%; flex: 1; min-height: 0; object-fit: contain; border-radius: 6px; background: #000; }
               /* The audio player should use the pane rather than sit in a narrow strip. */
-              audio { width: 94%; }
+              audio { display: none; }
               .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
 
-              /* Compress Chrome own overflow menu (the three-dot list) so all the speed
-                 options fit without scrolling. These shadow-DOM parts are styleable, so the
-                 native menu is kept intact rather than replaced. */
-              video::-webkit-media-controls-overflow-menu-list,
-              audio::-webkit-media-controls-overflow-menu-list {
-                padding: 2px 0;
-                max-height: none;
-                overflow: visible;
+              /* Chromium no longer exposes its media-control internals to page CSS, so the speed
+                 list could not be resized. The whole bar is drawn here instead — same controls,
+                 sized to fit a preview pane. */
+              .bar {
+                position: relative;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                width: 94%;
+                padding: 7px 12px;
+                box-sizing: border-box;
+                background: rgba(0,0,0,.55);
+                border: 1px solid rgba(255,255,255,.13);
+                border-radius: 8px;
+                font: 12px/1.4 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                color: #fff;
               }
-              video::-webkit-media-controls-overflow-menu-list-item,
-              audio::-webkit-media-controls-overflow-menu-list-item,
-              video::-internal-media-controls-overflow-menu-list-item,
-              audio::-internal-media-controls-overflow-menu-list-item {
-                min-height: 0;
-                height: auto;
-                padding: 3px 10px;
-                line-height: 1.35;
+              .bar button {
+                background: transparent;
+                border: 0;
+                color: #fff;
+                cursor: pointer;
+                padding: 2px 5px;
+                border-radius: 4px;
+                font: inherit;
+                line-height: 1;
               }
-              video::-internal-media-controls-text-track-list-item,
-              audio::-internal-media-controls-text-track-list-item {
-                min-height: 0;
-                padding: 3px 10px;
+              .bar button:hover { background: rgba(255,255,255,.14); }
+              .icon { font-size: 14px; }
+              .time { font-variant-numeric: tabular-nums; opacity: .88; white-space: nowrap; }
+              input[type=range] {
+                flex: 1;
+                accent-color: #8ab4ff;
+                height: 3px;
+                cursor: pointer;
               }
+              .vol { width: 66px; flex: none; }
+              .menu {
+                display: none;
+                position: absolute;
+                right: 8px;
+                bottom: 38px;
+                background: rgba(32,32,34,.98);
+                border: 1px solid rgba(255,255,255,.16);
+                border-radius: 6px;
+                padding: 3px;
+                box-shadow: 0 6px 18px rgba(0,0,0,.55);
+                min-width: 96px;
+              }
+              .menu.open { display: block; }
+              .menu button {
+                display: block;
+                width: 100%;
+                text-align: left;
+                /* The whole point: rows this tight fit every option with no scrolling. */
+                padding: 3px 9px;
+                white-space: nowrap;
+              }
+              .menu button.on { color: #8ab4ff; font-weight: 600; }
+              .menu .sep { height: 1px; background: rgba(255,255,255,.12); margin: 3px 2px; }
+              .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
             </style>
             </head>
             <body>
               <div class="wrap">
-                <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls preload="metadata"></{{element}}>
+                <{{element}} id="player" src="{{uri}}" type="{{mime}}" preload="metadata"></{{element}}>
+                <div class="bar">
+                  <button id="play" class="icon" title="Play/pause">▶</button>
+                  <span class="time" id="time">0:00 / 0:00</span>
+                  <input type="range" id="seek" value="0" min="0" max="1000" step="1">
+                  <button id="mute" class="icon" title="Mute">🔊</button>
+                  <input type="range" class="vol" id="vol" min="0" max="1" step="0.01" value="1">
+                  <button id="more" class="icon" title="More">⋮</button>
+                  <div class="menu" id="menu">
+                    <button data-rate="0.25">0.25x</button>
+                    <button data-rate="0.5">0.5x</button>
+                    <button data-rate="0.75">0.75x</button>
+                    <button data-rate="1" class="on">Normal</button>
+                    <button data-rate="1.25">1.25x</button>
+                    <button data-rate="1.5">1.5x</button>
+                    <button data-rate="2">2x</button>
+                    <div class="sep"></div>
+                    <button id="pip">Picture in picture</button>
+                    <button id="dl">Download</button>
+                    {{fullscreenItem}}
+                  </div>
+                </div>
               </div>
               <script>
-                const player = document.getElementById('player');
-                document.addEventListener('keydown', e => {
-                  if (e.code === 'Space') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
+                const p = document.getElementById('player');
+                const play = document.getElementById('play');
+                const seek = document.getElementById('seek');
+                const time = document.getElementById('time');
+                const vol = document.getElementById('vol');
+                const mute = document.getElementById('mute');
+                const more = document.getElementById('more');
+                const menu = document.getElementById('menu');
+
+                const fmt = s => {
+                  if (!isFinite(s)) return '0:00';
+                  const m = Math.floor(s / 60), r = Math.floor(s % 60);
+                  return m + ':' + String(r).padStart(2, '0');
+                };
+                const sync = () => {
+                  time.textContent = fmt(p.currentTime) + ' / ' + fmt(p.duration);
+                  if (p.duration) seek.value = (p.currentTime / p.duration) * 1000;
+                };
+
+                play.addEventListener('click', () => p.paused ? p.play() : p.pause());
+                p.addEventListener('play', () => play.textContent = '❚❚');
+                p.addEventListener('pause', () => play.textContent = '▶');
+                p.addEventListener('timeupdate', sync);
+                p.addEventListener('loadedmetadata', sync);
+                seek.addEventListener('input', () => { if (p.duration) p.currentTime = (seek.value / 1000) * p.duration; });
+                vol.addEventListener('input', () => { p.volume = vol.value; p.muted = vol.value == 0; });
+                mute.addEventListener('click', () => { p.muted = !p.muted; mute.textContent = p.muted ? '🔇' : '🔊'; });
+
+                more.addEventListener('click', e => { e.stopPropagation(); menu.classList.toggle('open'); });
+                menu.addEventListener('click', e => e.stopPropagation());
+                document.addEventListener('click', () => menu.classList.remove('open'));
+
+                menu.querySelectorAll('button[data-rate]').forEach(b => b.addEventListener('click', () => {
+                  p.playbackRate = parseFloat(b.dataset.rate);
+                  menu.querySelectorAll('button[data-rate]').forEach(o => o.classList.toggle('on', o === b));
+                  menu.classList.remove('open');
+                }));
+
+                document.getElementById('pip').addEventListener('click', async () => {
+                  menu.classList.remove('open');
+                  try { await (document.pictureInPictureElement ? document.exitPictureInPicture() : p.requestPictureInPicture()); } catch {}
                 });
-                player.addEventListener('error', () => {
+                document.getElementById('dl').addEventListener('click', () => {
+                  menu.classList.remove('open');
+                  const a = document.createElement('a');
+                  a.href = p.currentSrc; a.download = '';
+                  a.click();
+                });
+                const fs = document.getElementById('fs');
+                if (fs) fs.addEventListener('click', () => {
+                  menu.classList.remove('open');
+                  if (document.fullscreenElement) document.exitFullscreen(); else p.requestFullscreen();
+                });
+
+                document.addEventListener('keydown', e => {
+                  if (e.code === 'Escape') menu.classList.remove('open');
+                  if (e.code === 'Space') { e.preventDefault(); p.paused ? p.play() : p.pause(); }
+                });
+                p.addEventListener('error', () => {
                   document.querySelector('.wrap').innerHTML =
                     '<div class="missing">This format cannot be played here. Use Open to play it in your default app.</div>';
                 });

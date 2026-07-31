@@ -3091,6 +3091,23 @@ public partial class MainWindow : Window
         });
     }
 
+    private static double RowIconSize(ClipboardHistoryItem item)
+    {
+        if (item.Kind == ClipboardItemKind.Text)
+        {
+            return 22;
+        }
+
+        if (item.Kind == ClipboardItemKind.Files &&
+            item.FilePaths.Count > 0 &&
+            IsAudioFile(Path.GetExtension(item.FilePaths[0]).ToLowerInvariant()))
+        {
+            return 22;
+        }
+
+        return 28;
+    }
+
     private Border BuildRow(ClipboardHistoryItem item)
     {
         var row = new Border
@@ -3117,8 +3134,10 @@ public partial class MainWindow : Window
             // Rich preview means an image row shows a thumbnail of the actual image rather than a
             // generic picture glyph, which is what makes a list of screenshots scannable.
             Source = IconFor(item, 96, preferRichPreview: true),
-            Width = item.Kind == ClipboardItemKind.Text ? 32 : 28,
-            Height = item.Kind == ClipboardItemKind.Text ? 32 : 28,
+            // The text and audio marks are denser shapes than the outlined document glyph, so
+            // they read heavier at the same box and sit smaller.
+            Width = RowIconSize(item),
+            Height = RowIconSize(item),
             Stretch = Stretch.Uniform,
             VerticalAlignment = VerticalAlignment.Center,
             SnapsToDevicePixels = true,
