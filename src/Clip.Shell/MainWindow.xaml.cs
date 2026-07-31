@@ -822,6 +822,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Auto);
         FaviconCache.Warm();
+        _htmlPreviewIdleTimer.Tick += OnHtmlPreviewIdle;
         ApplyTheme(_settings.Theme, save: false);
         Opacity = 0;
         TitleText.Cursor = System.Windows.Input.Cursors.IBeam;
@@ -1492,7 +1493,13 @@ public partial class MainWindow : Window
         // the surface entirely; ShowPalette re-shows via its `if (!IsVisible) Show()` path. The window
         // object + already-arranged visual tree stay in memory, so the re-show is still fast/warm.
         Hide();
-        DisposeHtmlPreview();
+
+        // Don't tear the browser down the instant the palette closes. Rebuilding it costs a
+        // noticeable pause on the next video, audio, code or HTML preview, and the palette is
+        // usually reopened within seconds. Keep it warm briefly, then release it if it goes unused.
+        _htmlPreviewIdleTimer.Stop();
+        _htmlPreviewIdleTimer.Start();
+
         ShellLog.Info($"palette concealed reason={reason}");
         if (PaletteSessionMode && KeepWarmSession)
         {
@@ -5604,6 +5611,10 @@ public partial class MainWindow : Window
             Width = screen.Bounds.Width / dpi.DpiScaleX;
             Height = screen.Bounds.Height / dpi.DpiScaleY;
             Shell.CornerRadius = new CornerRadius(0);
+
+            // Fullscreen means the video fills the screen, not the whole app blown up. Everything
+            // except the preview surface is collapsed so only the player is left.
+            SetChromeVisibleForFullScreen(false);
             ShellLog.Info("media fullscreen entered");
             return;
         }
@@ -5621,7 +5632,23 @@ public partial class MainWindow : Window
         Left = _preFullScreenLeft;
         Top = _preFullScreenTop;
         Shell.CornerRadius = new CornerRadius(14);
+        SetChromeVisibleForFullScreen(true);
         ShellLog.Info("media fullscreen exited");
+    }
+
+    /// <summary>
+    /// Collapses or restores everything around the preview: the search row, the footer, the item
+    /// list and the information panel.
+    /// </summary>
+    private void SetChromeVisibleForFullScreen(bool visible)
+    {
+        SearchRowDef.Height = visible ? new GridLength(53) : new GridLength(0);
+        FooterRowDef.Height = visible ? new GridLength(34) : new GridLength(0);
+        ListColumnDef.Width = visible ? new GridLength(320) : new GridLength(0);
+        InfoRowDef.Height = visible ? new GridLength(180) : new GridLength(0);
+        PreviewArea.Margin = visible ? new Thickness(24, 20, 24, 0) : new Thickness(0);
+        PreviewHeaderRowDef.Height = visible ? new GridLength(28) : new GridLength(0);
+        PreviewHeaderSpacerDef.Height = visible ? new GridLength(14) : new GridLength(0);
     }
 
     private FrameworkElement EnsureHtmlPreview()
@@ -5701,6 +5728,11 @@ public partial class MainWindow : Window
             folder,
             CoreWebView2HostResourceAccessKind.Allow);
 
+        // The native control bar and its overflow menu are sized in page pixels, so at 150%
+        // scaling they overflow this small pane and the speed list has to be scrolled. Zooming the
+        // page out brings the whole set — controls and menu — back inside the preview.
+        htmlPreview.ZoomFactor = MediaZoomFactor;
+
         var mediaUrl = $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}";
         var html = MediaPreviewPage.Build(
             path,
@@ -5713,6 +5745,22 @@ public partial class MainWindow : Window
     }
 
     private const string MediaVirtualHost = "clip-media.local";
+    private const double MediaZoomFactor = 0.7;
+
+    private readonly System.Windows.Threading.DispatcherTimer _htmlPreviewIdleTimer = new()
+    {
+        Interval = TimeSpan.FromMinutes(3),
+    };
+
+    private void OnHtmlPreviewIdle(object? sender, EventArgs e)
+    {
+        _htmlPreviewIdleTimer.Stop();
+        if (!IsVisible)
+        {
+            DisposeHtmlPreview();
+            ShellLog.Info("html preview released after idle");
+        }
+    }
 
     // Tears down the WebView2 (and its Chromium processes) so nothing browser-related
     // lingers while the palette is hidden. Recreated lazily on the next HTML preview.
