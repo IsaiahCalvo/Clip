@@ -5592,8 +5592,17 @@ public partial class MainWindow : Window
     private static Task<CoreWebView2Environment> CreateWebView2EnvironmentAsync()
     {
         Directory.CreateDirectory(ClipStoragePaths.WebView2UserDataFolderPath);
+
+        // Document picture-in-picture is what lets the mini window carry Clip's own controls
+        // instead of the browser's fixed ones, and it is off by default in WebView2.
+        var options = new CoreWebView2EnvironmentOptions
+        {
+            AdditionalBrowserArguments = "--enable-features=DocumentPictureInPictureAPI",
+        };
+
         return _webView2Environment ??= CoreWebView2Environment.CreateAsync(
-            userDataFolder: ClipStoragePaths.WebView2UserDataFolderPath);
+            userDataFolder: ClipStoragePaths.WebView2UserDataFolderPath,
+            options: options);
     }
 
     /// <summary>Initializes the WebView2 once; later calls just wait for it to be ready.</summary>

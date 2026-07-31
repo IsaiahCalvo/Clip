@@ -157,8 +157,26 @@ internal static class MediaPreviewPage
               .wrap.detached #back, .wrap.detached #close { display: block; }
               .wrap:fullscreen #close { display: block; }
               .wrap:fullscreen { background: #000; padding: 0; gap: 0; }
-              .wrap:fullscreen .bar { border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
               .wrap:fullscreen .fs { display: none; }
+
+              /* Fullscreen is viewed from further away, so the controls scale up to roughly what
+                 a video site uses rather than staying at preview-pane size. */
+              .wrap:fullscreen .bar {
+                border-radius: 0;
+                border-left: 0;
+                border-right: 0;
+                border-bottom: 0;
+                gap: 20px;
+                padding: 18px 28px;
+                font-size: 17px;
+              }
+              .wrap:fullscreen #play { font-size: 24px; }
+              .wrap:fullscreen #more { font-size: 26px; }
+              .wrap:fullscreen #seek { height: 7px; }
+              .wrap:fullscreen .menu { bottom: 56px; right: 16px; min-width: 178px; font-size: 14px; }
+              .wrap:fullscreen .menu button { padding: 7px 13px; }
+              .wrap:fullscreen .corner { top: 22px; font-size: 22px; padding: 8px 15px; }
+              .wrap:fullscreen #close { right: 18px; }
             </style>
             </head>
             <body>
