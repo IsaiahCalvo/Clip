@@ -759,7 +759,7 @@ public partial class MainWindow : Window
     {
         _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath(), enableLoadMaintenance: false);
         InitializeComponent();
-        RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Enabled);
+        RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Auto);
         ApplyTheme(_settings.Theme, save: false);
         Opacity = 0;
         TitleText.Cursor = System.Windows.Input.Cursors.IBeam;
@@ -4347,9 +4347,9 @@ public partial class MainWindow : Window
             CaretBrush = textCursor,
             SelectionBrush = accentSoft,
         };
-        TextOptions.SetTextFormattingMode(box, TextFormattingMode.Display);
-        TextOptions.SetTextRenderingMode(box, TextRenderingMode.ClearType);
-        TextOptions.SetTextHintingMode(box, TextHintingMode.Fixed);
+        TextOptions.SetTextFormattingMode(box, TextFormattingMode.Ideal);
+        TextOptions.SetTextRenderingMode(box, TextRenderingMode.Grayscale);
+        TextOptions.SetTextHintingMode(box, TextHintingMode.Auto);
         box.KeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
@@ -11718,9 +11718,9 @@ internal sealed class TextEditWindow : Window
         ShowInTaskbar = false;
         UseLayoutRounding = true;
         SnapsToDevicePixels = true;
-        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
-        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
-        TextOptions.SetTextHintingMode(this, TextHintingMode.Fixed);
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.Grayscale);
+        TextOptions.SetTextHintingMode(this, TextHintingMode.Auto);
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
 
         var editorBackground = surface;
@@ -11735,9 +11735,9 @@ internal sealed class TextEditWindow : Window
         _box.AcceptsReturn = true;
         _box.FocusVisualStyle = null;
         _box.SnapsToDevicePixels = true;
-        TextOptions.SetTextFormattingMode(_box, TextFormattingMode.Display);
-        TextOptions.SetTextRenderingMode(_box, TextRenderingMode.ClearType);
-        TextOptions.SetTextHintingMode(_box, TextHintingMode.Fixed);
+        TextOptions.SetTextFormattingMode(_box, TextFormattingMode.Ideal);
+        TextOptions.SetTextRenderingMode(_box, TextRenderingMode.Grayscale);
+        TextOptions.SetTextHintingMode(_box, TextHintingMode.Auto);
         _box.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
         _box.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
         _box.Margin = new Thickness(0);

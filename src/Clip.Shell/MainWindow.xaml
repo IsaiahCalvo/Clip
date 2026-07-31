@@ -13,9 +13,9 @@
         Topmost="True"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
-        TextOptions.TextFormattingMode="Display"
-        TextOptions.TextRenderingMode="ClearType"
-        TextOptions.TextHintingMode="Fixed"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="Grayscale"
+        TextOptions.TextHintingMode="Auto"
         Deactivated="OnDeactivated"
         KeyDown="OnWindowKeyDown">
     <Window.Resources>
@@ -263,9 +263,9 @@
             Background="{DynamicResource Bg}"
             UseLayoutRounding="True"
             SnapsToDevicePixels="True"
-            TextOptions.TextFormattingMode="Display"
-            TextOptions.TextRenderingMode="ClearType"
-            TextOptions.TextHintingMode="Fixed"
+            TextOptions.TextFormattingMode="Ideal"
+            TextOptions.TextRenderingMode="Grayscale"
+            TextOptions.TextHintingMode="Auto"
             ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>
