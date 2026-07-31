@@ -1179,6 +1179,8 @@ internal sealed class ClipboardWatcherForm : Form
     private const int WatcherWindowsHistoryImportLimit = 120;
     private static readonly TimeSpan WindowsHistoryImportMinimumInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ClipboardDuplicateBurstWindow = TimeSpan.FromSeconds(1);
+    private const int ClipboardReadAttempts = 4;
+    private const int ClipboardReadRetryDelayMs = 90;
     private readonly ClipboardHistoryStore _store;
     private readonly WatcherSettingsProvider _settingsProvider;
     private readonly PeriodicWorkThrottle _windowsHistoryImportThrottle = new(WindowsHistoryImportMinimumInterval);
@@ -1403,12 +1405,17 @@ internal sealed class ClipboardWatcherForm : Form
     {
         if (m.Msg == WmClipboardUpdate)
         {
-            if (ShouldSkipClipboardSequence())
+            var sequence = GetClipboardSequenceNumber();
+            if (IsDuplicateClipboardSequence(sequence))
             {
-                return;
+                Program.LogDebug($"Clipboard skipped duplicate sequence={sequence}");
             }
-
-            CaptureCurrentClipboard();
+            else if (CaptureCurrentClipboard())
+            {
+                // Only consume the sequence once the clipboard was actually readable, so a
+                // repeat notification after a transient lock still gets a chance to capture.
+                _lastClipboardSequenceNumber = sequence;
+            }
         }
 
         if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId)
@@ -1708,122 +1715,204 @@ internal sealed class ClipboardWatcherForm : Form
         }
     }
 
-    private void CaptureCurrentClipboard()
+    /// <summary>
+    /// Reads the clipboard and stores whatever it holds. Returns false only when the
+    /// clipboard could not be read at all (another process held the lock for the whole
+    /// retry budget) so the caller can leave the sequence number unconsumed and retry.
+    /// </summary>
+    private bool CaptureCurrentClipboard()
+    {
+        var captureWatch = Stopwatch.StartNew();
+        WatcherSettings settings;
+        (string? Name, string? Path) source;
+        try
+        {
+            settings = RefreshSettings();
+            source = SourceSnapshot(includePath: settings.Privacy.RequiresSourcePath);
+        }
+        catch (Exception ex)
+        {
+            Program.LogError(ex);
+            return true;
+        }
+
+        if (settings.Privacy.IsExcluded(source.Name, source.Path))
+        {
+            Program.LogDebug($"Clipboard skipped excluded source={source.Name} path={source.Path}");
+            return true;
+        }
+
+        for (var attempt = 1; attempt <= ClipboardReadAttempts; attempt++)
+        {
+            ClipboardHistoryItem? item;
+            try
+            {
+                item = ReadClipboardItem(settings, source);
+            }
+            catch (Exception ex) when (IsTransientClipboardFailure(ex))
+            {
+                // Some apps keep the clipboard open for a few dozen milliseconds after a
+                // copy. A single attempt loses the item outright, which is the main reason
+                // copies go missing. Back off briefly and try again.
+                if (attempt == ClipboardReadAttempts)
+                {
+                    Program.LogDebug($"Clipboard read failed after {attempt} attempts hresult=0x{ex.HResult:X8} source={source.Name}");
+                    return false;
+                }
+
+                Thread.Sleep(ClipboardReadRetryDelayMs);
+                continue;
+            }
+            catch (Exception ex)
+            {
+                Program.LogError(ex);
+                return true;
+            }
+
+            if (item is null)
+            {
+                return true;
+            }
+
+            if (attempt > 1)
+            {
+                Program.LogDebug($"Clipboard read recovered attempt={attempt} source={source.Name}");
+            }
+
+            try
+            {
+                LogCapturedItem(AddCapturedItem(item, settings), captureWatch);
+            }
+            catch (Exception ex)
+            {
+                Program.LogError(ex);
+                DeleteCaptureAsset(item);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsTransientClipboardFailure(Exception exception) =>
+        exception is ExternalException or InvalidOperationException;
+
+    /// <summary>
+    /// Builds an item from the current clipboard contents, or null when the clipboard
+    /// holds nothing Clip stores. Throws on a transient clipboard lock so the caller retries.
+    /// </summary>
+    private ClipboardHistoryItem? ReadClipboardItem(WatcherSettings settings, (string? Name, string? Path) source)
+    {
+        var sourceName = source.Name;
+        var sourcePath = source.Path;
+        var data = Clipboard.GetDataObject();
+        if (data is null)
+        {
+            return null;
+        }
+
+        if (data.GetDataPresent(DataFormats.FileDrop))
+        {
+            var files = (data.GetData(DataFormats.FileDrop) as string[])?
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToList() ?? [];
+            if (files.Count == 0)
+            {
+                return null;
+            }
+
+            return new ClipboardHistoryItem
+            {
+                Kind = ClipboardItemKind.Files,
+                FilePaths = files,
+                Preview = string.Join(", ", files.Select(Path.GetFileName)),
+                ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
+                SourceApplication = sourceName,
+                SourceApplicationPath = sourcePath,
+            };
+        }
+
+        if (data.GetDataPresent(DataFormats.UnicodeText) || data.GetDataPresent(DataFormats.Text))
+        {
+            var text = data.GetData(DataFormats.UnicodeText) as string ??
+                data.GetData(DataFormats.Text) as string ??
+                string.Empty;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return null;
+            }
+
+            var captureRichText = settings.DefaultPasteFormat == PasteFormatPreference.OriginalFormatting;
+            var htmlText = captureRichText && data.GetDataPresent(DataFormats.Html)
+                ? data.GetData(DataFormats.Html) as string
+                : null;
+            var rtfText = captureRichText && data.GetDataPresent(DataFormats.Rtf)
+                ? data.GetData(DataFormats.Rtf) as string
+                : null;
+            return new ClipboardHistoryItem
+            {
+                Kind = ClipboardItemKind.Text,
+                Text = text,
+                Preview = ClipboardHistoryStore.PreviewText(text),
+                ContentHash = HashText(text),
+                HtmlText = htmlText,
+                RtfText = rtfText,
+                SourceApplication = sourceName,
+                SourceApplicationPath = sourcePath,
+            };
+        }
+
+        if (!data.GetDataPresent(DataFormats.Bitmap))
+        {
+            return null;
+        }
+
+        if (data.GetData(DataFormats.Bitmap) is not Image image)
+        {
+            return null;
+        }
+
+        var assetPath = _store.NewAssetFilePath(".png");
+        try
+        {
+            image.Save(assetPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        catch
+        {
+            TryDeleteFile(assetPath);
+            throw;
+        }
+
+        return new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Image,
+            AssetPath = assetPath,
+            Preview = $"Image {image.Width} x {image.Height}",
+            ContentHash = File.Exists(assetPath) ? HashFile(assetPath) : null,
+            ImageWidth = image.Width,
+            ImageHeight = image.Height,
+            SourceApplication = sourceName,
+            SourceApplicationPath = sourcePath,
+        };
+    }
+
+    private static void TryDeleteFile(string path)
     {
         try
         {
-            var captureWatch = Stopwatch.StartNew();
-            var settings = RefreshSettings();
-            var source = SourceSnapshot(includePath: settings.Privacy.RequiresSourcePath);
-            var sourceName = source.Name;
-            var sourcePath = source.Path;
-            if (settings.Privacy.IsExcluded(sourceName, sourcePath))
+            if (File.Exists(path))
             {
-                Program.LogDebug($"Clipboard skipped excluded source={sourceName} path={sourcePath}");
-                return;
-            }
-
-            var data = Clipboard.GetDataObject();
-            if (data is null)
-            {
-                return;
-            }
-
-            if (data.GetDataPresent(DataFormats.FileDrop))
-            {
-                var files = (data.GetData(DataFormats.FileDrop) as string[])?
-                    .Where(path => !string.IsNullOrWhiteSpace(path))
-                    .ToList() ?? [];
-                if (files.Count > 0)
-                {
-                    var captured = AddCapturedItem(new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Files,
-                        FilePaths = files,
-                        Preview = string.Join(", ", files.Select(Path.GetFileName)),
-                        ContentHash = HashText(string.Join("|", files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))),
-                        SourceApplication = sourceName,
-                        SourceApplicationPath = sourcePath,
-                    }, settings);
-                    LogCapturedItem(captured, captureWatch);
-                }
-            }
-            else if (data.GetDataPresent(DataFormats.UnicodeText) || data.GetDataPresent(DataFormats.Text))
-            {
-                var text = data.GetData(DataFormats.UnicodeText) as string ??
-                    data.GetData(DataFormats.Text) as string ??
-                    string.Empty;
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    var captureRichText = settings.DefaultPasteFormat == PasteFormatPreference.OriginalFormatting;
-                    var htmlText = captureRichText && data.GetDataPresent(DataFormats.Html)
-                        ? data.GetData(DataFormats.Html) as string
-                        : null;
-                    var rtfText = captureRichText && data.GetDataPresent(DataFormats.Rtf)
-                        ? data.GetData(DataFormats.Rtf) as string
-                        : null;
-                    var captured = AddCapturedItem(new ClipboardHistoryItem
-                    {
-                        Kind = ClipboardItemKind.Text,
-                        Text = text,
-                        Preview = ClipboardHistoryStore.PreviewText(text),
-                        ContentHash = HashText(text),
-                        HtmlText = htmlText,
-                        RtfText = rtfText,
-                        SourceApplication = sourceName,
-                        SourceApplicationPath = sourcePath,
-                    }, settings);
-                    LogCapturedItem(captured, captureWatch);
-                }
-            }
-            else if (data.GetDataPresent(DataFormats.Bitmap))
-            {
-                var assetPath = _store.NewAssetFilePath(".png");
-                if (data.GetData(DataFormats.Bitmap) is not Image image)
-                {
-                    return;
-                }
-
-                image.Save(assetPath, System.Drawing.Imaging.ImageFormat.Png);
-                var width = image.Width;
-                var height = image.Height;
-                var captured = AddCapturedItem(new ClipboardHistoryItem
-                {
-                    Kind = ClipboardItemKind.Image,
-                    AssetPath = assetPath,
-                    Preview = $"Image {width} x {height}",
-                    ContentHash = File.Exists(assetPath) ? HashFile(assetPath) : null,
-                    ImageWidth = width,
-                    ImageHeight = height,
-                    SourceApplication = sourceName,
-                    SourceApplicationPath = sourcePath,
-                }, settings);
-                LogCapturedItem(captured, captureWatch);
+                File.Delete(path);
             }
         }
         catch
         {
-            // Some apps lock or clear clipboard formats briefly. Ignore and catch the next update.
         }
     }
 
-    private bool ShouldSkipClipboardSequence()
-    {
-        var sequence = GetClipboardSequenceNumber();
-        if (sequence == 0)
-        {
-            return false;
-        }
-
-        if (sequence == _lastClipboardSequenceNumber)
-        {
-            Program.LogDebug($"Clipboard skipped duplicate sequence={sequence}");
-            return true;
-        }
-
-        _lastClipboardSequenceNumber = sequence;
-        return false;
-    }
+    private bool IsDuplicateClipboardSequence(uint sequence) =>
+        sequence != 0 && sequence == _lastClipboardSequenceNumber;
 
     private WatcherSettings RefreshSettings()
     {
@@ -2712,6 +2801,8 @@ internal static class PdfPreviewRenderer
         }
     }
 
+    private const int LocalAppDataSearchDepth = 4;
+
     private static string? FindTool(string fileName)
     {
         var pathDirs = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
@@ -2726,9 +2817,68 @@ internal static class PdfPreviewRenderer
         }
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Directory.Exists(localAppData)
-            ? Directory.EnumerateFiles(localAppData, fileName, SearchOption.AllDirectories).FirstOrDefault()
-            : null;
+        return FindFileWithinDepth(localAppData, fileName, LocalAppDataSearchDepth);
+    }
+
+    /// <summary>
+    /// Breadth-first search for <paramref name="fileName"/> under <paramref name="root"/>,
+    /// bounded to <paramref name="maxDepth"/> levels and skipping junctions/symlinks.
+    /// A plain recursive enumeration of LocalAppData walks into the legacy
+    /// "Application Data" junction, which both loops back on itself and throws
+    /// UnauthorizedAccessException, aborting the whole search.
+    /// </summary>
+    internal static string? FindFileWithinDepth(string root, string fileName, int maxDepth)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        {
+            return null;
+        }
+
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = false,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        };
+
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var current = new List<string> { root };
+        for (var depth = 0; depth <= maxDepth && current.Count > 0; depth++)
+        {
+            var next = new List<string>();
+            foreach (var directory in current)
+            {
+                if (!visited.Add(directory))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var candidate = Path.Combine(directory, fileName);
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+
+                    if (depth < maxDepth)
+                    {
+                        next.AddRange(Directory.EnumerateDirectories(directory, "*", options));
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                catch (IOException)
+                {
+                }
+            }
+
+            current = next;
+        }
+
+        return null;
     }
 }
 
