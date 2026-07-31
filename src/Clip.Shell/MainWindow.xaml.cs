@@ -3673,6 +3673,25 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // A PDF opens in the WebView2's own viewer: scrollable, text-selectable and
+            // searchable, instead of a flat picture of page one. Falls back to the rendered image
+            // if that fails for any reason.
+            if (ext == ".pdf")
+            {
+                var shown = false;
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    if (token != _previewToken) return;
+                    shown = await TryShowDocumentPreviewAsync(path);
+                });
+
+                if (shown)
+                {
+                    ShellLog.Info($"preview pdf-live path={path} elapsedMs={watch.ElapsedMilliseconds}");
+                    return;
+                }
+            }
+
             DrawingImage? rendered = null;
             if (ext == ".pdf")
             {
@@ -5675,6 +5694,55 @@ public partial class MainWindow : Window
         htmlPreview.Visibility = Visibility.Visible;
         await EnsureWebViewReadyAsync(htmlPreview);
         htmlPreview.Source = new Uri(path);
+    }
+
+    /// <summary>
+    /// Opens a document in the WebView2's built-in viewer. Returns false when it could not be
+    /// shown, so the caller keeps the existing rendered-image path rather than showing nothing.
+    /// </summary>
+    private async Task<bool> TryShowDocumentPreviewAsync(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            var folder = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                return false;
+            }
+
+            var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+            htmlPreview.Visibility = Visibility.Visible;
+            await EnsureWebViewReadyAsync(htmlPreview);
+            htmlPreview.ZoomFactor = 1.0;
+
+            try
+            {
+                htmlPreview.CoreWebView2.ClearVirtualHostNameToFolderMapping(MediaVirtualHost);
+            }
+            catch
+            {
+                // Nothing mapped yet.
+            }
+
+            htmlPreview.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                MediaVirtualHost,
+                folder,
+                CoreWebView2HostResourceAccessKind.Allow);
+
+            htmlPreview.CoreWebView2.Navigate(
+                $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"document preview failed path={path}");
+            return false;
+        }
     }
 
     private async Task ShowCodePreviewAsync(string path)

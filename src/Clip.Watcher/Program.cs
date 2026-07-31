@@ -2440,6 +2440,8 @@ internal static class ShellIconReader
 
 internal static class StaticDocumentPreviewRenderer
 {
+    private static readonly TimeSpan PreviewTimeout = TimeSpan.FromSeconds(25);
+
     public static bool IsSupported(string path)
     {
         if (!File.Exists(path))
@@ -2475,7 +2477,15 @@ internal static class StaticDocumentPreviewRenderer
         thread.SetApartmentState(ApartmentState.STA);
         thread.IsBackground = true;
         thread.Start();
-        thread.Join();
+
+        // Never wait forever. Office automation can hang outright — Word's export was measured
+        // hanging indefinitely on this machine — and an unbounded Join leaks the thread and the
+        // Office process permanently, once per preview. Give up and fall back instead.
+        if (!thread.Join(PreviewTimeout))
+        {
+            Program.LogDebug($"Static preview timed out after {PreviewTimeout.TotalSeconds}s path={path}");
+            return null;
+        }
 
         if (error is not null)
         {
