@@ -94,6 +94,25 @@ internal static class FaviconCache
              (bytes[0] == 169 && bytes[1] == 254));
     }
 
+    /// <summary>
+    /// Builds the browser-icon snapshot ahead of time on a background thread. Without this the
+    /// first link row pays the one-off cost of reading the browsers' favicon databases.
+    /// </summary>
+    public static void Warm()
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                BrowserFaviconStore.TryGet("example.com", out _);
+            }
+            catch
+            {
+                // Warming is an optimisation; a failure here just means the first lookup pays.
+            }
+        });
+    }
+
     /// <summary>Cache-only lookup so the UI thread never blocks on the network.</summary>
     public static bool TryGetCached(string host, out ImageSource? icon)
     {
@@ -182,6 +201,13 @@ internal static class FaviconCache
 
     private static async Task<byte[]?> DownloadAsync(string host)
     {
+        // Zero-network path first. For any site the user has actually visited, the browser
+        // already downloaded this icon, so there is nothing to ask the site for.
+        if (BrowserFaviconStore.TryGet(host, out var local) && local is { Length: > 0 })
+        {
+            return local;
+        }
+
         foreach (var candidate in await CandidatesAsync(host).ConfigureAwait(false))
         {
             var bytes = await GetAsync(candidate).ConfigureAwait(false);

@@ -821,6 +821,7 @@ public partial class MainWindow : Window
         _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath(), enableLoadMaintenance: false);
         InitializeComponent();
         RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Auto);
+        FaviconCache.Warm();
         ApplyTheme(_settings.Theme, save: false);
         Opacity = 0;
         TitleText.Cursor = System.Windows.Input.Cursors.IBeam;

@@ -29,11 +29,18 @@ Clip makes network requests in exactly two cases:
 
 1. **Update checks.** Clip asks GitHub Releases for the latest version. This sends no clipboard data.
 
-2. **Site icons for links.** When you copy a link and "Show site icons for links" is on, Clip requests that website's home page and icon so the list can show the site's real icon instead of a generic one, the same way a browser does when you visit it.
+2. **Site icons for links.** When you copy a link, Clip shows that site's real icon in the list.
 
-   What this means in practice: the website learns your IP address and that someone looked up its icon, at roughly the time you copied the link. This applies to links you copy but never open. Clip sends only the site name — never the full link, never its path or query, and never any other clipboard content. No cookies are sent. Only public websites are contacted; addresses on your own network are skipped. Icons are cached on your PC and stored under hashed filenames, so the cache is not a readable list of sites you copied.
+   Clip looks in two places, in order:
 
-   Turn it off in Settings under "Show site icons for links". Turning it off also deletes the cached icons. With it off, Clip draws a lettered tile from the site's name instead and makes no request.
+   - **Your browser's own favicon database first.** Chrome and Edge already store the icon for every site you have visited. Clip reads a copy of that file locally. **No network request is made**, and for most links this is where the icon comes from.
+   - **The website itself, only if the first step found nothing.** Clip requests the site's home page and icon, the same way a browser does when you visit it.
+
+   When the second step happens, the website learns your IP address and that someone looked up its icon, at roughly the time you copied the link — including for links you copy but never open. Clip sends only the site name, never the full link, never its path or query, and never any other clipboard content. No cookies are sent, and only public websites are contacted; addresses on your own network are skipped.
+
+   Icons are cached on your PC under hashed filenames, so the cache is not a readable list of sites you copied.
+
+   Note that reading your browser's favicon database means Clip reads which sites you have visited, though only their icons and addresses — never history entries, passwords, or cookies. The copy Clip makes is temporary and deleted immediately.
 
 ## Text in Images
 
