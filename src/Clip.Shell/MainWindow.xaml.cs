@@ -1139,6 +1139,17 @@ public partial class MainWindow : Window
         }
 
         _outsideClickTimer.Start();
+
+        // Closing the palette tears down the WebView2, so an HTML, code or media preview is gone
+        // by the time it reopens. Without re-rendering, reopening on the same item shows an empty
+        // pane until the user selects something else.
+        if (_selected is not null)
+        {
+            _ = Dispatcher.BeginInvoke(
+                new Action(() => RenderPreview(_selected)),
+                System.Windows.Threading.DispatcherPriority.Background);
+        }
+
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender} noActivate={_paletteNoActivate}");
 
         if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
@@ -5512,6 +5523,14 @@ public partial class MainWindow : Window
     private void ShowPlaceholder(ClipboardHistoryItem item, string text)
     {
         HidePreviews();
+        // The audio mark is a solid, dense shape rather than an outlined document glyph, so it
+        // reads much heavier at the same box size and needs to sit smaller.
+        var audioMark = item.Kind == ClipboardItemKind.Files &&
+            item.FilePaths.Count > 0 &&
+            IsAudioFile(Path.GetExtension(item.FilePaths[0]).ToLowerInvariant());
+
+        PlaceholderIcon.Width = audioMark ? 72 : 128;
+        PlaceholderIcon.Height = audioMark ? 72 : 128;
         PlaceholderIcon.Source = IconFor(item, 240);
         PlaceholderText.Text = text;
         PlaceholderPreview.Visibility = Visibility.Visible;
@@ -5533,7 +5552,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Initializes the WebView2 once; later calls just wait for it to be ready.</summary>
-    private static async Task EnsureWebViewReadyAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
+    private async Task EnsureWebViewReadyAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
     {
         if (view.CoreWebView2 is not null)
         {
@@ -5541,6 +5560,68 @@ public partial class MainWindow : Window
         }
 
         await view.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
+        view.CoreWebView2.ContainsFullScreenElementChanged += OnWebViewFullScreenChanged;
+    }
+
+    private WindowState _preFullScreenState;
+    private WindowStyle _preFullScreenStyle;
+    private double _preFullScreenWidth;
+    private double _preFullScreenHeight;
+    private double _preFullScreenLeft;
+    private double _preFullScreenTop;
+    private bool _isMediaFullScreen;
+
+    /// <summary>
+    /// Takes the whole monitor when a video goes fullscreen. Without this the palette stays its
+    /// fixed 880x560, so "fullscreen" only filled that small window.
+    /// </summary>
+    private void OnWebViewFullScreenChanged(object? sender, object e)
+    {
+        if (sender is not CoreWebView2 core)
+        {
+            return;
+        }
+
+        if (core.ContainsFullScreenElement)
+        {
+            if (_isMediaFullScreen)
+            {
+                return;
+            }
+
+            _isMediaFullScreen = true;
+            _preFullScreenState = WindowState;
+            _preFullScreenStyle = WindowStyle;
+            _preFullScreenWidth = Width;
+            _preFullScreenHeight = Height;
+            _preFullScreenLeft = Left;
+            _preFullScreenTop = Top;
+
+            var screen = System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(this).Handle);
+            var dpi = VisualTreeHelper.GetDpi(this);
+            Left = screen.Bounds.Left / dpi.DpiScaleX;
+            Top = screen.Bounds.Top / dpi.DpiScaleY;
+            Width = screen.Bounds.Width / dpi.DpiScaleX;
+            Height = screen.Bounds.Height / dpi.DpiScaleY;
+            Shell.CornerRadius = new CornerRadius(0);
+            ShellLog.Info("media fullscreen entered");
+            return;
+        }
+
+        if (!_isMediaFullScreen)
+        {
+            return;
+        }
+
+        _isMediaFullScreen = false;
+        WindowState = _preFullScreenState;
+        WindowStyle = _preFullScreenStyle;
+        Width = _preFullScreenWidth;
+        Height = _preFullScreenHeight;
+        Left = _preFullScreenLeft;
+        Top = _preFullScreenTop;
+        Shell.CornerRadius = new CornerRadius(14);
+        ShellLog.Info("media fullscreen exited");
     }
 
     private FrameworkElement EnsureHtmlPreview()

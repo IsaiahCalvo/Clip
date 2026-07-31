@@ -41,6 +41,7 @@ internal static class MediaPreviewPage
                 overflow: hidden;
               }
               .wrap {
+                position: relative;
                 height: 100%;
                 display: flex;
                 flex-direction: column;
@@ -50,25 +51,98 @@ internal static class MediaPreviewPage
                 padding: 12px;
                 box-sizing: border-box;
               }
-              video { max-width: 100%; max-height: calc(100% - 46px); border-radius: 6px; background: #000; }
+              /* Video fills the pane by default rather than sitting small in the middle. */
+              video { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: #000; }
               audio { width: min(560px, 100%); }
               .missing { font-size: 13px; opacity: .7; text-align: center; padding: 0 24px; }
+
+              /* Chrome's own playback-speed menu is sized for a full browser window and overflows
+                 a preview pane, so it is suppressed and replaced with this compact one. */
+              .rate { position: absolute; right: 14px; bottom: 12px; }
+              .rate-btn {
+                background: rgba(0,0,0,.62);
+                color: #fff;
+                border: 1px solid rgba(255,255,255,.28);
+                border-radius: 5px;
+                padding: 2px 8px;
+                font: 600 11px/1.4 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                cursor: pointer;
+              }
+              .rate-menu {
+                display: none;
+                position: absolute;
+                right: 0;
+                bottom: 26px;
+                background: rgba(28,28,30,.97);
+                border: 1px solid rgba(255,255,255,.16);
+                border-radius: 6px;
+                padding: 3px;
+                min-width: 62px;
+                box-shadow: 0 6px 20px rgba(0,0,0,.5);
+              }
+              .rate-menu.open { display: block; }
+              .rate-menu button {
+                display: block;
+                width: 100%;
+                text-align: left;
+                background: transparent;
+                color: #fff;
+                border: 0;
+                border-radius: 4px;
+                padding: 4px 9px;
+                font: 11px/1.4 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                cursor: pointer;
+              }
+              .rate-menu button:hover { background: rgba(255,255,255,.12); }
+              .rate-menu button.on { color: #8ab4ff; font-weight: 600; }
             </style>
             </head>
             <body>
               <div class="wrap">
-                <!-- The browser's own controls already cover play/pause, seeking, volume and
-                     playback speed, so no extra controls are drawn under them. -->
-                <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls preload="metadata"></{{element}}>
+                <{{element}} id="player" src="{{uri}}" type="{{mime}}" controls controlsList="noplaybackrate nodownload" disablePictureInPicture preload="metadata"></{{element}}>
+                <div class="rate">
+                  <button class="rate-btn" id="rateBtn">1x</button>
+                  <div class="rate-menu" id="rateMenu">
+                    <button data-rate="0.25">0.25x</button>
+                    <button data-rate="0.5">0.5x</button>
+                    <button data-rate="1" class="on">Normal</button>
+                    <button data-rate="1.25">1.25x</button>
+                    <button data-rate="1.5">1.5x</button>
+                    <button data-rate="2">2x</button>
+                  </div>
+                </div>
               </div>
               <script>
                 const player = document.getElementById('player');
+                const rateBtn = document.getElementById('rateBtn');
+                const rateMenu = document.getElementById('rateMenu');
+
+                rateBtn.addEventListener('click', e => {
+                  e.stopPropagation();
+                  rateMenu.classList.toggle('open');
+                });
+
+                rateMenu.addEventListener('click', e => {
+                  const target = e.target.closest('button[data-rate]');
+                  if (!target) return;
+                  e.stopPropagation();
+                  const rate = parseFloat(target.dataset.rate);
+                  player.playbackRate = rate;
+                  rateBtn.textContent = rate === 1 ? '1x' : rate + 'x';
+                  [...rateMenu.querySelectorAll('button')].forEach(b => b.classList.toggle('on', b === target));
+                  rateMenu.classList.remove('open');
+                });
+
+                // Clicking anywhere off the control closes it.
+                document.addEventListener('click', () => rateMenu.classList.remove('open'));
+                document.addEventListener('keydown', e => {
+                  if (e.code === 'Escape') { rateMenu.classList.remove('open'); }
+                  if (e.code === 'Space') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
+                });
+
                 player.addEventListener('error', () => {
                   document.querySelector('.wrap').innerHTML =
                     '<div class="missing">This format cannot be played here. Use Open to play it in your default app.</div>';
-                });
-                document.addEventListener('keydown', e => {
-                  if (e.code === 'Space') { e.preventDefault(); player.paused ? player.play() : player.pause(); }
                 });
               </script>
             </body>
