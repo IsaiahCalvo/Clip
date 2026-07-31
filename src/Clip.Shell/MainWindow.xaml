@@ -249,8 +249,10 @@
             <Setter Property="Foreground" Value="{DynamicResource Muted2}"/>
         </Style>
 
+        <!-- Footer keycaps are reference labels, not actions. Painting them with the accent made
+             four different things compete for "primary" at once, so nothing read as primary. -->
         <Style x:Key="HotkeyText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Muted2}"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -280,10 +282,11 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0"
+                <Border x:Name="SearchShell"
+                        Grid.Column="0"
                         Height="32"
                         Background="{DynamicResource Surface}"
-                        BorderBrush="{DynamicResource Accent}"
+                        BorderBrush="{DynamicResource Line2}"
                         BorderThickness="1"
                         CornerRadius="6"
                         Padding="10,0"
@@ -305,7 +308,9 @@
                                      Style="{StaticResource CleanTextBox}"
                                      VerticalContentAlignment="Center"
                                      FontSize="13"
-                                     TextChanged="OnSearchChanged"/>
+                                     TextChanged="OnSearchChanged"
+                                     GotKeyboardFocus="OnSearchFocusChanged"
+                                     LostKeyboardFocus="OnSearchFocusChanged"/>
                         </Grid>
                     </Grid>
                 </Border>

@@ -6565,6 +6565,14 @@ public partial class MainWindow : Window
 
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
         TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
+        // The search border is set in code so it can react to focus, so a theme change has to
+        // re-apply it rather than relying on the DynamicResource.
+        if (SearchShell is not null)
+        {
+            SearchShell.BorderBrush = SearchBox?.IsKeyboardFocusWithin == true
+                ? (WpfBrush)FindResource("Accent")
+                : (WpfBrush)FindResource("Line2");
+        }
         if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
         if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
         if (save)
@@ -7104,6 +7112,18 @@ public partial class MainWindow : Window
             SelectItem(visibleItems.FirstOrDefault(), "file-filter");
         }));
         ShowStyledMenu(actions, FilesFilterShell);
+    }
+
+    private void OnSearchFocusChanged(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
+    {
+        if (SearchShell is null)
+        {
+            return;
+        }
+
+        SearchShell.BorderBrush = SearchBox.IsKeyboardFocusWithin
+            ? (WpfBrush)FindResource("Accent")
+            : (WpfBrush)FindResource("Line2");
     }
 
     private void OnChromeMouseDown(object sender, MouseButtonEventArgs e)
