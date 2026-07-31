@@ -21,6 +21,15 @@ public static partial class ClipboardLinkDetector
         return TryNormalize(text, out _);
     }
 
+    /// <summary>
+    /// True when the value is an email address rather than a web address. Both are stored as
+    /// Link items, but they deserve different icons.
+    /// </summary>
+    public static bool IsEmail(string? text)
+    {
+        return !string.IsNullOrWhiteSpace(text) && EmailRegex().IsMatch(TrimPunctuation(text.Trim()));
+    }
+
     public static bool TryNormalize(string? text, out string normalized)
     {
         normalized = string.Empty;

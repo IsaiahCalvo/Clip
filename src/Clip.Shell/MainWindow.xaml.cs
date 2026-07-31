@@ -78,12 +78,6 @@ internal sealed class ClipShellSettings
     /// </summary>
     public bool ExtractTextFromImages { get; set; }
 
-    /// <summary>
-    /// Fetch each link's real site icon. This is a network request to the site itself, so it is
-    /// a setting rather than always-on.
-    /// </summary>
-    public bool ShowLinkFavicons { get; set; } = true;
-
     /// <summary>Show the source app on a second line under each list item.</summary>
     public bool ShowSourceAppInList { get; set; } = true;
 
@@ -118,7 +112,6 @@ internal sealed class ClipShellSettings
         CheckForUpdatesOnStartup = true;
         InstallUpdatesAutomatically = true;
         ExtractTextFromImages = false;
-        ShowLinkFavicons = true;
         ShowSourceAppInList = true;
         ClipboardFolderPath = null;
         Hotkeys = new ClipHotkeySettings();
@@ -3030,12 +3023,18 @@ public partial class MainWindow : Window
     /// </summary>
     private void AttachFavicon(WpfImage target, ClipboardHistoryItem item)
     {
-        if (item.Kind != ClipboardItemKind.Link || !_settings.ShowLinkFavicons)
+        if (item.Kind != ClipboardItemKind.Link)
         {
             return;
         }
 
-        var host = FaviconCache.HostOf(TextPayload(item));
+        var payload = TextPayload(item);
+        if (ClipboardLinkDetector.IsEmail(payload))
+        {
+            return;
+        }
+
+        var host = FaviconCache.HostOf(payload);
         if (host is null)
         {
             return;
@@ -6059,7 +6058,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ApplyExtractTextFromImages, ApplyLinkFavicons, ApplySourceAppInList, ResetAllSettings, CurrentSettingsPalette)
+    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ApplyExtractTextFromImages, ApplySourceAppInList, ResetAllSettings, CurrentSettingsPalette)
     {
         Owner = this,
     };
@@ -6506,21 +6505,6 @@ public partial class MainWindow : Window
         ShowToast("Privacy settings updated");
     }
 
-    private void ApplyLinkFavicons(bool enabled)
-    {
-        _settings.ShowLinkFavicons = enabled;
-        _settings.Save();
-        if (!enabled)
-        {
-            // Turning it off should also drop what was already fetched, otherwise "off" only
-            // means "no new requests" and stale icons linger.
-            FaviconCache.Clear();
-        }
-
-        QueueLoadItems(selectFirst: false, "link-favicons-changed");
-        ShowToast(enabled ? "Site icons on" : "Site icons off");
-    }
-
     private void ApplySourceAppInList(bool enabled)
     {
         _settings.ShowSourceAppInList = enabled;
@@ -6743,6 +6727,7 @@ public partial class MainWindow : Window
     {
         Text,
         Link,
+        Email,
         Folder,
         Image,
         File,
@@ -6909,6 +6894,14 @@ public partial class MainWindow : Window
                 drawing.Children.Add(new GeometryDrawing(null, pen, new RectangleGeometry(new Rect(3.8, 8.3, 9.4, 7.4), 3.7, 3.7)));
                 drawing.Children.Add(new GeometryDrawing(null, pen, new RectangleGeometry(new Rect(10.8, 8.3, 9.4, 7.4), 3.7, 3.7)));
                 AddLine(drawing, pen, 9.2, 12, 14.8, 12);
+                break;
+
+            case ItemVectorIconKind.Email:
+                // Stroked @ symbol on the same 24x24 grid the other item icons use.
+                drawing.Children.Add(new GeometryDrawing(
+                    null,
+                    pen,
+                    Geometry.Parse("M16 20.064A9 9 0 1 1 21 12v1.5a2.5 2.5 0 0 1-5 0V8m0 4a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z")));
                 break;
 
             case ItemVectorIconKind.Folder:
@@ -7678,9 +7671,18 @@ public partial class MainWindow : Window
 
             if (item.Kind == ClipboardItemKind.Link)
             {
-                // Every link otherwise renders the same chain glyph, so a list of links is a wall
-                // of identical rows. The monogram is drawn locally — no favicon is fetched.
-                return DomainMonogram.For(TextPayload(item), size)
+                var payload = TextPayload(item);
+
+                // Emails are stored as links but are not websites — an @ reads instantly, where a
+                // domain monogram just showed the first letter of the mail host.
+                if (ClipboardLinkDetector.IsEmail(payload))
+                {
+                    return RenderItemVectorIcon(ItemVectorIconKind.Email, size);
+                }
+
+                // The monogram is the placeholder until the site's real icon arrives, and the
+                // fallback when a site has no usable icon.
+                return DomainMonogram.For(payload, size)
                     ?? RenderItemVectorIcon(ItemVectorIconKind.Link, size);
             }
 
@@ -9555,7 +9557,6 @@ internal sealed class SettingsWindow : Window
     private readonly Action<ClipPrivacySettings> _applyPrivacy;
     private readonly Action<PasteFormatPreference> _applyDefaultPasteFormat;
     private readonly Action<bool> _applyExtractTextFromImages;
-    private readonly Action<bool> _applyLinkFavicons;
     private readonly Action<bool> _applySourceAppInList;
     private readonly Action _resetAllSettings;
     private readonly Func<SettingsPalette> _paletteProvider;
@@ -9585,7 +9586,7 @@ internal sealed class SettingsWindow : Window
     private Action? _hostClose;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action<bool> applyExtractTextFromImages, Action<bool> applyLinkFavicons, Action<bool> applySourceAppInList, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action<bool> applyExtractTextFromImages, Action<bool> applySourceAppInList, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
@@ -9607,7 +9608,6 @@ internal sealed class SettingsWindow : Window
         _applyPrivacy = applyPrivacy;
         _applyDefaultPasteFormat = applyDefaultPasteFormat;
         _applyExtractTextFromImages = applyExtractTextFromImages;
-        _applyLinkFavicons = applyLinkFavicons;
         _applySourceAppInList = applySourceAppInList;
         _resetAllSettings = resetAllSettings;
         _paletteProvider = paletteProvider;
@@ -9952,7 +9952,6 @@ internal sealed class SettingsWindow : Window
             panel.Children.Add(UpdateCheckRow());
             panel.Children.Add(DefaultPasteFormatRow());
             panel.Children.Add(ExtractTextFromImagesRow());
-            panel.Children.Add(LinkFaviconsRow());
             panel.Children.Add(SourceAppInListRow());
         }
 
@@ -10760,27 +10759,6 @@ internal sealed class SettingsWindow : Window
         {
             label.Foreground = selected ? _accent : _muted;
         }
-    }
-
-    private Border LinkFaviconsRow()
-    {
-        return ControlRow(
-            "Show site icons for links",
-            "Fetch each link's real icon from its website. Icons are cached on your PC; only the site name is requested, never the full link.",
-            StyledDropdown(
-                _settings.ShowLinkFavicons ? "On" : "Off",
-                new[] { "On", "Off" },
-                selected =>
-                {
-                    var enabled = string.Equals(selected, "On", StringComparison.OrdinalIgnoreCase);
-                    if (enabled == _settings.ShowLinkFavicons)
-                    {
-                        return;
-                    }
-
-                    _settings.ShowLinkFavicons = enabled;
-                    _applyLinkFavicons(enabled);
-                }));
     }
 
     private Border SourceAppInListRow()
