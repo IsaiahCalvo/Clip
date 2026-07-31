@@ -71,6 +71,13 @@ internal sealed class ClipShellSettings
     public long? MaxItemSizeBytes { get; set; } = 50L * 1024 * 1024;
     public bool CheckForUpdatesOnStartup { get; set; } = true;
     public bool InstallUpdatesAutomatically { get; set; } = true;
+
+    /// <summary>
+    /// Off by default on purpose. Recognized text turns a screenshot of a password manager or a
+    /// bank page into plain, greppable text on disk where it was previously only pixels.
+    /// </summary>
+    public bool ExtractTextFromImages { get; set; }
+
     public string? ClipboardFolderPath { get; set; }
     public ClipHotkeySettings Hotkeys { get; set; } = new();
     public ClipPrivacySettings Privacy { get; set; } = new();
@@ -101,6 +108,7 @@ internal sealed class ClipShellSettings
         MaxItemSizeBytes = 50L * 1024 * 1024;
         CheckForUpdatesOnStartup = true;
         InstallUpdatesAutomatically = true;
+        ExtractTextFromImages = false;
         ClipboardFolderPath = null;
         Hotkeys = new ClipHotkeySettings();
         Hotkeys.ResetToDefaults();
@@ -2040,6 +2048,29 @@ public partial class MainWindow : Window
         _clipboardSettleTimer.Stop();
     }
 
+    private OcrQueue? _ocrQueue;
+
+    private void QueueOcrIfEnabled(ClipboardHistoryItem? item)
+    {
+        if (item is null ||
+            item.Kind != ClipboardItemKind.Image ||
+            !_settings.ExtractTextFromImages ||
+            item.OcrText is not null)
+        {
+            return;
+        }
+
+        // Respect the excluded-apps list: if the user does not want an app's clipboard recorded,
+        // they certainly do not want its screenshots transcribed.
+        if (_settings.Privacy.IsExcluded(item.SourceApplication, item.SourceApplicationPath))
+        {
+            return;
+        }
+
+        _ocrQueue ??= new OcrQueue(() => _store, ShellLog.Info);
+        _ocrQueue.Enqueue(item.Id, item.AssetPath);
+    }
+
     private void QueueClipboardItemSave(ClipboardHistoryItem item, string renderReason)
     {
         if (!ClipItemSizeLimit.Allows(item, _settings.MaxItemSizeBytes))
@@ -2067,6 +2098,8 @@ public partial class MainWindow : Window
             {
                 return;
             }
+
+            QueueOcrIfEnabled(task.Result);
 
             _ = Dispatcher.BeginInvoke(new Action(() => ApplySavedClipboardItem(task.Result, renderReason)), System.Windows.Threading.DispatcherPriority.Background);
         }, TaskScheduler.Default);
@@ -5963,7 +5996,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ResetAllSettings, CurrentSettingsPalette)
+    private SettingsWindow CreateSettingsWindow() => new(_settings, _lastUpdateStatus, ApplyTheme, RefreshClipboardManagerTextTheme, ApplyAppIcon, ApplyRunAtStartup, ApplyHistoryLimit, ApplyMaxItemSize, ApplyUpdateSettings, CheckForUpdatesFromSettings, InstallUpdateAsync, OpenDataFolder, OpenDebugLog, ClearHistory, ChangeClipboardFolder, ResetClipboardFolder, ApplyHotkeys, ApplyPrivacy, ApplyDefaultPasteFormat, ApplyExtractTextFromImages, ResetAllSettings, CurrentSettingsPalette)
     {
         Owner = this,
     };
@@ -6408,6 +6441,33 @@ public partial class MainWindow : Window
         _settings.Save();
         ShellLog.Info($"privacy changed excludedApps={privacy.ExcludedApps.Count}");
         ShowToast("Privacy settings updated");
+    }
+
+    private void ApplyExtractTextFromImages(bool enabled)
+    {
+        _settings.ExtractTextFromImages = enabled;
+        _settings.Save();
+        ShellLog.Info($"extract text from images set enabled={enabled} engineAvailable={OcrTextExtractor.IsAvailable}");
+
+        if (!enabled)
+        {
+            ShowToast("Image text search off");
+            return;
+        }
+
+        // Turning it on should make the history you already have searchable, not just future
+        // copies, so backfill anything that has never been scanned.
+        var queued = 0;
+        foreach (var item in _store.QueryItemSummaries())
+        {
+            if (item.Kind == ClipboardItemKind.Image && item.OcrText is null)
+            {
+                QueueOcrIfEnabled(_store.GetItem(item.Id) ?? item);
+                queued++;
+            }
+        }
+
+        ShowToast(queued > 0 ? $"Reading text in {queued} images" : "Image text search on");
     }
 
     private void ApplyDefaultPasteFormat(PasteFormatPreference preference)
@@ -9381,6 +9441,7 @@ internal sealed class SettingsWindow : Window
     private readonly Action<ClipHotkeySettings> _applyHotkeys;
     private readonly Action<ClipPrivacySettings> _applyPrivacy;
     private readonly Action<PasteFormatPreference> _applyDefaultPasteFormat;
+    private readonly Action<bool> _applyExtractTextFromImages;
     private readonly Action _resetAllSettings;
     private readonly Func<SettingsPalette> _paletteProvider;
     private readonly System.Windows.Threading.DispatcherTimer _themeApplyTimer = new(System.Windows.Threading.DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(16) };
@@ -9409,7 +9470,7 @@ internal sealed class SettingsWindow : Window
     private Action? _hostClose;
     private string _currentPage = "General";
 
-    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
+    public SettingsWindow(ClipShellSettings settings, ClipUpdateStatus updateStatus, Action<ClipThemePreference> applyTheme, Action refreshClipboardManagerTextTheme, Action<AppIconPreference> applyAppIcon, Action<bool> applyRunAtStartup, Action<int?> applyHistoryLimit, Action<long?> applyMaxItemSize, Action<bool, bool> applyUpdateSettings, Action<Action<ClipUpdateStatus>> checkForUpdates, Func<ClipUpdateStatus, Task> installUpdate, Action openDataFolder, Action openDebugLog, Action<bool> clearHistory, Action<string> changeClipboardFolder, Action resetClipboardFolder, Action<ClipHotkeySettings> applyHotkeys, Action<ClipPrivacySettings> applyPrivacy, Action<PasteFormatPreference> applyDefaultPasteFormat, Action<bool> applyExtractTextFromImages, Action resetAllSettings, Func<SettingsPalette> paletteProvider)
     {
         _settings = settings;
         _updateStatus = updateStatus;
@@ -9430,6 +9491,7 @@ internal sealed class SettingsWindow : Window
         _applyHotkeys = applyHotkeys;
         _applyPrivacy = applyPrivacy;
         _applyDefaultPasteFormat = applyDefaultPasteFormat;
+        _applyExtractTextFromImages = applyExtractTextFromImages;
         _resetAllSettings = resetAllSettings;
         _paletteProvider = paletteProvider;
         ApplyPalette(_paletteProvider());
@@ -9772,6 +9834,7 @@ internal sealed class SettingsWindow : Window
             panel.Children.Add(StartupRow());
             panel.Children.Add(UpdateCheckRow());
             panel.Children.Add(DefaultPasteFormatRow());
+            panel.Children.Add(ExtractTextFromImagesRow());
         }
 
         if (string.Equals(page, "Appearance", StringComparison.OrdinalIgnoreCase))
@@ -10578,6 +10641,32 @@ internal sealed class SettingsWindow : Window
         {
             label.Foreground = selected ? _accent : _muted;
         }
+    }
+
+    private Border ExtractTextFromImagesRow()
+    {
+        var available = OcrTextExtractor.IsAvailable;
+        var description = available
+            ? "Read text inside copied images so screenshots can be found by what they say. Runs on your PC; nothing is uploaded."
+            : "Unavailable: Windows has no text recognition language installed. Add one in Settings, Language & region.";
+
+        var dropdown = StyledDropdown(
+            _settings.ExtractTextFromImages ? "On" : "Off",
+            new[] { "Off", "On" },
+            selected =>
+            {
+                var enabled = string.Equals(selected, "On", StringComparison.OrdinalIgnoreCase);
+                if (enabled == _settings.ExtractTextFromImages)
+                {
+                    return;
+                }
+
+                _settings.ExtractTextFromImages = enabled;
+                _applyExtractTextFromImages(enabled);
+            });
+        dropdown.IsEnabled = available;
+
+        return ControlRow("Search text in images", description, dropdown);
     }
 
     private Border DefaultPasteFormatRow()

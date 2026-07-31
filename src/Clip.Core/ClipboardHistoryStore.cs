@@ -392,7 +392,8 @@ public sealed class ClipboardHistoryStore
             var isSearchableText =
                 reader.ValueTextEquals("Preview") ||
                 reader.ValueTextEquals("CustomTitle") ||
-                reader.ValueTextEquals("Text");
+                reader.ValueTextEquals("Text") ||
+                reader.ValueTextEquals("OcrText");
             var isFilePaths = reader.ValueTextEquals("FilePaths");
             if (!reader.Read())
             {
@@ -511,6 +512,7 @@ public sealed class ClipboardHistoryStore
         Contains(item.Preview, query) ||
         Contains(item.CustomTitle, query) ||
         Contains(item.Text, query) ||
+        Contains(item.OcrText, query) ||
         item.FilePaths.Any(path => Contains(path, query));
 
     private List<ClipboardHistoryItem> GetSummaryItems()
@@ -1098,6 +1100,41 @@ public sealed class ClipboardHistoryStore
         return true;
     }
 
+    /// <summary>
+    /// Stores recognized image text for several items in one write. Batched deliberately: every
+    /// save rewrites history.json and rebuilds the index files, so writing per image would thrash
+    /// the index the list's fast path depends on.
+    /// </summary>
+    public int SetOcrText(IReadOnlyDictionary<string, string?> textById)
+    {
+        if (textById.Count == 0)
+        {
+            return 0;
+        }
+
+        var items = GetItems().ToList();
+        var updated = 0;
+        foreach (var item in items)
+        {
+            if (!textById.TryGetValue(item.Id, out var text))
+            {
+                continue;
+            }
+
+            // Empty string, not null, when nothing was found — null means "not attempted yet"
+            // and would make the same image be scanned forever.
+            item.OcrText = text ?? string.Empty;
+            updated++;
+        }
+
+        if (updated > 0)
+        {
+            Save(items);
+        }
+
+        return updated;
+    }
+
     public bool Rename(string id, string? title)
     {
         var items = GetItems().ToList();
@@ -1471,6 +1508,9 @@ public sealed class ClipboardHistoryStore
             AssetSizeBytes = item.AssetSizeBytes,
             ImageWidth = item.ImageWidth,
             ImageHeight = item.ImageHeight,
+            // Capped: the summary index is the hot-path file, and a wall of recognized text from
+            // a full-screen screenshot would bloat every read.
+            OcrText = SummaryText(item.OcrText),
             CharacterCount = item.CharacterCount ?? item.Text?.Length,
             WordCount = item.WordCount,
         };
@@ -1602,6 +1642,11 @@ public sealed class ClipboardHistoryStore
         duplicate.ImageHeight = item.ImageHeight ?? duplicate.ImageHeight;
         duplicate.CharacterCount = item.CharacterCount ?? duplicate.CharacterCount;
         duplicate.WordCount = item.WordCount ?? duplicate.WordCount;
+        // Re-copying the same screenshot merges into the existing item; without this the text
+        // already recognized for it would be thrown away and have to be scanned again.
+        duplicate.OcrText = item.OcrText ?? duplicate.OcrText;
+        duplicate.SourceAppUserModelId = item.SourceAppUserModelId ?? duplicate.SourceAppUserModelId;
+        duplicate.SourceApplicationPath = item.SourceApplicationPath ?? duplicate.SourceApplicationPath;
     }
 
     private static bool ShouldKeepAfterTrim(ClipboardHistoryItem item, HashSet<string>? keptUnpinnedIds)
@@ -1669,9 +1714,11 @@ public sealed class ClipboardHistoryStore
             CopyCount = item.CopyCount,
             SourceApplication = item.SourceApplication,
             SourceApplicationPath = item.SourceApplicationPath,
+            SourceAppUserModelId = item.SourceAppUserModelId,
             AssetSizeBytes = item.AssetSizeBytes,
             ImageWidth = item.ImageWidth,
             ImageHeight = item.ImageHeight,
+            OcrText = item.OcrText,
             CharacterCount = item.CharacterCount,
             WordCount = item.WordCount,
         };

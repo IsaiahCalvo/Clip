@@ -54,6 +54,13 @@ public sealed class ClipboardHistoryItem
 
     public int? ImageHeight { get; set; }
 
+    /// <summary>
+    /// Text recognized inside a copied image, so screenshots can be found by what they say.
+    /// Null means not attempted; empty means attempted and nothing was found, which stops the
+    /// same image being scanned over and over.
+    /// </summary>
+    public string? OcrText { get; set; }
+
     public int? CharacterCount { get; set; }
 
     public int? WordCount { get; set; }
