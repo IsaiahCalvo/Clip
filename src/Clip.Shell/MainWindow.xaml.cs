@@ -5824,10 +5824,9 @@ public partial class MainWindow : Window
             folder,
             CoreWebView2HostResourceAccessKind.Allow);
 
-        // The native control bar and its overflow menu are sized in page pixels, so at 150%
-        // scaling they overflow this small pane and the speed list has to be scrolled. Zooming the
-        // page out brings the whole set — controls and menu — back inside the preview.
-        htmlPreview.ZoomFactor = MediaZoomFactor;
+        // No page zoom. It was only ever there to shrink Chrome's own overflow menu, and the
+        // controls are drawn by Clip now — zooming just skews the layout inside the pane.
+        htmlPreview.ZoomFactor = 1.0;
 
         var mediaUrl = $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}";
         var html = MediaPreviewPage.Build(
