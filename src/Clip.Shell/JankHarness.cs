@@ -67,12 +67,24 @@ internal static class JankHarness
         var reported = new List<Sample>();
         var applied = new List<Sample>();
 
+        var letterbox = new List<double>();
+
         view.CoreWebView2.WebMessageReceived += (_, e) =>
         {
-            var width = ProbeWidthOf(e.TryGetWebMessageAsString());
-            if (width > 0)
+            var raw = e.TryGetWebMessageAsString();
+            var width = ProbeWidthOf(raw);
+            if (width <= 0)
             {
-                reported.Add(new Sample(clock.Elapsed.TotalMilliseconds, width));
+                return;
+            }
+
+            reported.Add(new Sample(clock.Elapsed.TotalMilliseconds, width));
+
+            // How much of the page the picture is failing to cover — bars down the sides.
+            var picture = FieldOf(raw, "pic");
+            if (picture > 0)
+            {
+                letterbox.Add(width - picture);
             }
         };
 
@@ -83,10 +95,18 @@ internal static class JankHarness
         await view.ExecuteScriptAsync(
             """
             (() => {
+              const video = document.querySelector('video');
               const tick = () => {
                 try {
+                  const r = video.getBoundingClientRect();
+                  const d = window.devicePixelRatio;
                   window.chrome.webview.postMessage(JSON.stringify({
-                    probe: Math.round(window.innerWidth * window.devicePixelRatio),
+                    probe: Math.round(window.innerWidth * d),
+                    // Where the picture itself actually sits. If this wanders relative to the page
+                    // the picture is moving inside a frame that is otherwise keeping up, which
+                    // looks the same to the eye and would not show up in the width alone.
+                    pic: Math.round(r.width * d),
+                    picLeft: Math.round(r.left * d),
                   }));
                 } catch {}
                 requestAnimationFrame(tick);
@@ -103,6 +123,15 @@ internal static class JankHarness
 
         // Let any frame still in flight arrive before the books are closed.
         await Task.Delay(400);
+
+        if (letterbox.Count > 0)
+        {
+            var bars = letterbox.Where(b => b > 0).ToArray();
+            Report(
+                $"bars beside the picture: worst={letterbox.Max()}px "
+                + $"present={bars.Length * 100 / letterbox.Count}% of frames "
+                + $"changes={letterbox.Zip(letterbox.Skip(1), (a, b) => Math.Abs(a - b)).Count(d => d > 0)}");
+        }
 
         var result = Measure(options, applied, reported);
         Write(options, result);
@@ -270,7 +299,9 @@ internal static class JankHarness
         return false;
     }
 
-    private static int ProbeWidthOf(string? json)
+    private static int ProbeWidthOf(string? json) => FieldOf(json, "probe");
+
+    private static int FieldOf(string? json, string name)
     {
         if (string.IsNullOrWhiteSpace(json) || !json.Contains("probe", StringComparison.Ordinal))
         {
@@ -280,7 +311,7 @@ internal static class JankHarness
         try
         {
             using var document = JsonDocument.Parse(json);
-            return document.RootElement.TryGetProperty("probe", out var probe) ? probe.GetInt32() : 0;
+            return document.RootElement.TryGetProperty(name, out var value) ? value.GetInt32() : 0;
         }
         catch
         {
