@@ -117,7 +117,16 @@ internal static class MediaPreviewPage
               #play { font-size: 13px; }
               #more { font-size: 15px; }
               .time { font-variant-numeric: tabular-nums; opacity: .9; white-space: nowrap; }
-              #seek { flex: 1; accent-color: #8ab4ff; height: 3px; cursor: pointer; }
+              #seek { flex: 1; accent-color: #8ab4ff; height: 3px; cursor: pointer; -webkit-appearance: none; background: rgba(255,255,255,.28); border-radius: 2px; }
+              #seek::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                width: 9px;
+                height: 9px;
+                border-radius: 50%;
+                background: #8ab4ff;
+                cursor: pointer;
+              }
+              .wrap:fullscreen #seek::-webkit-slider-thumb { width: 14px; height: 14px; }
 
               .menu {
                 display: none;
@@ -342,6 +351,46 @@ internal static class MediaPreviewPage
                 });
 
                 if (detached) {
+                  // The browser control covers the whole window, so mouse input never reaches it
+                  // and neither dragging nor the resize borders work. The page reports those
+                  // gestures instead and the host performs them.
+                  const EDGE = 7;
+                  document.addEventListener('mousedown', e => {
+                    if (e.button !== 0) return;
+                    if (e.target.closest('button, input')) return;
+
+                    const nearLeft = e.clientX <= EDGE;
+                    const nearRight = e.clientX >= document.documentElement.clientWidth - EDGE;
+                    const nearTop = e.clientY <= EDGE;
+                    const nearBottom = e.clientY >= document.documentElement.clientHeight - EDGE;
+
+                    let edge = '';
+                    if (nearTop) edge = nearLeft ? 'topleft' : nearRight ? 'topright' : 'top';
+                    else if (nearBottom) edge = nearLeft ? 'bottomleft' : nearRight ? 'bottomright' : 'bottom';
+                    else if (nearLeft) edge = 'left';
+                    else if (nearRight) edge = 'right';
+
+                    e.preventDefault();
+                    try {
+                      window.chrome.webview.postMessage(JSON.stringify(
+                        edge ? { action: 'resize', edge } : { action: 'drag' }));
+                    } catch {}
+                  });
+
+                  // Show the matching cursor so the edges feel grabbable.
+                  document.addEventListener('mousemove', e => {
+                    const w = document.documentElement.clientWidth;
+                    const h = document.documentElement.clientHeight;
+                    const l = e.clientX <= EDGE, r = e.clientX >= w - EDGE;
+                    const t = e.clientY <= EDGE, b = e.clientY >= h - EDGE;
+                    let c = 'default';
+                    if ((t && l) || (b && r)) c = 'nwse-resize';
+                    else if ((t && r) || (b && l)) c = 'nesw-resize';
+                    else if (l || r) c = 'ew-resize';
+                    else if (t || b) c = 'ns-resize';
+                    document.body.style.cursor = c;
+                  });
+
                   // Show the overlay while the pointer is over the window, hide it otherwise.
                   document.addEventListener('mouseenter', () => wrap.classList.add('hot'));
                   document.addEventListener('mouseleave', () => { wrap.classList.remove('hot'); closeMenu(); });

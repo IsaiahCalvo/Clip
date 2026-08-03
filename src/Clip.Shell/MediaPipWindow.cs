@@ -154,6 +154,43 @@ internal sealed class MediaPipWindow : Window
         return new IntPtr(1);
     }
 
+    private const int WmNcLButtonDown = 0x00A1;
+
+    /// <summary>
+    /// Hands the drag to Windows as if the user had grabbed the window's own resize border, which
+    /// the browser control would otherwise cover.
+    /// </summary>
+    private void BeginResize(string edge)
+    {
+        var hit = edge switch
+        {
+            "left" => 10,
+            "right" => 11,
+            "top" => 12,
+            "topleft" => 13,
+            "topright" => 14,
+            "bottom" => 15,
+            "bottomleft" => 16,
+            "bottomright" => 17,
+            _ => 0,
+        };
+
+        if (hit == 0)
+        {
+            return;
+        }
+
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        ReleaseCapture();
+        SendMessage(hwnd, WmNcLButtonDown, new IntPtr(hit), IntPtr.Zero);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
     private const int WmszLeft = 1;
     private const int WmszRight = 2;
     private const int WmszTop = 3;
@@ -227,6 +264,27 @@ internal sealed class MediaPipWindow : Window
         }
 
         var action = MediaPlayerMessage.ActionOf(raw);
+
+        if (action.Name == "drag")
+        {
+            try
+            {
+                DragMove();
+            }
+            catch
+            {
+                // DragMove throws if the button was already released.
+            }
+
+            return;
+        }
+
+        if (action.Name == "resize")
+        {
+            BeginResize(MediaPlayerMessage.EdgeOf(raw));
+            return;
+        }
+
         if (action.Name == "back")
         {
             BackRequested?.Invoke(action.Time);
@@ -258,6 +316,20 @@ internal sealed class MediaPipWindow : Window
 /// <summary>Parses the small JSON messages the player page posts to the host.</summary>
 internal static class MediaPlayerMessage
 {
+    public static string EdgeOf(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return string.Empty;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("edge", out var e) ? e.GetString() ?? string.Empty : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     public static double RatioOf(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return 0;
