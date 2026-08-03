@@ -22,6 +22,9 @@ internal sealed class MediaPipWindow : Window
     private const string PipVirtualHost = "clip-pip.local";
 
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _view = new();
+
+    /// <summary>The player itself, so the jank harness can ask the page what size it thinks it is.</summary>
+    internal Microsoft.Web.WebView2.Wpf.WebView2 PlayerView => _view;
     private readonly string _filePath;
     private readonly bool _isVideo;
     private readonly double _startTime;

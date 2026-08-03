@@ -23,6 +23,18 @@ public partial class App : System.Windows.Application
         ShellLog.Info("app startup");
         var trayAction = DebugArgValue(e.Args, "--tray-action");
 
+        // The jank harness drives a player window of its own and reports a number. It deliberately
+        // runs beside whatever Clip is already open, so it goes before the single-instance check.
+        if (JankHarness.Requested(e.Args))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+            _ = JankHarness.RunAsync(e.Args).ContinueWith(run =>
+                Dispatcher.Invoke(() => Shutdown(run.Status == TaskStatus.RanToCompletion ? run.Result : 4)));
+
+            return;
+        }
+
         _singleInstanceMutex = new Mutex(true, Clip.Watcher.Program.RichPaletteSingleInstanceMutexName, out _ownsSingleInstanceMutex);
         if (!_ownsSingleInstanceMutex)
         {
