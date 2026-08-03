@@ -204,6 +204,42 @@ public class PipAspectTests
             Widescreen + 0.01);
     }
 
+    /// <summary>
+    /// The window is not allowed to run away from the picture inside it. Once the page has reported
+    /// how far it has got, a drag that asks for more than that is held back to it.
+    /// </summary>
+    [Fact]
+    public void TheFrameIsHeldBackToWhatThePageHasPainted()
+    {
+        var result = MediaPipWindow.ResizedBounds(
+            BottomRight, Box(0, 0, 1600, 900), Screen, Widescreen, NoMinimum, maxWidth: 900);
+
+        Assert.Equal(900, result.Right - result.Left);
+        Assert.InRange(
+            (double)(result.Right - result.Left) / (result.Bottom - result.Top),
+            Widescreen - 0.02,
+            Widescreen + 0.02);
+    }
+
+    /// <summary>A page that never reports must not be able to freeze the window.</summary>
+    [Fact]
+    public void NoReportFromThePageMeansNoHoldingBack()
+    {
+        var result = Resize(BottomRight, Box(0, 0, 1200, 675));
+
+        Assert.Equal(1200, result.Right - result.Left);
+    }
+
+    /// <summary>Holding back must never win over the minimum size.</summary>
+    [Fact]
+    public void HoldingBackCannotShrinkTheWindowBelowItsMinimum()
+    {
+        var result = MediaPipWindow.ResizedBounds(
+            BottomRight, Box(0, 0, 1600, 900), Screen, Widescreen, minWidth: 200, maxWidth: 50);
+
+        Assert.Equal(200, result.Right - result.Left);
+    }
+
     [Fact]
     public void TheAnchoredEdgeStillHoldsWhenDraggingLeftwards()
     {

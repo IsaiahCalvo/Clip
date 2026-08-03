@@ -133,11 +133,13 @@ internal static class JankHarness
             var proposed = start with { Right = start.Right + deltas[i], Bottom = start.Bottom + deltas[i] };
             var settled = OfferToWindow(handle, proposed);
 
+            // Take the size the window settled on, but leave it where it was put: staying on screen
+            // would otherwise drag an off-screen window back into view mid-run.
             SetWindowPos(
                 handle,
                 IntPtr.Zero,
-                settled.Left,
-                settled.Top,
+                start.Left,
+                start.Top,
                 settled.Right - settled.Left,
                 settled.Bottom - settled.Top,
                 SwpNoZOrder | SwpNoActivate);
@@ -286,15 +288,27 @@ internal static class JankHarness
         }
     }
 
-    /// <summary>The work area of the requested monitor, counting from one, left to right.</summary>
+    /// <summary>
+    /// Where to put the window. Monitor zero means just off the left of everything, which is the
+    /// default: Windows still draws windows nobody can see, so it measures the same while staying
+    /// out of the way. Pass a real monitor number to watch a run.
+    /// </summary>
     private static Rect WorkAreaOfMonitor(int number)
     {
         var screens = System.Windows.Forms.Screen.AllScreens.OrderBy(s => s.Bounds.X).ToArray();
-        var screen = screens[Math.Clamp(number - 1, 0, screens.Length - 1)];
-        var area = screen.WorkingArea;
 
+        if (number <= 0)
+        {
+            var leftmost = screens[0].Bounds;
+            return new Rect(leftmost.X - OffScreenWidth - 200, leftmost.Y, OffScreenWidth, OffScreenHeight);
+        }
+
+        var area = screens[Math.Min(number - 1, screens.Length - 1)].WorkingArea;
         return new Rect(area.X, area.Y, area.Width, area.Height);
     }
+
+    private const int OffScreenWidth = 1600;
+    private const int OffScreenHeight = 1000;
 
     private static void Report(string message)
     {
@@ -345,7 +359,7 @@ internal sealed record JankOptions(
 {
     public static JankOptions Parse(string[] args) => new(
         File: Value(args, "--file") ?? DefaultSample(),
-        Monitor: Number(args, "--monitor", 3),
+        Monitor: Number(args, "--monitor", 0),
         Steps: Number(args, "--steps", 60),
         StepPx: Number(args, "--step-px", 8),
         IntervalMs: Number(args, "--interval-ms", 16),

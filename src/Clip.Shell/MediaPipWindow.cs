@@ -120,7 +120,13 @@ internal sealed class MediaPipWindow : Window
         }
 
         var dragged = Marshal.PtrToStructure<RECT>(lParam);
-        var rect = ResizedBounds(wParam.ToInt32(), dragged, WorkAreaFor(hwnd), _aspect, MinTrackWidth);
+        var rect = ResizedBounds(
+            wParam.ToInt32(),
+            dragged,
+            WorkAreaFor(hwnd),
+            _aspect,
+            MinTrackWidth,
+            FurthestTheFrameMayRunAhead);
 
         Marshal.StructureToPtr(rect, lParam, false);
         handled = true;
@@ -131,7 +137,13 @@ internal sealed class MediaPipWindow : Window
     /// Turns the rectangle the user has dragged out into the one the window will actually take:
     /// the video's shape, anchored to the edge they are not dragging, and wholly on screen.
     /// </summary>
-    internal static RECT ResizedBounds(int edge, RECT dragged, RECT workArea, double aspect, int minWidth)
+    internal static RECT ResizedBounds(
+        int edge,
+        RECT dragged,
+        RECT workArea,
+        double aspect,
+        int minWidth,
+        int maxWidth = int.MaxValue)
     {
         var (width, height) = AspectCorrected(
             edge,
@@ -139,6 +151,18 @@ internal sealed class MediaPipWindow : Window
             dragged.Bottom - dragged.Top,
             aspect,
             minWidth);
+
+        // Never let the frame get further ahead of the picture than the picture can make up in a
+        // frame or two. Left uncapped the window grows the instant the pointer moves while the page
+        // is still repainting at the old size, and the difference is a band of bare window along the
+        // edges being dragged — which changes size every frame and reads as a shudder. Waiting for
+        // the page costs a few pixels of lag behind the pointer and buys a picture that always
+        // reaches the edges.
+        if (width > maxWidth)
+        {
+            width = Math.Max(maxWidth, minWidth);
+            height = (int)Math.Round(width / aspect, MidpointRounding.AwayFromZero);
+        }
 
         // The window can never be bigger than the screen it is on, or it could not sit inside it.
         var workWidth = workArea.Right - workArea.Left;
@@ -179,6 +203,22 @@ internal sealed class MediaPipWindow : Window
             Bottom = top + height,
         };
     }
+
+    private int _paintedWidth;
+    private DateTime _paintedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// How wide the window may be given how far the page has got. A small allowance keeps the drag
+    /// feeling attached to the pointer; the page covers that much in the time it takes to notice.
+    /// If the page has gone quiet — it never reports at all for audio — this lifts entirely rather
+    /// than freezing the window at whatever size it last managed.
+    /// </summary>
+    private int FurthestTheFrameMayRunAhead =>
+        _paintedWidth > 0 && DateTime.UtcNow - _paintedAt < TimeSpan.FromMilliseconds(400)
+            ? _paintedWidth + PageAllowancePx
+            : int.MaxValue;
+
+    private const int PageAllowancePx = 12;
 
     private const int MonitorDefaultToNearest = 2;
 
@@ -379,6 +419,14 @@ internal sealed class MediaPipWindow : Window
             return;
         }
 
+        var painted = MediaPlayerMessage.PaintedWidthOf(raw);
+        if (painted > 0)
+        {
+            _paintedWidth = painted;
+            _paintedAt = DateTime.UtcNow;
+            return;
+        }
+
         var action = MediaPlayerMessage.ActionOf(raw);
 
         if (action.Name == "drag")
@@ -438,6 +486,23 @@ internal static class MediaPlayerMessage
         catch
         {
             return string.Empty;
+        }
+    }
+
+    /// <summary>The width in screen pixels the page has actually laid out at, or zero.</summary>
+    public static int PaintedWidthOf(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return 0;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("action", out var a) || a.GetString() != "painted") return 0;
+            return root.TryGetProperty("w", out var w) ? w.GetInt32() : 0;
+        }
+        catch
+        {
+            return 0;
         }
     }
 

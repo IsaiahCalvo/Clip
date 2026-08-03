@@ -505,6 +505,20 @@ internal static class MediaPreviewPage
                     wrap.classList.toggle('on-edge', !!edge);
                   });
 
+                  // Tell the host what size the page has actually reached, every time it changes and
+                  // once per frame while it is changing. The host cannot otherwise know whether the
+                  // page has caught up with the window, and if it lets the window run ahead the
+                  // window's own background shows through along the edges being dragged.
+                  let settled = 0;
+                  const reportSize = () => {
+                    const w = Math.round(window.innerWidth * window.devicePixelRatio);
+                    if (w === settled) return;
+                    settled = w;
+                    try { window.chrome.webview.postMessage(JSON.stringify({ action: 'painted', w })); } catch {}
+                  };
+                  window.addEventListener('resize', () => requestAnimationFrame(reportSize));
+                  requestAnimationFrame(reportSize);
+
                   // Tell the host the real aspect so the window can keep it while resizing.
                   p.addEventListener('loadedmetadata', () => {
                     if (!p.videoWidth) return;
