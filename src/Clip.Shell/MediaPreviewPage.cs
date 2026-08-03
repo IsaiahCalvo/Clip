@@ -16,15 +16,30 @@ internal static class MediaPreviewPage
     /// URL the player loads from. This is a virtual-host address rather than a file:// path,
     /// because a generated page has no file-system origin and the browser would refuse it.
     /// </param>
-    public static string Build(string filePath, string mediaUrl, bool isVideo, string backgroundHex, string textHex)
+    public static string Build(
+        string filePath,
+        string mediaUrl,
+        bool isVideo,
+        string backgroundHex,
+        string textHex,
+        bool detached = false,
+        double startTime = 0)
     {
         var mime = MimeFor(Path.GetExtension(filePath));
         var element = isVideo ? "video" : "audio";
 
-        // The fullscreen button sits on the video itself, so it has no meaning for audio.
-        var fullscreenButton = isVideo
+        // The fullscreen button sits on the video itself, so it has no meaning for audio, and it
+        // is redundant in the detached mini window.
+        var fullscreenButton = isVideo && !detached
             ? """<button id="fs" class="fs" title="Full screen">⛶</button>"""
             : string.Empty;
+
+        // The mini window is already picture-in-picture, so it offers "back" instead.
+        var pipItem = detached
+            ? string.Empty
+            : """<button id="pip"><span>Picture in picture</span></button>""";
+
+        var wrapClass = detached ? "wrap detached" : "wrap";
 
         return $$"""
             <!doctype html>
@@ -180,7 +195,7 @@ internal static class MediaPreviewPage
             </style>
             </head>
             <body>
-              <div class="wrap" id="wrap">
+              <div class="{{wrapClass}}" id="wrap">
                 <button class="corner" id="back" title="Back to Clip">↙</button>
                 <button class="corner" id="close" title="Close">✕</button>
                 <div class="stage {{(isVideo ? "" : "audio")}}">
@@ -197,7 +212,7 @@ internal static class MediaPreviewPage
                   <div class="menu" id="menu">
                     <div class="panel show" id="mainPanel">
                       <button id="dl"><span>Download</span></button>
-                      <button id="pip"><span>Picture in picture</span></button>
+                      {{pipItem}}
                       <button id="speedOpen"><span>Playback speed</span><span class="chev">›</span></button>
                     </div>
                     <div class="panel" id="speedPanel">
@@ -267,62 +282,32 @@ internal static class MediaPreviewPage
                 }));
 
                 const wrap = document.getElementById('wrap');
-                let pipWindow = null;
+                const detached = wrap.classList.contains('detached');
 
-                const restoreFromPip = () => {
-                  if (!pipWindow) return;
-                  document.body.appendChild(wrap);
-                  wrap.classList.remove('detached');
-                  const w = pipWindow;
-                  pipWindow = null;
-                  try { w.close(); } catch {}
+                // Clip hosts the mini window itself. The browser's own picture-in-picture draws a
+                // fixed control set we cannot touch — that is where the stray Settings button and
+                // the dead "back to tab" came from — and WebView2 does not support the newer API
+                // that would let a page supply its own. So the host is asked to open a small
+                // always-on-top Clip window running this same player instead.
+                const send = (action) => {
+                  try { window.chrome.webview.postMessage(JSON.stringify({ action, time: p.currentTime })); } catch {}
                 };
 
-                // The plain picture-in-picture window is drawn by the browser and cannot carry
-                // custom controls — that is where the stray Settings and dead "Back to tab"
-                // buttons came from. Document picture-in-picture opens a real window we own, so
-                // the whole player moves across intact.
-                document.getElementById('pip').addEventListener('click', async () => {
-                  closeMenu();
-                  if (pipWindow) { restoreFromPip(); return; }
+                const pipButton = document.getElementById('pip');
+                if (pipButton) pipButton.addEventListener('click', () => { closeMenu(); send('pip'); });
 
-                  try {
-                    if (window.documentPictureInPicture) {
-                      const rect = p.getBoundingClientRect();
-                      pipWindow = await documentPictureInPicture.requestWindow({
-                        width: Math.max(320, Math.round(rect.width) || 480),
-                        height: Math.max(200, Math.round(rect.height) + 48 || 320),
-                      });
-
-                      // Styles do not follow the element, so copy them into the new document.
-                      for (const sheet of document.styleSheets) {
-                        try {
-                          const css = [...sheet.cssRules].map(r => r.cssText).join('');
-                          const style = pipWindow.document.createElement('style');
-                          style.textContent = css;
-                          pipWindow.document.head.appendChild(style);
-                        } catch {}
-                      }
-
-                      pipWindow.document.body.style.margin = '0';
-                      pipWindow.document.body.style.background = '#000';
-                      pipWindow.document.body.appendChild(wrap);
-                      wrap.classList.add('detached');
-                      pipWindow.addEventListener('pagehide', restoreFromPip);
-                      return;
-                    }
-
-                    await p.requestPictureInPicture();
-                  } catch {
-                    pipWindow = null;
-                  }
-                });
-
-                document.getElementById('back').addEventListener('click', restoreFromPip);
+                document.getElementById('back').addEventListener('click', () => send('back'));
                 document.getElementById('close').addEventListener('click', () => {
-                  if (pipWindow) { restoreFromPip(); return; }
+                  if (detached) { send('close'); return; }
                   if (document.fullscreenElement) document.exitFullscreen();
                 });
+
+                // Resume where the preview left off when moving into the mini window.
+                const startAt = {{startTime.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}};
+                if (startAt > 0) {
+                  p.addEventListener('loadedmetadata', () => { p.currentTime = startAt; }, { once: true });
+                  if (detached) p.addEventListener('canplay', () => p.play().catch(() => {}), { once: true });
+                }
 
                 document.getElementById('dl').addEventListener('click', () => {
                   closeMenu();

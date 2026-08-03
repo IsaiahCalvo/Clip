@@ -5615,7 +5615,68 @@ public partial class MainWindow : Window
 
         await view.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
         view.CoreWebView2.ContainsFullScreenElementChanged += OnWebViewFullScreenChanged;
+        view.CoreWebView2.WebMessageReceived += OnPlayerMessage;
     }
+
+    private MediaPipWindow? _pipWindow;
+    private string? _pipSourcePath;
+    private bool _pipSourceIsVideo;
+
+    /// <summary>
+    /// The player page asks the host to open picture-in-picture rather than doing it itself,
+    /// because the browser's own mini window cannot carry Clip's controls.
+    /// </summary>
+    private void OnPlayerMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        var action = MediaPlayerMessage.ActionOf(e.TryGetWebMessageAsString());
+        if (action.Name != "pip" || _pipSourcePath is null)
+        {
+            return;
+        }
+
+        OpenPictureInPicture(_pipSourcePath, _pipSourceIsVideo, action.Time);
+    }
+
+    private void OpenPictureInPicture(string path, bool isVideo, double startTime)
+    {
+        _pipWindow?.Close();
+
+        var window = new MediaPipWindow(
+            path,
+            isVideo,
+            startTime,
+            BrushHex("Surface"),
+            BrushHex("Text"),
+            CreateWebView2EnvironmentAsync)
+        {
+            Owner = null,
+        };
+
+        window.BackRequested += resumeAt =>
+        {
+            // Returning to Clip should pick up where the mini window left off.
+            _pipWindow = null;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ShowPalette();
+                if (_selected is not null)
+                {
+                    _pipResumeTime = resumeAt;
+                    RenderPreview(_selected);
+                }
+            }));
+        };
+
+        window.Closed += (_, _) => _pipWindow = null;
+        _pipWindow = window;
+        window.Show();
+
+        // The palette gets out of the way; the mini window is the point.
+        ConcealPalette("pip");
+        ShellLog.Info($"picture-in-picture opened path={path} at={startTime:0.##}");
+    }
+
+    private double _pipResumeTime;
 
     private WindowState _preFullScreenState;
     private WindowStyle _preFullScreenStyle;
@@ -5828,13 +5889,22 @@ public partial class MainWindow : Window
         // controls are drawn by Clip now — zooming just skews the layout inside the pane.
         htmlPreview.ZoomFactor = 1.0;
 
+        // Remembered so a picture-in-picture request from the page knows what to open.
+        _pipSourcePath = path;
+        _pipSourceIsVideo = isVideo;
+
+        var resumeAt = _pipResumeTime;
+        _pipResumeTime = 0;
+
         var mediaUrl = $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}";
         var html = MediaPreviewPage.Build(
             path,
             mediaUrl,
             isVideo,
             BrushHex("Surface"),
-            BrushHex("Text"));
+            BrushHex("Text"),
+            detached: false,
+            startTime: resumeAt);
 
         htmlPreview.CoreWebView2.NavigateToString(html);
     }
