@@ -2440,7 +2440,23 @@ internal static class ShellIconReader
 
 internal static class StaticDocumentPreviewRenderer
 {
-    private static readonly TimeSpan PreviewTimeout = TimeSpan.FromSeconds(25);
+    // The first Office export after a reboot pays for the COM server's cold start on top of the
+    // export itself, and that start dwarfs the export. Measured here against a 178KB multi-page
+    // .docx with no WINWORD.EXE running, the cold export ran 22.7s to 26.2s across repeated runs
+    // while the very next export of the same document -- Word now warm -- took 5.0s to 13.3s. One
+    // flat budget cannot serve both: sized for the warm path it silently degrades the user's first
+    // preview after every reboot to the placeholder, and sized for the cold path it leaves them
+    // staring at "Loading preview..." for minutes whenever Office genuinely hangs. So the cold path
+    // gets its own, far larger budget and everything after the first successful export gets the
+    // tight one. Both are backstops against a hang, not targets: the warm budget still has to clear
+    // the slowest warm render measured here, a Visio floor plan at 26.5s.
+    private static readonly TimeSpan ColdPreviewTimeout = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan WarmPreviewTimeout = TimeSpan.FromSeconds(45);
+
+    // Set once an Office COM server has actually driven an export to completion in this process.
+    // Cold start is dominated by the shared Office runtime rather than any one application, so
+    // warming up via Word counts for Excel, PowerPoint and Visio too.
+    private static volatile bool _officeComWarm;
 
     public static bool IsSupported(string path)
     {
@@ -2505,9 +2521,10 @@ internal static class StaticDocumentPreviewRenderer
         // Never wait forever. Office automation can hang outright — Word's export was measured
         // hanging indefinitely on this machine — and an unbounded Join leaks the thread and the
         // Office process permanently, once per preview. Give up and fall back instead.
-        if (!thread.Join(PreviewTimeout))
+        var timeout = _officeComWarm ? WarmPreviewTimeout : ColdPreviewTimeout;
+        if (!thread.Join(timeout))
         {
-            Program.LogDebug($"Static preview timed out after {PreviewTimeout.TotalSeconds}s path={path}");
+            Program.LogDebug($"Static preview timed out after {timeout.TotalSeconds}s cold={!_officeComWarm} path={path}");
             return null;
         }
 
@@ -2597,6 +2614,7 @@ internal static class StaticDocumentPreviewRenderer
                 try
                 {
                     export(app, sourcePath, pdfPath);
+                    _officeComWarm = true;
                 }
                 finally
                 {
@@ -2630,6 +2648,7 @@ internal static class StaticDocumentPreviewRenderer
                 try
                 {
                     export(app, sourcePath, imagePath);
+                    _officeComWarm = true;
                 }
                 finally
                 {
