@@ -73,17 +73,6 @@ internal sealed class MediaPipWindow : Window
 
         Content = _view;
 
-        // Dragging anywhere that is not a control moves the window, as a chromeless window has no
-        // title bar of its own.
-        _view.PreviewMouseLeftButtonDown += (_, _) => { };
-        MouseLeftButtonDown += (_, e) =>
-        {
-            if (e.ButtonState == MouseButtonState.Pressed)
-            {
-                DragMove();
-            }
-        };
-
         Loaded += async (_, _) =>
         {
             HookAspectLock();
@@ -180,9 +169,25 @@ internal sealed class MediaPipWindow : Window
             return;
         }
 
+        BeginNonClientDrag(hit);
+    }
+
+    private const int HtCaption = 2;
+
+    /// <summary>
+    /// Starts a native move or resize loop. Works from a press that landed inside a child control,
+    /// which is the whole window here.
+    /// </summary>
+    private void BeginNonClientDrag(int hitTest)
+    {
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
         ReleaseCapture();
-        SendMessage(hwnd, WmNcLButtonDown, new IntPtr(hit), IntPtr.Zero);
+        SendMessage(hwnd, WmNcLButtonDown, new IntPtr(hitTest), IntPtr.Zero);
     }
 
     [DllImport("user32.dll")]
@@ -267,15 +272,10 @@ internal sealed class MediaPipWindow : Window
 
         if (action.Name == "drag")
         {
-            try
-            {
-                DragMove();
-            }
-            catch
-            {
-                // DragMove throws if the button was already released.
-            }
-
+            // Not DragMove: that requires WPF to believe the button is down, and the press
+            // happened inside the browser control, so it throws. Hand it to Windows as a caption
+            // drag instead — the same route the resize edges use.
+            BeginNonClientDrag(HtCaption);
             return;
         }
 
