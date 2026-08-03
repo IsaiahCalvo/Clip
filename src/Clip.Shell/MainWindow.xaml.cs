@@ -5652,15 +5652,10 @@ public partial class MainWindow : Window
             screen.WorkingArea.Width / dpi.DpiScaleX,
             screen.WorkingArea.Height / dpi.DpiScaleY);
 
-        // Video gets the player Clip draws itself, so the picture and the controls cannot fall
-        // behind the frame while it is dragged. Audio has no picture to keep in step and its page
-        // already works, so it stays on the browser player, as does any video Windows turns down.
-        if (isVideo)
-        {
-            OpenNativePictureInPicture(path, startTime, work);
-            return;
-        }
-
+        // Drawing the player here fixed the lag but Windows' own playback turned out to be too
+        // poor to keep — soft, and often not showing the picture at all while the clock ran. The
+        // window and controls built for it are kept and wait on a decoder worth pointing them at;
+        // until then the browser player is the one that actually plays.
         OpenBrowserPictureInPicture(path, isVideo, startTime, work);
     }
 
