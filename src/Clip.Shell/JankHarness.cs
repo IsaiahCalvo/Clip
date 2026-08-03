@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -42,6 +42,14 @@ internal static class JankHarness
 
         var workArea = WorkAreaOfMonitor(options.Monitor);
         Report($"monitor {options.Monitor} work area {workArea.Width}x{workArea.Height} at {workArea.X},{workArea.Y}");
+        Report(MediaEngine.EnsureStarted()
+            ? $"video decoder started from {MediaEngine.DecoderPath}"
+            : $"video decoder DID NOT start from {MediaEngine.DecoderPath}");
+
+        if (options.Native)
+        {
+            return await CheckNativePlaybackAsync(options, workArea);
+        }
 
         var environment = await CreateEnvironmentAsync();
         var window = new MediaPipWindow(
@@ -260,6 +268,48 @@ internal static class JankHarness
         Report($"written to {options.Out}");
     }
 
+    /// <summary>
+    /// Opens the player Clip draws itself and watches the clock, off screen. Windows' own playback
+    /// showed a first frame and then sat there with the clock running, which looked close enough to
+    /// working to be missed by eye — so the check is whether the position actually advances.
+    /// </summary>
+    private static async Task<int> CheckNativePlaybackAsync(JankOptions options, Rect workArea)
+    {
+        var window = new NativeMediaPipWindow(options.File, startTime: 0, workArea);
+        var fellBack = false;
+        window.PlaybackUnavailable += _ => fellBack = true;
+        window.Show();
+
+        var readings = new List<double>();
+        for (var i = 0; i < 12; i++)
+        {
+            await Task.Delay(300);
+            readings.Add(window.PositionSeconds);
+        }
+
+        window.Close();
+
+        var advanced = readings.Last() - readings.First();
+        Report(
+            $"native playback: fellBack={fellBack} start={readings.First():F2}s "
+            + $"end={readings.Last():F2}s advanced={advanced:F2}s");
+
+        if (fellBack)
+        {
+            Report("the decoder refused the file");
+            return 3;
+        }
+
+        if (advanced < 1)
+        {
+            Report("the picture is not playing: the position barely moved over three seconds");
+            return 1;
+        }
+
+        Report("playing");
+        return 0;
+    }
+
     private static async Task<CoreWebView2Environment> CreateEnvironmentAsync() =>
         await CoreWebView2Environment.CreateAsync(
             userDataFolder: Path.Combine(Path.GetTempPath(), "clip-jank-harness"),
@@ -386,7 +436,8 @@ internal sealed record JankOptions(
     int IntervalMs,
     int TolerancePx,
     int FailOverPx,
-    string? Out)
+    string? Out,
+    bool Native)
 {
     public static JankOptions Parse(string[] args) => new(
         File: Value(args, "--file") ?? DefaultSample(),
@@ -396,7 +447,8 @@ internal sealed record JankOptions(
         IntervalMs: Number(args, "--interval-ms", 16),
         TolerancePx: Number(args, "--tolerance-px", 2),
         FailOverPx: Number(args, "--fail-over-px", int.MaxValue),
-        Out: Value(args, "--out"));
+        Out: Value(args, "--out"),
+    Native: args.Any(a => a.Equals("--native", StringComparison.OrdinalIgnoreCase)));
 
     private static string DefaultSample() =>
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), "clip-jank-sample.mp4");

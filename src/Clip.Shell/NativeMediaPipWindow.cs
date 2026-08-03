@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -39,7 +39,8 @@ namespace Clip.Shell;
 /// </summary>
 internal sealed class NativeMediaPipWindow : Window
 {
-    private readonly MediaElement _player = new();
+    private readonly FlyleafLib.MediaPlayer.Player _engine = new();
+    private readonly FlyleafLib.Controls.WPF.FlyleafHost _surface;
     private readonly Slider _seek = new();
     private readonly TextBlock _time = new();
     private readonly Button _play = new();
@@ -56,6 +57,9 @@ internal sealed class NativeMediaPipWindow : Window
     private bool _scrubbing;
     private bool _opened;
     private double _aspect;
+
+    /// <summary>Where playback has reached, in seconds. Read by the harness to prove it is moving.</summary>
+    internal double PositionSeconds => TimeSpan.FromTicks(_engine.CurTime).TotalSeconds;
 
     /// <summary>Raised when the user asks to go back to Clip, carrying the playback position.</summary>
     public event Action<double>? BackRequested;
@@ -81,25 +85,31 @@ internal sealed class NativeMediaPipWindow : Window
         Left = ownerWorkArea.Right - Width - 24;
         Top = ownerWorkArea.Bottom - Height - 24;
 
+        _surface = new FlyleafLib.Controls.WPF.FlyleafHost
+        {
+            Player = _engine,
+            // The window is locked to the video's shape, so filling it is exactly fitting it, and
+            // it spares the layout letterbox arithmetic on every frame of a drag.
+            KeepRatioOnResize = false,
+        };
+
         Content = BuildLayout();
         Loaded += OnLoaded;
     }
 
     private Grid BuildLayout()
     {
-        _player.LoadedBehavior = MediaState.Manual;
-        _player.UnloadedBehavior = MediaState.Manual;
-        _player.ScrubbingEnabled = true;
-        // The window is locked to the video's shape, so filling it is exactly fitting it — and it
-        // spares the layout the letterbox arithmetic on every frame of a drag.
-        _player.Stretch = Stretch.Fill;
-        _player.Source = new Uri(_filePath);
-        _player.MediaOpened += OnMediaOpened;
-        _player.MediaEnded += (_, _) => { _player.Position = TimeSpan.Zero; _player.Pause(); ShowPlaying(false); };
-        _player.MediaFailed += (_, _) => PlaybackUnavailable?.Invoke(_player.Position.TotalSeconds);
+        _engine.OpenCompleted += OnOpened;
+        _engine.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(_engine.Status))
+            {
+                Dispatcher.BeginInvoke(new Action(() => ShowPlaying(IsPlaying)));
+            }
+        };
 
         var root = new Grid();
-        root.Children.Add(_player);
+        root.Children.Add(_surface);
         root.Children.Add(BuildCorner(_back, "↖", HorizontalAlignment.Left, "Back to Clip"));
         root.Children.Add(BuildCorner(_close, "✕", HorizontalAlignment.Right, "Close"));
         root.Children.Add(BuildBar());
@@ -119,7 +129,7 @@ internal sealed class NativeMediaPipWindow : Window
         {
             if (ReferenceEquals(button, _back))
             {
-                BackRequested?.Invoke(_player.Position.TotalSeconds);
+                BackRequested?.Invoke(TimeSpan.FromTicks(_engine.CurTime).TotalSeconds);
             }
 
             Close();
@@ -222,7 +232,7 @@ internal sealed class NativeMediaPipWindow : Window
 
             item.Click += (_, _) =>
             {
-                _player.SpeedRatio = speed;
+                _engine.Speed = speed;
                 _menu.IsOpen = false;
             };
 
@@ -253,12 +263,8 @@ internal sealed class NativeMediaPipWindow : Window
             new System.Windows.Interop.WindowInteropHelper(this).Handle);
         source?.AddHook(FrameHook);
 
-        _player.Play();
-        if (_startTime > 0)
-        {
-            _player.Position = TimeSpan.FromSeconds(_startTime);
-        }
-
+        MediaEngine.EnsureStarted();
+        _engine.OpenAsync(_filePath);
         ShowPlaying(true);
         _ticker.Tick += (_, _) => UpdateProgress();
         _ticker.Start();
@@ -266,54 +272,70 @@ internal sealed class NativeMediaPipWindow : Window
         ShowChrome(false);
     }
 
-    private void OnMediaOpened(object? sender, RoutedEventArgs e)
+    private void OnOpened(object? sender, FlyleafLib.MediaPlayer.OpenCompletedArgs e)
     {
-        _opened = true;
-
-        if (_player.NaturalVideoWidth > 0 && _player.NaturalVideoHeight > 0)
+        Dispatcher.BeginInvoke(new Action(() =>
         {
-            _aspect = (double)_player.NaturalVideoWidth / _player.NaturalVideoHeight;
-            Height = Math.Round(Width / _aspect);
-        }
+            if (!e.Success)
+            {
+                PlaybackUnavailable?.Invoke(0);
+                return;
+            }
 
-        UpdateProgress();
+            _opened = true;
+
+            if (_engine.Video.Width > 0 && _engine.Video.Height > 0)
+            {
+                _aspect = (double)_engine.Video.Width / _engine.Video.Height;
+                Height = Math.Round(Width / _aspect);
+            }
+
+            if (_startTime > 0)
+            {
+                _engine.SeekAccurate((int)(_startTime * 1000));
+            }
+
+            _engine.Play();
+            ShellLog.Info(
+                $"native player opened {_engine.Video.Width}x{_engine.Video.Height} "
+                + $"duration={_engine.Duration} status={_engine.Status}");
+            UpdateProgress();
+        }));
     }
 
     private void TogglePlayback()
     {
-        if (_player.CanPause && IsPlaying)
+        if (IsPlaying)
         {
-            _player.Pause();
-            ShowPlaying(false);
-            return;
+            _engine.Pause();
+        }
+        else
+        {
+            _engine.Play();
         }
 
-        _player.Play();
-        ShowPlaying(true);
+        ShowPlaying(IsPlaying);
     }
 
-    private bool IsPlaying { get; set; }
+    private bool IsPlaying => _engine.Status == FlyleafLib.MediaPlayer.Status.Playing;
 
-    private void ShowPlaying(bool playing)
-    {
-        IsPlaying = playing;
-        _play.Content = playing ? "❚❚" : "▶";
-    }
+    private void ShowPlaying(bool playing) => _play.Content = playing ? "❚❚" : "▶";
 
     private void UpdateProgress()
     {
-        if (!_opened || !_player.NaturalDuration.HasTimeSpan)
+        if (!_opened || _engine.Duration <= 0)
         {
             return;
         }
 
-        var total = _player.NaturalDuration.TimeSpan;
-        _time.Text = $"{Clock(_player.Position)} / {Clock(total)}";
+        var total = TimeSpan.FromTicks(_engine.Duration);
+        var at = TimeSpan.FromTicks(_engine.CurTime);
+        _time.Text = $"{Clock(at)} / {Clock(total)}";
 
-        if (!_scrubbing && total.TotalSeconds > 0)
+        if (!_scrubbing)
         {
             _seek.ValueChanged -= OnSeekChanged;
-            _seek.Value = _player.Position.TotalSeconds / total.TotalSeconds;
+            _seek.Value = at.TotalSeconds / total.TotalSeconds;
             _seek.ValueChanged += OnSeekChanged;
         }
     }
@@ -328,10 +350,9 @@ internal sealed class NativeMediaPipWindow : Window
 
     private void SeekToSlider()
     {
-        if (_player.NaturalDuration.HasTimeSpan)
+        if (_engine.Duration > 0)
         {
-            _player.Position = TimeSpan.FromSeconds(
-                _seek.Value * _player.NaturalDuration.TimeSpan.TotalSeconds);
+            _engine.SeekAccurate((int)(_seek.Value * TimeSpan.FromTicks(_engine.Duration).TotalMilliseconds));
         }
     }
 
@@ -478,7 +499,7 @@ internal sealed class NativeMediaPipWindow : Window
     {
         _ticker.Stop();
         _idle.Stop();
-        _player.Close();
+        _engine.Dispose();
         base.OnClosed(e);
     }
 
@@ -511,3 +532,4 @@ internal sealed class NativeMediaPipWindow : Window
     [DllImport("user32.dll")]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
 }
+
