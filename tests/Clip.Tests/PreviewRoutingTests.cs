@@ -82,6 +82,29 @@ public sealed class PreviewRoutingTests
         Assert.False(Clip.Shell.CodePreviewPage.IsCodeFile(extension));
     }
 
+    [Theory]
+    [InlineData(".doc")]
+    [InlineData(".docx")]
+    public void WordGetsTheLivePdfRoute(string extension)
+    {
+        // Word is the only Office format previewed through the browser's PDF viewer, so it must
+        // still answer to the shared Office route that supplies the rendered-image fallback.
+        Assert.True(Call("IsWordFile", extension));
+        Assert.True(Call("IsOfficeOrVisio", extension));
+    }
+
+    [Theory]
+    [InlineData(".xlsx")]
+    [InlineData(".xlsm")]
+    [InlineData(".xls")]
+    [InlineData(".pptx")]
+    [InlineData(".ppt")]
+    [InlineData(".vsdx")]
+    [InlineData(".vsd")]
+    [InlineData(".pdf")]
+    public void NonWordFormatsAreNotDivertedIntoTheWordRoute(string extension) =>
+        Assert.False(Call("IsWordFile", extension));
+
     [Fact]
     public void PdfIsNotClaimedByAnyOtherRoute()
     {

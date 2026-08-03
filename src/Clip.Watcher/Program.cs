@@ -2452,22 +2452,46 @@ internal static class StaticDocumentPreviewRenderer
         return Path.GetExtension(path).ToLowerInvariant() is ".docx" or ".doc" or ".xlsx" or ".xlsm" or ".xls" or ".pptx" or ".ppt" or ".vsdx" or ".vsd";
     }
 
-    public static Image? TryRenderFirstPageOnStaThread(string path)
+    public static Image? TryRenderFirstPageOnStaThread(string path) => RunOnStaThread(path, () =>
     {
-        Image? result = null;
+        if (TryRenderFirstPage(path, out var image))
+        {
+            return image;
+        }
+
+        image.Dispose();
+        return null;
+    });
+
+    /// <summary>
+    /// Exports a Word document to its cached PDF and returns that path rather than a picture of
+    /// page one. Showing the PDF itself keeps every page, the text layer and the original
+    /// fidelity, none of which survive a rasteriser, and it works on machines where no PDF
+    /// rasteriser is available at all.
+    /// </summary>
+    public static string? TryExportWordPdfOnStaThread(string path)
+    {
+        if (!File.Exists(path) || Path.GetExtension(path).ToLowerInvariant() is not (".docx" or ".doc"))
+        {
+            return null;
+        }
+
+        return RunOnStaThread(path, () =>
+        {
+            var pdfPath = CachedExportPath(path, ".word.pdf");
+            return TryExportOfficePdf(path, pdfPath, "Word.Application", ExportWordToPdf) ? pdfPath : null;
+        });
+    }
+
+    private static T? RunOnStaThread<T>(string path, Func<T?> work) where T : class
+    {
+        T? result = null;
         Exception? error = null;
         var thread = new Thread(() =>
         {
             try
             {
-                if (TryRenderFirstPage(path, out var image))
-                {
-                    result = image;
-                }
-                else
-                {
-                    image.Dispose();
-                }
+                result = work();
             }
             catch (Exception ex)
             {
@@ -2495,6 +2519,14 @@ internal static class StaticDocumentPreviewRenderer
         return result;
     }
 
+    private static string CachedExportPath(string path, string suffix)
+    {
+        var cacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip", "document-previews");
+        Directory.CreateDirectory(cacheRoot);
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length)));
+        return Path.Combine(cacheRoot, fingerprint + suffix);
+    }
+
     public static bool TryRenderFirstPage(string path, out Image image)
     {
         image = new Bitmap(1, 1);
@@ -2506,30 +2538,25 @@ internal static class StaticDocumentPreviewRenderer
         try
         {
             var extension = Path.GetExtension(path).ToLowerInvariant();
-            var cacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip", "document-previews");
-            Directory.CreateDirectory(cacheRoot);
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "|" + File.GetLastWriteTimeUtc(path).Ticks + "|" + new FileInfo(path).Length)));
 
             if (extension is ".docx" or ".doc")
             {
-                return TryRenderOfficePdf(path, Path.Combine(cacheRoot, fingerprint + ".word.pdf"), "Word.Application", ExportWordToPdf, out image);
+                return TryRenderOfficePdf(path, CachedExportPath(path, ".word.pdf"), "Word.Application", ExportWordToPdf, out image);
             }
 
             if (extension is ".xlsx" or ".xlsm" or ".xls")
             {
-                return TryRenderOfficePdf(path, Path.Combine(cacheRoot, fingerprint + ".excel.pdf"), "Excel.Application", ExportExcelToPdf, out image);
+                return TryRenderOfficePdf(path, CachedExportPath(path, ".excel.pdf"), "Excel.Application", ExportExcelToPdf, out image);
             }
 
             if (extension is ".pptx" or ".ppt")
             {
-                var pngPath = Path.Combine(cacheRoot, fingerprint + ".powerpoint.png");
-                return TryRenderImage(path, pngPath, "PowerPoint.Application", ExportPowerPointToPng, out image);
+                return TryRenderImage(path, CachedExportPath(path, ".powerpoint.png"), "PowerPoint.Application", ExportPowerPointToPng, out image);
             }
 
             if (extension is ".vsdx" or ".vsd")
             {
-                var pngPath = Path.Combine(cacheRoot, fingerprint + ".visio.png");
-                return TryRenderImage(path, pngPath, "Visio.Application", ExportVisioToPng, out image);
+                return TryRenderImage(path, CachedExportPath(path, ".visio.png"), "Visio.Application", ExportVisioToPng, out image);
             }
         }
         catch (Exception ex)
@@ -2545,6 +2572,17 @@ internal static class StaticDocumentPreviewRenderer
     private static bool TryRenderOfficePdf(string sourcePath, string pdfPath, string progId, Action<dynamic, string, string> export, out Image image)
     {
         image = new Bitmap(1, 1);
+        if (!TryExportOfficePdf(sourcePath, pdfPath, progId, export))
+        {
+            return false;
+        }
+
+        image.Dispose();
+        return PdfPreviewRenderer.TryRenderFirstPage(pdfPath, out image);
+    }
+
+    private static bool TryExportOfficePdf(string sourcePath, string pdfPath, string progId, Action<dynamic, string, string> export)
+    {
         try
         {
             if (!File.Exists(pdfPath))
@@ -2566,19 +2604,11 @@ internal static class StaticDocumentPreviewRenderer
                 }
             }
 
-            if (!File.Exists(pdfPath))
-            {
-                return false;
-            }
-
-            image.Dispose();
-            return PdfPreviewRenderer.TryRenderFirstPage(pdfPath, out image);
+            return File.Exists(pdfPath);
         }
         catch (Exception ex)
         {
             Program.LogError(ex);
-            image.Dispose();
-            image = new Bitmap(1, 1);
             return false;
         }
     }

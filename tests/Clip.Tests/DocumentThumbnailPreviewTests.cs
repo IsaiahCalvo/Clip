@@ -74,6 +74,36 @@ public sealed class DocumentThumbnailPreviewTests
         Assert.Contains("ImageFormat.Png", program);
     }
 
+    [Theory]
+    [InlineData(".xlsx")]
+    [InlineData(".pptx")]
+    [InlineData(".vsdx")]
+    [InlineData(".pdf")]
+    [InlineData(".zip")]
+    public void WordPdfExportRefusesEveryFormatThatIsNotWord(string extension)
+    {
+        // The Word preview route hands its cached PDF straight to the browser viewer. Letting any
+        // other format in would mean driving Word against a file it cannot open, so the guard is
+        // checked before COM is ever touched and this test never starts an Office process.
+        var source = Path.Combine(Path.GetTempPath(), $"clip-word-{Guid.NewGuid():N}{extension}");
+        File.WriteAllText(source, "not a word document");
+        try
+        {
+            Assert.Null(StaticDocumentPreviewRenderer.TryExportWordPdfOnStaThread(source));
+        }
+        finally
+        {
+            File.Delete(source);
+        }
+    }
+
+    [Fact]
+    public void WordPdfExportRefusesAMissingFile()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"clip-missing-{Guid.NewGuid():N}.docx");
+        Assert.Null(StaticDocumentPreviewRenderer.TryExportWordPdfOnStaThread(missing));
+    }
+
     private static string RepoPath(params string[] parts)
     {
         var directory = AppContext.BaseDirectory;

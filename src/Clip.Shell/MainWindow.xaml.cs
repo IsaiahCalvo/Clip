@@ -3711,6 +3711,30 @@ public partial class MainWindow : Window
                 }
             }
 
+            // A Word document is already exported to a cached PDF to get a thumbnail out of it, so
+            // the preview shows that PDF in the same viewer the .pdf branch uses. Rasterising it
+            // instead threw away every page after the first along with the text layer, and it only
+            // worked when a PDF rasteriser happened to be installed.
+            if (IsWordFile(ext))
+            {
+                var wordPdf = await Task.Run(() => WatcherStaticDocumentPreviewRenderer.TryExportWordPdfOnStaThread(path));
+                if (!string.IsNullOrWhiteSpace(wordPdf))
+                {
+                    var shown = false;
+                    await Dispatcher.InvokeAsync(async () =>
+                    {
+                        if (token != _previewToken) return;
+                        shown = await TryShowDocumentPreviewAsync(wordPdf);
+                    });
+
+                    if (shown)
+                    {
+                        ShellLog.Info($"preview word-live path={path} elapsedMs={watch.ElapsedMilliseconds}");
+                        return;
+                    }
+                }
+            }
+
             DrawingImage? rendered = null;
             if (ext == ".pdf")
             {
@@ -8123,6 +8147,7 @@ public partial class MainWindow : Window
     private static bool IsMediaFile(string ext) => IsImageFile(ext) || IsVideoFile(ext) || IsAudioFile(ext);
     private static bool IsHtmlFile(string ext) => ext is ".html" or ".htm";
     private static bool IsOfficeOrVisio(string ext) => ext is ".doc" or ".docx" or ".xls" or ".xlsx" or ".xlsm" or ".ppt" or ".pptx" or ".vsd" or ".vsdx";
+    private static bool IsWordFile(string ext) => ext is ".doc" or ".docx";
     private static bool IsTextFile(string ext) => ext is ".txt" or ".log" or ".md" or ".csv" or ".json" or ".xml" or ".css" or ".js" or ".ts" or ".cs" or ".bat" or ".cmd" or ".ps1" or ".py" or ".html" or ".htm";
 
     private ImageSource IconFor(ClipboardHistoryItem item, int size, bool preferRichPreview = true)
