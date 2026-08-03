@@ -34,6 +34,31 @@ internal static class JankHarness
     {
         var options = JankOptions.Parse(args);
 
+        // Writing the player out as a page is how its layout gets looked at rather than reasoned
+        // about. Opened at the size of the pane it lives in, a control that does not fit is
+        // immediately obvious, which is not true of reading the stylesheet.
+        if (JankOptions.Value(args, "--dump-page") is { } target)
+        {
+            var audio = args.Any(a => a.Equals("--audio", StringComparison.OrdinalIgnoreCase));
+            File.WriteAllText(
+                target,
+                MediaPreviewPage.Build(
+                    audio ? @"C:\clips\sample.m4a" : @"C:\clips\sample.mp4",
+                    "about:blank",
+                    isVideo: !audio,
+                    backgroundHex: "#1e1e1e",
+                    textHex: "#ffffff",
+                    detached: args.Any(a => a.Equals("--detached", StringComparison.OrdinalIgnoreCase))));
+
+            Report($"page written to {target}");
+            return 0;
+        }
+
+        if (JankOptions.Value(args, "--shot") is { } shot)
+        {
+            return await ShootAsync(args, shot);
+        }
+
         if (!File.Exists(options.File))
         {
             Report($"no sample video at {options.File} — pass --file=<path>");
@@ -261,6 +286,85 @@ internal static class JankHarness
     }
 
 
+    /// <summary>
+    /// Renders the player at a given size and saves a picture of it, off screen.
+    ///
+    /// Layout problems are seen, not reasoned about: a menu that runs off the top of the pane looks
+    /// perfectly correct in the stylesheet. This makes checking one a matter of looking at a file
+    /// rather than of taking over somebody's display.
+    /// </summary>
+    private static async Task<int> ShootAsync(string[] args, string shot)
+    {
+        var audio = args.Any(a => a.Equals("--audio", StringComparison.OrdinalIgnoreCase));
+        var detached = args.Any(a => a.Equals("--detached", StringComparison.OrdinalIgnoreCase));
+        var width = JankOptions.Number(args, "--w", 550);
+        var height = JankOptions.Number(args, "--h", 230);
+
+        var view = new Microsoft.Web.WebView2.Wpf.WebView2();
+        var window = new Window
+        {
+            WindowStyle = WindowStyle.None,
+            ShowInTaskbar = false,
+            ResizeMode = ResizeMode.NoResize,
+            Width = width,
+            Height = height,
+            // Parked off the side of everything. Windows still renders what it is asked to render.
+            Left = -4000,
+            Top = 0,
+            Content = view,
+        };
+
+        window.Show();
+        await view.EnsureCoreWebView2Async(await CreateEnvironmentAsync());
+
+        // A real file, so the page draws its player rather than its cannot-play message.
+        var sample = audio
+            ? Path.Combine(Path.GetTempPath(), "clip-jank-audio.m4a")
+            : JankOptions.Parse(args).File;
+
+        view.CoreWebView2.SetVirtualHostNameToFolderMapping(
+            "clip-shot.local",
+            Path.GetDirectoryName(sample)!,
+            CoreWebView2HostResourceAccessKind.Allow);
+
+        view.CoreWebView2.NavigateToString(MediaPreviewPage.Build(
+            sample,
+            $"https://clip-shot.local/{Uri.EscapeDataString(Path.GetFileName(sample))}",
+            isVideo: !audio,
+            backgroundHex: "#1e1e1e",
+            textHex: "#ffffff",
+            detached: detached));
+
+        await Task.Delay(1200);
+
+        // Show whatever the caller wants to look at. The controls hide themselves until the pointer
+        // is over the picture, and the speed list is behind the menu.
+        if (JankOptions.Value(args, "--show") is { } show)
+        {
+            await view.ExecuteScriptAsync(show switch
+            {
+                "menu" => "document.getElementById('menu').classList.add('open')",
+                "speeds" =>
+                    "document.getElementById('menu').classList.add('open');"
+                    + "document.getElementById('mainPanel').classList.remove('show');"
+                    + "document.getElementById('speedPanel').classList.add('show');",
+                _ => "document.querySelector('.wrap').classList.add('hot')",
+            });
+
+            await view.ExecuteScriptAsync("document.querySelector('.wrap').classList.add('hot')");
+            await Task.Delay(400);
+        }
+
+        using (var file = File.Create(shot))
+        {
+            await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, file);
+        }
+
+        window.Close();
+        Report($"shot saved to {shot} at {width}x{height}");
+        return 0;
+    }
+
     private static async Task<CoreWebView2Environment> CreateEnvironmentAsync() =>
         await CoreWebView2Environment.CreateAsync(
             userDataFolder: Path.Combine(Path.GetTempPath(), "clip-jank-harness"),
@@ -402,10 +506,10 @@ internal sealed record JankOptions(
     private static string DefaultSample() =>
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), "clip-jank-sample.mp4");
 
-    private static string? Value(string[] args, string name) => args
+    internal static string? Value(string[] args, string name) => args
         .FirstOrDefault(a => a.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
         ?[(name.Length + 1)..];
 
-    private static int Number(string[] args, string name, int fallback) =>
+    internal static int Number(string[] args, string name, int fallback) =>
         int.TryParse(Value(args, name), out var parsed) ? parsed : fallback;
 }

@@ -163,11 +163,22 @@ internal static class MediaPreviewPage
               }
               .menu.open { display: block; }
 
-              /* Audio has no picture, so its bar sits in the middle of the pane rather than at the
-                 bottom, and a menu opening upwards from there runs off the top and loses its first
-                 few speeds. Hung from the top of the pane instead it has the whole height to use,
-                 which fits every option without scrolling or shrinking them. */
-              .wrap:not(.video-mode):not(.detached) .menu { top: 6px; bottom: auto; }
+              /* Audio has no picture, so its bar sits in the middle of the pane rather than along
+                 the bottom, and a menu anchored to the bar has only half the pane to open into
+                 whichever way it goes — not enough for eight speeds, so the list lost its ends.
+                 Anchoring to the pane instead gives it the full height, and laying the speeds out
+                 in two columns halves what it needs. Both together fit every option at the size it
+                 already was, with nothing to scroll. */
+              .wrap:not(.video-mode):not(.detached) .menu {
+                position: fixed;
+                right: 8px;
+                bottom: 8px;
+                top: auto;
+              }
+              .wrap:not(.video-mode):not(.detached) #speedPanel .speeds {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+              }
               .menu button {
                 display: flex;
                 justify-content: space-between;
@@ -352,14 +363,16 @@ internal static class MediaPreviewPage
                     </div>
                     <div class="panel" id="speedPanel">
                       <button class="back" id="speedBack"><span>‹&nbsp; Playback speed</span></button>
-                      <button data-rate="0.25"><span>0.25</span></button>
-                      <button data-rate="0.5"><span>0.5</span></button>
-                      <button data-rate="0.75"><span>0.75</span></button>
-                      <button data-rate="1" class="on"><span>Normal</span></button>
-                      <button data-rate="1.25"><span>1.25</span></button>
-                      <button data-rate="1.5"><span>1.5</span></button>
-                      <button data-rate="1.75"><span>1.75</span></button>
-                      <button data-rate="2"><span>2</span></button>
+                      <div class="speeds">
+                        <button data-rate="0.25"><span>0.25</span></button>
+                        <button data-rate="0.5"><span>0.5</span></button>
+                        <button data-rate="0.75"><span>0.75</span></button>
+                        <button data-rate="1" class="on"><span>Normal</span></button>
+                        <button data-rate="1.25"><span>1.25</span></button>
+                        <button data-rate="1.5"><span>1.5</span></button>
+                        <button data-rate="1.75"><span>1.75</span></button>
+                        <button data-rate="2"><span>2</span></button>
+                      </div>
                     </div>
                   </div>
                 </div>
