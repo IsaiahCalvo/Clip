@@ -13,13 +13,38 @@ namespace Clip.Tests;
 /// </summary>
 public class PlayerGlyphTests
 {
-    private static string Page(bool detached) => MediaPreviewPage.Build(
-        @"C:\clips\sample.mp4",
-        "https://clip-preview.local/sample.mp4",
-        isVideo: true,
+    private static string Page(bool detached) => Page(isVideo: true, detached);
+
+    private static string Page(bool isVideo, bool detached) => MediaPreviewPage.Build(
+        isVideo ? @"C:\clips\sample.mp4" : @"C:\clips\sample.m4a",
+        "https://clip-preview.local/sample",
+        isVideo,
         backgroundHex: "#1e1e1e",
         textHex: "#ffffff",
         detached: detached);
+
+    /// <summary>
+    /// Picture-in-picture is for watching something while working on something else, so it needs a
+    /// picture. Offering it for an audio file is an option that cannot do anything.
+    /// </summary>
+    [Fact]
+    public void AudioIsNotOfferedPictureInPicture()
+    {
+        Assert.DoesNotContain("Picture in picture", Page(isVideo: false, detached: false));
+    }
+
+    [Fact]
+    public void VideoIsStillOfferedPictureInPicture()
+    {
+        Assert.Contains("Picture in picture", Page(isVideo: true, detached: false));
+    }
+
+    /// <summary>The mini window is already picture-in-picture; it offers a way back instead.</summary>
+    [Fact]
+    public void TheMiniWindowDoesNotOfferPictureInPictureAgain()
+    {
+        Assert.DoesNotContain("Picture in picture", Page(isVideo: true, detached: true));
+    }
 
     [Theory]
     [InlineData("play", "\u25b6")]      // black right-pointing triangle

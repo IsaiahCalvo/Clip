@@ -34,10 +34,12 @@ internal static class MediaPreviewPage
             ? """<button id="fs" class="fs" title="Full screen">⛶</button>"""
             : string.Empty;
 
-        // The mini window is already picture-in-picture, so it offers "back" instead.
-        var pipItem = detached
-            ? string.Empty
-            : """<button id="pip"><span>Picture in picture</span></button>""";
+        // Picture-in-picture is for watching something while doing other work, so it needs a
+        // picture — an audio file has none. The mini window is already picture-in-picture and
+        // offers "back" instead.
+        var pipItem = isVideo && !detached
+            ? """<button id="pip"><span>Picture in picture</span></button>"""
+            : string.Empty;
 
         // Video hides its controls until the pointer is over it; audio has no picture to reveal,
         // so its bar stays put.
