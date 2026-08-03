@@ -2586,7 +2586,7 @@ internal static class StaticDocumentPreviewRenderer
         return false;
     }
 
-    private static bool TryRenderOfficePdf(string sourcePath, string pdfPath, string progId, Action<dynamic, string, string> export, out Image image)
+    private static bool TryRenderOfficePdf(string sourcePath, string pdfPath, string progId, Action<OfficeApplication, string, string> export, out Image image)
     {
         image = new Bitmap(1, 1);
         if (!TryExportOfficePdf(sourcePath, pdfPath, progId, export))
@@ -2598,7 +2598,7 @@ internal static class StaticDocumentPreviewRenderer
         return PdfPreviewRenderer.TryRenderFirstPage(pdfPath, out image);
     }
 
-    private static bool TryExportOfficePdf(string sourcePath, string pdfPath, string progId, Action<dynamic, string, string> export)
+    private static bool TryExportOfficePdf(string sourcePath, string pdfPath, string progId, Action<OfficeApplication, string, string> export)
     {
         try
         {
@@ -2631,7 +2631,7 @@ internal static class StaticDocumentPreviewRenderer
         }
     }
 
-    private static bool TryRenderImage(string sourcePath, string imagePath, string progId, Action<dynamic, string, string> export, out Image image)
+    private static bool TryRenderImage(string sourcePath, string imagePath, string progId, Action<OfficeApplication, string, string> export, out Image image)
     {
         image = new Bitmap(1, 1);
         try
@@ -2675,76 +2675,217 @@ internal static class StaticDocumentPreviewRenderer
         }
     }
 
-    private static dynamic? CreateComApplication(string progId)
+    // An Office application handed to us by COM is not necessarily ours. Measured on this machine
+    // with a user-launched instance already running: Word, Excel and Visio each start a fresh
+    // process for the automation caller, but PowerPoint hands back the very process the user is
+    // sitting in front of -- CoCreateInstance returned the same POWERPNT.EXE, its Presentations
+    // collection held the user's unsaved deck, and Quit() on it closed that deck with no save
+    // prompt. Which applications behave which way is a property of the installed Office, not
+    // something to hard-code, so every instance carries whether we created it and nothing global
+    // (Visible, DisplayAlerts, Quit) is touched on an instance we only attached to.
+    private sealed class OfficeApplication
     {
-        var type = Type.GetTypeFromProgID(progId);
-        return type is null ? null : Activator.CreateInstance(type);
+        public OfficeApplication(object application, bool owned)
+        {
+            Application = application;
+            Owned = owned;
+        }
+
+        public dynamic Application { get; }
+
+        public bool Owned { get; }
     }
 
-    private static void ExportWordToPdf(dynamic app, string sourcePath, string pdfPath)
+    private static OfficeApplication? CreateComApplication(string progId)
     {
-        app.Visible = false;
-        app.DisplayAlerts = 0;
-        dynamic? document = null;
+        var type = Type.GetTypeFromProgID(progId);
+        if (type is null)
+        {
+            return null;
+        }
+
+        var before = RunningOfficeProcessIds(progId);
+        var app = Activator.CreateInstance(type);
+        if (app is null)
+        {
+            return null;
+        }
+
+        // A process id that was not there a moment ago belongs to the instance we just created, so
+        // it is ours to hide, silence and quit. No new process means COM attached us to one that was
+        // already running -- the user's. An unrecognised progId falls through to "not ours", which
+        // costs a leaked process at worst and never costs the user their work.
+        var owned = before is not null && CreatedNewProcess(before, RunningOfficeProcessIds(progId));
+        Program.LogDebug($"Static preview COM instance progId={progId} owned={owned}");
+        return new OfficeApplication(app, owned);
+    }
+
+    internal static string? OfficeProcessName(string progId) => progId switch
+    {
+        "Word.Application" => "WINWORD",
+        "Excel.Application" => "EXCEL",
+        "PowerPoint.Application" => "POWERPNT",
+        "Visio.Application" => "VISIO",
+        _ => null,
+    };
+
+    internal static bool CreatedNewProcess(IReadOnlyCollection<int>? before, IReadOnlyCollection<int>? after)
+    {
+        if (before is null || after is null)
+        {
+            return false;
+        }
+
+        foreach (var id in after)
+        {
+            if (!before.Contains(id))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyCollection<int>? RunningOfficeProcessIds(string progId)
+    {
+        var name = OfficeProcessName(progId);
+        if (name is null)
+        {
+            return null;
+        }
+
+        var ids = new HashSet<int>();
+        foreach (var process in Process.GetProcessesByName(name))
+        {
+            using (process)
+            {
+                ids.Add(process.Id);
+            }
+        }
+
+        return ids;
+    }
+
+    // Only ever close a document we opened. When we are driving the user's own instance the file
+    // being previewed may already be open in it, and Open() hands back their document rather than a
+    // second copy of it -- closing that would take their work away mid-edit.
+    private static dynamic? FindOpenDocument(dynamic collection, string path)
+    {
         try
         {
-            document = app.Documents.Open(FileName: sourcePath, ReadOnly: true, Visible: false);
+            foreach (dynamic candidate in collection)
+            {
+                if (string.Equals((string)candidate.FullName, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+
+                ReleaseComObject(candidate);
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static void ReleaseOrClose(dynamic? document, bool alreadyOpen, object? closeArgument)
+    {
+        if (alreadyOpen)
+        {
+            ReleaseComObject(document);
+            return;
+        }
+
+        CloseAndRelease(document, closeArgument);
+    }
+
+    private static void ExportWordToPdf(OfficeApplication office, string sourcePath, string pdfPath)
+    {
+        dynamic app = office.Application;
+        if (office.Owned)
+        {
+            app.Visible = false;
+            app.DisplayAlerts = 0;
+        }
+
+        dynamic? document = office.Owned ? null : FindOpenDocument(app.Documents, sourcePath);
+        var alreadyOpen = document is not null;
+        try
+        {
+            document ??= app.Documents.Open(FileName: sourcePath, ReadOnly: true, Visible: false);
             document.ExportAsFixedFormat(pdfPath, 17);
             Program.LogDebug($"Static preview Word exported path={sourcePath}");
         }
         finally
         {
-            CloseAndRelease(document, false);
+            ReleaseOrClose(document, alreadyOpen, false);
         }
     }
 
-    private static void ExportExcelToPdf(dynamic app, string sourcePath, string pdfPath)
+    private static void ExportExcelToPdf(OfficeApplication office, string sourcePath, string pdfPath)
     {
-        app.Visible = false;
-        app.DisplayAlerts = false;
-        dynamic? workbook = null;
+        dynamic app = office.Application;
+        if (office.Owned)
+        {
+            app.Visible = false;
+            app.DisplayAlerts = false;
+        }
+
+        dynamic? workbook = office.Owned ? null : FindOpenDocument(app.Workbooks, sourcePath);
+        var alreadyOpen = workbook is not null;
         try
         {
-            workbook = app.Workbooks.Open(Filename: sourcePath, ReadOnly: true);
+            workbook ??= app.Workbooks.Open(Filename: sourcePath, ReadOnly: true);
             workbook.ExportAsFixedFormat(0, pdfPath);
             Program.LogDebug($"Static preview Excel exported path={sourcePath}");
         }
         finally
         {
-            CloseAndRelease(workbook, false);
+            ReleaseOrClose(workbook, alreadyOpen, false);
         }
     }
 
-    private static void ExportPowerPointToPng(dynamic app, string sourcePath, string imagePath)
+    private static void ExportPowerPointToPng(OfficeApplication office, string sourcePath, string imagePath)
     {
-        dynamic? presentation = null;
+        dynamic app = office.Application;
+        dynamic? presentation = office.Owned ? null : FindOpenDocument(app.Presentations, sourcePath);
+        var alreadyOpen = presentation is not null;
         try
         {
-            presentation = app.Presentations.Open(sourcePath, true, false, false);
+            presentation ??= app.Presentations.Open(sourcePath, true, false, false);
             dynamic slide = presentation.Slides[1];
             slide.Export(imagePath, "PNG", 1400, 1000);
             Program.LogDebug($"Static preview PowerPoint exported path={sourcePath}");
         }
         finally
         {
-            CloseAndRelease(presentation, null);
+            ReleaseOrClose(presentation, alreadyOpen, null);
         }
     }
 
-    private static void ExportVisioToPng(dynamic app, string sourcePath, string imagePath)
+    private static void ExportVisioToPng(OfficeApplication office, string sourcePath, string imagePath)
     {
-        app.Visible = false;
-        dynamic? document = null;
+        dynamic app = office.Application;
+        if (office.Owned)
+        {
+            app.Visible = false;
+        }
+
+        dynamic? document = office.Owned ? null : FindOpenDocument(app.Documents, sourcePath);
+        var alreadyOpen = document is not null;
         try
         {
-            document = app.Documents.OpenEx(sourcePath, 66);
+            document ??= app.Documents.OpenEx(sourcePath, 66);
             dynamic page = document.Pages[1];
             page.Export(imagePath);
             Program.LogDebug($"Static preview Visio exported path={sourcePath}");
         }
         finally
         {
-            CloseAndRelease(document, null);
+            ReleaseOrClose(document, alreadyOpen, null);
         }
     }
 
@@ -2773,17 +2914,22 @@ internal static class StaticDocumentPreviewRenderer
         ReleaseComObject(comObject);
     }
 
-    private static void QuitAndRelease(dynamic app)
+    private static void QuitAndRelease(OfficeApplication app)
     {
-        try
+        // Quitting is the only way to stop an instance we started from outliving the preview, and
+        // the surest way to destroy the user's session when the instance was already theirs.
+        if (app.Owned)
         {
-            app.Quit();
-        }
-        catch
-        {
+            try
+            {
+                app.Application.Quit();
+            }
+            catch
+            {
+            }
         }
 
-        ReleaseComObject(app);
+        ReleaseComObject(app.Application);
     }
 
     private static void ReleaseComObject(object? comObject)
