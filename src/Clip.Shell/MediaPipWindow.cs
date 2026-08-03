@@ -21,7 +21,18 @@ internal sealed class MediaPipWindow : Window
 {
     private const string PipVirtualHost = "clip-pip.local";
 
-    private readonly Microsoft.Web.WebView2.Wpf.WebView2 _view = new();
+    /// <summary>
+    /// The visual-hosting browser control, not the ordinary one.
+    ///
+    /// The ordinary control puts the browser in a child window of its own, which Windows resizes on
+    /// its own schedule rather than in step with the frame the user is dragging. The picture
+    /// therefore arrives a moment after the border does, every frame of the drag, which is the
+    /// stutter. This one hands its output to WPF as an image, so the frame and the picture are one
+    /// thing and resize together. It captures from the browser rather than being composed by it, so
+    /// it cannot show protected content — that only matters for streaming sites, and this window
+    /// only ever plays a local file.
+    /// </summary>
+    private readonly Microsoft.Web.WebView2.Wpf.WebView2CompositionControl _view = new();
     private readonly string _filePath;
     private readonly bool _isVideo;
     private readonly double _startTime;
@@ -293,6 +304,9 @@ internal sealed class MediaPipWindow : Window
             return;
         }
 
+        // WPF routes the mouse into the visual-hosting control itself, so it may be holding the
+        // capture. Windows will not start a move or resize loop until both are let go.
+        Mouse.Capture(null);
         ReleaseCapture();
         SendMessage(hwnd, WmNcLButtonDown, new IntPtr(hitTest), IntPtr.Zero);
     }
