@@ -5619,6 +5619,7 @@ public partial class MainWindow : Window
     }
 
     private MediaPipWindow? _pipWindow;
+    private NativeMediaPipWindow? _nativePipWindow;
     private string? _pipSourcePath;
     private bool _pipSourceIsVideo;
 
@@ -5640,6 +5641,7 @@ public partial class MainWindow : Window
     private void OpenPictureInPicture(string path, bool isVideo, double startTime)
     {
         _pipWindow?.Close();
+        _nativePipWindow?.Close();
 
         // Put it on whichever monitor the palette is on, in that screen's own coordinates.
         var screen = System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(this).Handle);
@@ -5650,6 +5652,52 @@ public partial class MainWindow : Window
             screen.WorkingArea.Width / dpi.DpiScaleX,
             screen.WorkingArea.Height / dpi.DpiScaleY);
 
+        // Video gets the player Clip draws itself, so the picture and the controls cannot fall
+        // behind the frame while it is dragged. Audio has no picture to keep in step and its page
+        // already works, so it stays on the browser player, as does any video Windows turns down.
+        if (isVideo)
+        {
+            OpenNativePictureInPicture(path, startTime, work);
+            return;
+        }
+
+        OpenBrowserPictureInPicture(path, isVideo, startTime, work);
+    }
+
+    private void OpenNativePictureInPicture(string path, double startTime, Rect work)
+    {
+        var native = new NativeMediaPipWindow(path, startTime, work);
+
+        native.BackRequested += ResumeInPalette;
+        native.PlaybackUnavailable += resumeAt =>
+        {
+            ShellLog.Info($"native picture-in-picture could not play {Path.GetExtension(path)}; using the browser player");
+            native.Close();
+            OpenBrowserPictureInPicture(path, isVideo: true, resumeAt, work);
+        };
+
+        native.Closed += (_, _) => _nativePipWindow = null;
+        _nativePipWindow = native;
+        native.Show();
+    }
+
+    private void ResumeInPalette(double resumeAt)
+    {
+        _pipWindow = null;
+        _nativePipWindow = null;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ShowPalette();
+            if (_selected is not null)
+            {
+                _pipResumeTime = resumeAt;
+                RenderPreview(_selected);
+            }
+        }));
+    }
+
+    private void OpenBrowserPictureInPicture(string path, bool isVideo, double startTime, Rect work)
+    {
         var window = new MediaPipWindow(
             path,
             isVideo,
