@@ -31,7 +31,7 @@ internal static class MediaPreviewPage
         // The fullscreen button sits on the video itself, so it has no meaning for audio, and it
         // is redundant in the detached mini window.
         var fullscreenButton = isVideo && !detached
-            ? """<button id="fs" class="fs" title="Full screen">â›¶</button>"""
+            ? """<button id="fs" class="fs" title="Full screen">⛶</button>"""
             : string.Empty;
 
         // The mini window is already picture-in-picture, so it offers "back" instead.
@@ -284,27 +284,27 @@ internal static class MediaPreviewPage
             </head>
             <body>
               <div class="{{wrapClass}}" id="wrap">
-                <button class="corner" id="back" title="Back to Clip">â†–</button>
-                <button class="corner" id="close" title="Close">âœ•</button>
+                <button class="corner" id="back" title="Back to Clip">↖</button>
+                <button class="corner" id="close" title="Close">✕</button>
                 <div class="stage {{(isVideo ? "" : "audio")}}">
                   <{{element}} id="player" src="{{mediaUrl}}" type="{{mime}}" preload="metadata"></{{element}}>
                   {{fullscreenButton}}
                 </div>
 
                 <div class="bar">
-                  <button id="play" title="Play/pause">â–¶</button>
+                  <button id="play" title="Play/pause">▶</button>
                   <span class="time" id="time">0:00 / 0:00</span>
                   <input type="range" id="seek" value="0" min="0" max="1000" step="1">
-                  <button id="more" title="More">â‹®</button>
+                  <button id="more" title="More">⋮</button>
 
                   <div class="menu" id="menu">
                     <div class="panel show" id="mainPanel">
                       <button id="dl"><span>Download</span></button>
                       {{pipItem}}
-                      <button id="speedOpen"><span>Playback speed</span><span class="chev">â€º</span></button>
+                      <button id="speedOpen"><span>Playback speed</span><span class="chev">›</span></button>
                     </div>
                     <div class="panel" id="speedPanel">
-                      <button class="back" id="speedBack"><span>â€¹&nbsp; Playback speed</span></button>
+                      <button class="back" id="speedBack"><span>‹&nbsp; Playback speed</span></button>
                       <button data-rate="0.25"><span>0.25</span></button>
                       <button data-rate="0.5"><span>0.5</span></button>
                       <button data-rate="0.75"><span>0.75</span></button>
@@ -339,8 +339,8 @@ internal static class MediaPreviewPage
                 };
 
                 play.addEventListener('click', () => p.paused ? p.play() : p.pause());
-                p.addEventListener('play', () => play.textContent = 'âšâš');
-                p.addEventListener('pause', () => play.textContent = 'â–¶');
+                p.addEventListener('play', () => play.textContent = '❚❚');
+                p.addEventListener('pause', () => play.textContent = '▶');
                 p.addEventListener('timeupdate', sync);
                 p.addEventListener('loadedmetadata', sync);
                 seek.addEventListener('input', () => { if (p.duration) p.currentTime = (seek.value / 1000) * p.duration; });
@@ -374,8 +374,8 @@ internal static class MediaPreviewPage
                 const isVideoMode = wrap.classList.contains('video-mode');
 
                 // Clip hosts the mini window itself. The browser's own picture-in-picture draws a
-                // fixed control set we cannot touch â€” that is where the stray Settings button and
-                // the dead "back to tab" came from â€” and WebView2 does not support the newer API
+                // fixed control set we cannot touch — that is where the stray Settings button and
+                // the dead "back to tab" came from — and WebView2 does not support the newer API
                 // that would let a page supply its own. So the host is asked to open a small
                 // always-on-top Clip window running this same player instead.
                 const send = (action) => {
