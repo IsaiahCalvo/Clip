@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 
 namespace Clip.Shell;
@@ -31,7 +31,7 @@ internal static class MediaPreviewPage
         // The fullscreen button sits on the video itself, so it has no meaning for audio, and it
         // is redundant in the detached mini window.
         var fullscreenButton = isVideo && !detached
-            ? """<button id="fs" class="fs" title="Full screen">⛶</button>"""
+            ? """<button id="fs" class="fs" title="Full screen">â›¶</button>"""
             : string.Empty;
 
         // The mini window is already picture-in-picture, so it offers "back" instead.
@@ -39,7 +39,9 @@ internal static class MediaPreviewPage
             ? string.Empty
             : """<button id="pip"><span>Picture in picture</span></button>""";
 
-        var wrapClass = detached ? "wrap detached" : "wrap";
+        // Video hides its controls until the pointer is over it; audio has no picture to reveal,
+        // so its bar stays put.
+        var wrapClass = (detached ? "wrap detached" : "wrap") + (isVideo ? " video-mode" : "");
 
         return $$"""
             <!doctype html>
@@ -77,7 +79,7 @@ internal static class MediaPreviewPage
               .fs {
                 position: absolute;
                 right: 10px;
-                bottom: 10px;
+                top: 10px;
                 background: rgba(0,0,0,.6);
                 border: 1px solid rgba(255,255,255,.25);
                 color: #fff;
@@ -178,6 +180,44 @@ internal static class MediaPreviewPage
               .corner:hover { background: rgba(0,0,0,.85); }
               #back { left: 10px; }
               #close { right: 10px; }
+              /* Video gives its whole area to the picture and floats the controls over it, in the
+                 preview pane and fullscreen just as in the mini window. */
+              .wrap.video-mode { padding: 0; gap: 0; }
+              .wrap.video-mode video { border-radius: 0; }
+              .wrap.video-mode .stage { flex: 1; }
+              .wrap.video-mode .bar {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                width: 100%;
+                border: 0;
+                border-radius: 0;
+                background: linear-gradient(to top, rgba(0,0,0,.82), rgba(0,0,0,.35) 70%, transparent);
+              }
+              .wrap.video-mode .bar,
+              .wrap.video-mode .fs {
+                opacity: 0;
+                transition: opacity .14s ease;
+                pointer-events: none;
+              }
+              /* Plain hover drives this, so the controls work even if the idle-hide script does
+                 not run. The script only adds the "still pointer" hide on top. */
+              .wrap.video-mode:hover .bar,
+              .wrap.video-mode:hover .fs,
+              .wrap.video-mode.hot .bar,
+              .wrap.video-mode.hot .fs {
+                opacity: 1;
+                pointer-events: auto;
+              }
+              .wrap.video-mode.idle .bar,
+              .wrap.video-mode.idle .fs {
+                opacity: 0;
+                pointer-events: none;
+              }
+              .wrap.video-mode.hot { cursor: default; }
+              .wrap.video-mode:not(.hot) { cursor: none; }
+
               /* The mini window is just the video. Controls ride on top of it and only appear
                  while the pointer is over the window, so there is no surrounding frame. */
               .wrap.detached { padding: 0; gap: 0; background: #000; }
@@ -244,27 +284,27 @@ internal static class MediaPreviewPage
             </head>
             <body>
               <div class="{{wrapClass}}" id="wrap">
-                <button class="corner" id="back" title="Back to Clip">↖</button>
-                <button class="corner" id="close" title="Close">✕</button>
+                <button class="corner" id="back" title="Back to Clip">â†–</button>
+                <button class="corner" id="close" title="Close">âœ•</button>
                 <div class="stage {{(isVideo ? "" : "audio")}}">
                   <{{element}} id="player" src="{{mediaUrl}}" type="{{mime}}" preload="metadata"></{{element}}>
                   {{fullscreenButton}}
                 </div>
 
                 <div class="bar">
-                  <button id="play" title="Play/pause">▶</button>
+                  <button id="play" title="Play/pause">â–¶</button>
                   <span class="time" id="time">0:00 / 0:00</span>
                   <input type="range" id="seek" value="0" min="0" max="1000" step="1">
-                  <button id="more" title="More">⋮</button>
+                  <button id="more" title="More">â‹®</button>
 
                   <div class="menu" id="menu">
                     <div class="panel show" id="mainPanel">
                       <button id="dl"><span>Download</span></button>
                       {{pipItem}}
-                      <button id="speedOpen"><span>Playback speed</span><span class="chev">›</span></button>
+                      <button id="speedOpen"><span>Playback speed</span><span class="chev">â€º</span></button>
                     </div>
                     <div class="panel" id="speedPanel">
-                      <button class="back" id="speedBack"><span>‹&nbsp; Playback speed</span></button>
+                      <button class="back" id="speedBack"><span>â€¹&nbsp; Playback speed</span></button>
                       <button data-rate="0.25"><span>0.25</span></button>
                       <button data-rate="0.5"><span>0.5</span></button>
                       <button data-rate="0.75"><span>0.75</span></button>
@@ -299,8 +339,8 @@ internal static class MediaPreviewPage
                 };
 
                 play.addEventListener('click', () => p.paused ? p.play() : p.pause());
-                p.addEventListener('play', () => play.textContent = '❚❚');
-                p.addEventListener('pause', () => play.textContent = '▶');
+                p.addEventListener('play', () => play.textContent = 'âšâš');
+                p.addEventListener('pause', () => play.textContent = 'â–¶');
                 p.addEventListener('timeupdate', sync);
                 p.addEventListener('loadedmetadata', sync);
                 seek.addEventListener('input', () => { if (p.duration) p.currentTime = (seek.value / 1000) * p.duration; });
@@ -331,10 +371,11 @@ internal static class MediaPreviewPage
 
                 const wrap = document.getElementById('wrap');
                 const detached = wrap.classList.contains('detached');
+                const isVideoMode = wrap.classList.contains('video-mode');
 
                 // Clip hosts the mini window itself. The browser's own picture-in-picture draws a
-                // fixed control set we cannot touch — that is where the stray Settings button and
-                // the dead "back to tab" came from — and WebView2 does not support the newer API
+                // fixed control set we cannot touch â€” that is where the stray Settings button and
+                // the dead "back to tab" came from â€” and WebView2 does not support the newer API
                 // that would let a page supply its own. So the host is asked to open a small
                 // always-on-top Clip window running this same player instead.
                 const send = (action) => {
@@ -350,14 +391,44 @@ internal static class MediaPreviewPage
                   if (document.fullscreenElement) document.exitFullscreen();
                 });
 
+                // Clicking the picture toggles playback, the way a video site does. Buttons and
+                // the scrubber are excluded, and in the mini window a click that turned into a
+                // window drag does not count.
+                const isControl = t => t.closest('button, input, .bar, .menu');
+
+                if (isVideoMode) {
+                  // Reveal the controls on movement and hide them again once the pointer has been
+                  // still for a moment, so fullscreen playback is unobstructed.
+                  let idleTimer;
+                  const wake = () => {
+                    wrap.classList.add('hot');
+                    wrap.classList.remove('idle');
+                    clearTimeout(idleTimer);
+                    idleTimer = setTimeout(() => {
+                      if (!menu.classList.contains('open')) wrap.classList.add('idle');
+                    }, 2200);
+                  };
+                  document.addEventListener('mousemove', wake);
+                  document.addEventListener('mouseenter', wake);
+                  document.addEventListener('mouseleave', () => {
+                    clearTimeout(idleTimer);
+                    wrap.classList.remove('hot');
+                    wrap.classList.add('idle');
+                    closeMenu();
+                  });
+                }
+
                 if (detached) {
                   // The browser control covers the whole window, so mouse input never reaches it
                   // and neither dragging nor the resize borders work. The page reports those
-                  // gestures instead and the host performs them.
+                  // gestures instead and the host performs them. The drag only starts once the
+                  // pointer actually moves, so a plain click still reaches play/pause.
                   const EDGE = 7;
+                  let pending = null;
+
                   document.addEventListener('mousedown', e => {
                     if (e.button !== 0) return;
-                    if (e.target.closest('button, input')) return;
+                    if (isControl(e.target)) return;
 
                     const nearLeft = e.clientX <= EDGE;
                     const nearRight = e.clientX >= document.documentElement.clientWidth - EDGE;
@@ -371,30 +442,49 @@ internal static class MediaPreviewPage
                     else if (nearRight) edge = 'right';
 
                     e.preventDefault();
-                    try {
-                      window.chrome.webview.postMessage(JSON.stringify(
-                        edge ? { action: 'resize', edge } : { action: 'drag' }));
-                    } catch {}
+
+                    if (edge) {
+                      try { window.chrome.webview.postMessage(JSON.stringify({ action: 'resize', edge })); } catch {}
+                      return;
+                    }
+
+                    pending = { x: e.clientX, y: e.clientY };
                   });
 
+                  document.addEventListener('mousemove', e => {
+                    if (!pending) return;
+                    if (Math.abs(e.clientX - pending.x) < 3 && Math.abs(e.clientY - pending.y) < 3) return;
+                    pending = null;
+                    try { window.chrome.webview.postMessage(JSON.stringify({ action: 'drag' })); } catch {}
+                  });
+
+                  document.addEventListener('mouseup', e => {
+                    if (!pending || isControl(e.target)) { pending = null; return; }
+                    pending = null;
+                    p.paused ? p.play().catch(() => {}) : p.pause();
+                  });
+                } else {
+                  document.addEventListener('click', e => {
+                    if (isControl(e.target)) return;
+                    p.paused ? p.play().catch(() => {}) : p.pause();
+                  });
+                }
+
+                if (detached) {
                   // Show the matching cursor so the edges feel grabbable.
+                  const EDGE2 = 7;
                   document.addEventListener('mousemove', e => {
                     const w = document.documentElement.clientWidth;
                     const h = document.documentElement.clientHeight;
-                    const l = e.clientX <= EDGE, r = e.clientX >= w - EDGE;
-                    const t = e.clientY <= EDGE, b = e.clientY >= h - EDGE;
-                    let c = 'default';
+                    const l = e.clientX <= EDGE2, r = e.clientX >= w - EDGE2;
+                    const t = e.clientY <= EDGE2, b = e.clientY >= h - EDGE2;
+                    let c = '';
                     if ((t && l) || (b && r)) c = 'nwse-resize';
                     else if ((t && r) || (b && l)) c = 'nesw-resize';
                     else if (l || r) c = 'ew-resize';
                     else if (t || b) c = 'ns-resize';
                     document.body.style.cursor = c;
                   });
-
-                  // Show the overlay while the pointer is over the window, hide it otherwise.
-                  document.addEventListener('mouseenter', () => wrap.classList.add('hot'));
-                  document.addEventListener('mouseleave', () => { wrap.classList.remove('hot'); closeMenu(); });
-                  document.addEventListener('mousemove', () => wrap.classList.add('hot'));
 
                   // Tell the host the real aspect so the window can keep it while resizing.
                   p.addEventListener('loadedmetadata', () => {
