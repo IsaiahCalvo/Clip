@@ -223,7 +223,21 @@ internal static class MediaPreviewPage
 
               /* The mini window is just the video. Controls ride on top of it and only appear
                  while the pointer is over the window, so there is no surrounding frame. */
-              .wrap.detached { padding: 0; gap: 0; background: #000; }
+              /* The mini window's controls are anchored to this, not to the page. The page only
+                 learns it has been resized once the browser gets round to it, so anything measured
+                 against the page is a frame or more out of date while a drag is under way — which
+                 is why the close button used to slide off the edge and jump back. The host tells us
+                 the size the moment it changes, so this is always right. */
+              .wrap.detached {
+                padding: 0;
+                gap: 0;
+                background: #000;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--host-w, 100vw);
+                height: var(--host-h, 100vh);
+              }
               .wrap.detached video { border-radius: 0; }
               .wrap.detached .stage { flex: 1; }
               .wrap.detached .bar {
@@ -509,6 +523,17 @@ internal static class MediaPreviewPage
                   // once per frame while it is changing. The host cannot otherwise know whether the
                   // page has caught up with the window, and if it lets the window run ahead the
                   // window's own background shows through along the edges being dragged.
+                  // The host sends the window's size the instant it changes, ahead of the browser
+                  // noticing. Everything anchored to the wrap therefore lands in the right place on
+                  // the first frame instead of being dragged there over the next few.
+                  window.chrome.webview.addEventListener('message', e => {
+                    const size = e.data && e.data.fit;
+                    if (!size) return;
+                    const root = document.documentElement.style;
+                    root.setProperty('--host-w', size.w + 'px');
+                    root.setProperty('--host-h', size.h + 'px');
+                  });
+
                   let settled = 0;
                   const reportSize = () => {
                     const w = Math.round(window.innerWidth * window.devicePixelRatio);

@@ -97,7 +97,43 @@ internal sealed class MediaPipWindow : Window
     }
 
     private const int WmSizing = 0x0214;
+    private const int WmSize = 0x0005;
     private const int WmNcCalcSize = 0x0083;
+
+    /// <summary>
+    /// Hands the page the window's size the moment Windows changes it, so the controls do not have
+    /// to wait for the browser to notice and can be in the right place on the very first frame.
+    /// </summary>
+    private void TellPageItsSize()
+    {
+        if (_view.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // Read the size straight from Windows: WPF has not been told about this resize yet,
+            // since this runs before it handles the message. The page counts in scaled units, so
+            // divide the screen pixels back down by the display's scaling.
+            var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (!GetClientRect(handle, out var client))
+            {
+                return;
+            }
+
+            var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+            var width = (int)Math.Round((client.Right - client.Left) / dpi.DpiScaleX);
+            var height = (int)Math.Round((client.Bottom - client.Top) / dpi.DpiScaleY);
+
+            _view.CoreWebView2.PostWebMessageAsJson(
+                "{\"fit\":{\"w\":" + width + ",\"h\":" + height + "}}");
+        }
+        catch
+        {
+            // The browser can be mid-teardown; the next resize will carry the size instead.
+        }
+    }
 
     /// <summary>WVR_HREDRAW | WVR_VREDRAW: repaint the client area rather than stretching it.</summary>
     private const int WvrRedraw = 0x0300;
@@ -112,6 +148,12 @@ internal sealed class MediaPipWindow : Window
         {
             handled = true;
             return new IntPtr(WvrRedraw);
+        }
+
+        if (msg == WmSize)
+        {
+            TellPageItsSize();
+            return IntPtr.Zero;
         }
 
         if (msg != WmSizing || _aspect <= 0)
@@ -231,6 +273,9 @@ internal sealed class MediaPipWindow : Window
             ? info.rcWork
             : new RECT { Left = int.MinValue / 2, Top = int.MinValue / 2, Right = int.MaxValue / 2, Bottom = int.MaxValue / 2 };
     }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
