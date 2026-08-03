@@ -169,6 +169,45 @@ internal static class MediaPreviewPage
               .corner:hover { background: rgba(0,0,0,.85); }
               #back { left: 10px; }
               #close { right: 10px; }
+              /* The mini window is just the video. Controls ride on top of it and only appear
+                 while the pointer is over the window, so there is no surrounding frame. */
+              .wrap.detached { padding: 0; gap: 0; background: #000; }
+              .wrap.detached video { border-radius: 0; }
+              .wrap.detached .stage { flex: 1; }
+              .wrap.detached .bar {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                width: 100%;
+                border: 0;
+                border-radius: 0;
+                background: linear-gradient(to top, rgba(0,0,0,.82), rgba(0,0,0,.35) 70%, transparent);
+                padding: 6px 10px 7px;
+                gap: 8px;
+                font-size: 11px;
+              }
+              .wrap.detached #play { font-size: 12px; }
+              .wrap.detached #more { font-size: 13px; }
+              .wrap.detached #seek { height: 3px; }
+              .wrap.detached .bar button { padding: 1px 5px; }
+              .wrap.detached .menu { bottom: 30px; font-size: 11px; min-width: 122px; }
+              .wrap.detached .menu button { padding: 3px 8px; }
+
+              /* Fade the whole overlay with the pointer. */
+              .wrap.detached .bar,
+              .wrap.detached #back,
+              .wrap.detached #close {
+                opacity: 0;
+                transition: opacity .14s ease;
+                pointer-events: none;
+              }
+              .wrap.detached.hot .bar,
+              .wrap.detached.hot #back,
+              .wrap.detached.hot #close {
+                opacity: 1;
+                pointer-events: auto;
+              }
               .wrap.detached #back, .wrap.detached #close { display: block; }
               .wrap:fullscreen #close { display: block; }
               .wrap:fullscreen { background: #000; padding: 0; gap: 0; }
@@ -301,6 +340,23 @@ internal static class MediaPreviewPage
                   if (detached) { send('close'); return; }
                   if (document.fullscreenElement) document.exitFullscreen();
                 });
+
+                if (detached) {
+                  // Show the overlay while the pointer is over the window, hide it otherwise.
+                  document.addEventListener('mouseenter', () => wrap.classList.add('hot'));
+                  document.addEventListener('mouseleave', () => { wrap.classList.remove('hot'); closeMenu(); });
+                  document.addEventListener('mousemove', () => wrap.classList.add('hot'));
+
+                  // Tell the host the real aspect so the window can keep it while resizing.
+                  p.addEventListener('loadedmetadata', () => {
+                    if (!p.videoWidth) return;
+                    try {
+                      window.chrome.webview.postMessage(JSON.stringify({
+                        action: 'ratio', w: p.videoWidth, h: p.videoHeight,
+                      }));
+                    } catch {}
+                  }, { once: true });
+                }
 
                 // Resume where the preview left off when moving into the mini window.
                 const startAt = {{startTime.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}};

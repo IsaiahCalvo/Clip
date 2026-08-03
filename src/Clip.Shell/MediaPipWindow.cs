@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Runtime.InteropServices;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 
@@ -83,7 +84,91 @@ internal sealed class MediaPipWindow : Window
             }
         };
 
-        Loaded += async (_, _) => await InitializeAsync();
+        Loaded += async (_, _) =>
+        {
+            HookAspectLock();
+            await InitializeAsync();
+        };
+    }
+
+    /// <summary>
+    /// Constrains dragging from any edge or corner to the video's own aspect, so the picture is
+    /// never letterboxed inside its own window.
+    /// </summary>
+    private void HookAspectLock()
+    {
+        var source = System.Windows.Interop.HwndSource.FromHwnd(
+            new System.Windows.Interop.WindowInteropHelper(this).Handle);
+        source?.AddHook(AspectHook);
+    }
+
+    private const int WmSizing = 0x0214;
+
+    private IntPtr AspectHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WmSizing || _aspect <= 0)
+        {
+            return IntPtr.Zero;
+        }
+
+        var rect = Marshal.PtrToStructure<RECT>(lParam);
+        var edge = wParam.ToInt32();
+        var width = rect.Right - rect.Left;
+        var height = rect.Bottom - rect.Top;
+
+        // Left/right drags drive height; top/bottom drags drive width; corners follow width.
+        if (edge is WmszLeft or WmszRight)
+        {
+            height = (int)Math.Round(width / _aspect);
+        }
+        else if (edge is WmszTop or WmszBottom)
+        {
+            width = (int)Math.Round(height * _aspect);
+        }
+        else
+        {
+            height = (int)Math.Round(width / _aspect);
+        }
+
+        // Grow away from whichever edge is anchored, so the opposite corner stays put.
+        if (edge is WmszLeft or WmszTopLeft or WmszBottomLeft)
+        {
+            rect.Left = rect.Right - width;
+        }
+        else
+        {
+            rect.Right = rect.Left + width;
+        }
+
+        if (edge is WmszTop or WmszTopLeft or WmszTopRight)
+        {
+            rect.Top = rect.Bottom - height;
+        }
+        else
+        {
+            rect.Bottom = rect.Top + height;
+        }
+
+        Marshal.StructureToPtr(rect, lParam, false);
+        handled = true;
+        return new IntPtr(1);
+    }
+
+    private const int WmszLeft = 1;
+    private const int WmszRight = 2;
+    private const int WmszTop = 3;
+    private const int WmszTopLeft = 4;
+    private const int WmszTopRight = 5;
+    private const int WmszBottom = 6;
+    private const int WmszBottomLeft = 7;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 
     private readonly string _backgroundHex;
@@ -127,9 +212,21 @@ internal sealed class MediaPipWindow : Window
         }
     }
 
+    private double _aspect;
+
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        var action = MediaPlayerMessage.ActionOf(e.TryGetWebMessageAsString());
+        var raw = e.TryGetWebMessageAsString();
+        var ratio = MediaPlayerMessage.RatioOf(raw);
+        if (ratio > 0)
+        {
+            _aspect = ratio;
+            // Snap once so the starting window matches the video rather than a guessed box.
+            Height = Math.Round(Width / _aspect);
+            return;
+        }
+
+        var action = MediaPlayerMessage.ActionOf(raw);
         if (action.Name == "back")
         {
             BackRequested?.Invoke(action.Time);
@@ -161,6 +258,25 @@ internal sealed class MediaPipWindow : Window
 /// <summary>Parses the small JSON messages the player page posts to the host.</summary>
 internal static class MediaPlayerMessage
 {
+    public static double RatioOf(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return 0;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("action", out var a) || a.GetString() != "ratio") return 0;
+            if (!root.TryGetProperty("w", out var w) || !root.TryGetProperty("h", out var h)) return 0;
+            var width = w.GetDouble();
+            var height = h.GetDouble();
+            return height > 0 ? width / height : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     public static (string Name, double Time) ActionOf(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
