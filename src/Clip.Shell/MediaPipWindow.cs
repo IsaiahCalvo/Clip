@@ -53,17 +53,12 @@ internal sealed class MediaPipWindow : Window
         ShowInTaskbar = false;
         Background = System.Windows.Media.Brushes.Black;
 
-        // A chromeless resizable window still reserves a caption strip, which showed as a white
-        // bar across the top. Zeroing the chrome removes it while keeping the resize grips.
-        System.Windows.Shell.WindowChrome.SetWindowChrome(this, new System.Windows.Shell.WindowChrome
-        {
-            CaptionHeight = 0,
-            GlassFrameThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(0),
-            ResizeBorderThickness = new Thickness(6),
-            UseAeroCaptionButtons = false,
-        });
-
+        // A chromeless resizable window still reserves a caption strip, which shows as a white bar
+        // across the top. WindowChrome removes it, but WindowChrome redraws the frame itself and
+        // stutters badly when the content is a hosted native window — which the browser control is
+        // (dotnet/wpf#5892). Telling Windows the client area covers the whole window gets the same
+        // bare frame with none of that, and keeps the resize edges, since the window still has a
+        // real sizing border underneath.
         Width = isVideo ? 360 : 330;
         Height = isVideo ? 230 : 116;
 
@@ -92,43 +87,109 @@ internal sealed class MediaPipWindow : Window
     }
 
     private const int WmSizing = 0x0214;
+    private const int WmNcCalcSize = 0x0083;
 
     private IntPtr AspectHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // Accepting the proposed window rect unchanged as the client rect leaves no non-client
+        // frame for Windows to draw, which is what removes the caption strip.
+        if (msg == WmNcCalcSize && wParam != IntPtr.Zero)
+        {
+            handled = true;
+            return IntPtr.Zero;
+        }
+
         if (msg != WmSizing || _aspect <= 0)
         {
             return IntPtr.Zero;
         }
 
-        var rect = Marshal.PtrToStructure<RECT>(lParam);
-        var edge = wParam.ToInt32();
-        var (width, height) = AspectCorrected(
-            edge,
-            rect.Right - rect.Left,
-            rect.Bottom - rect.Top);
-
-        // Grow away from whichever edge is anchored, so the opposite corner stays put.
-        if (edge is WmszLeft or WmszTopLeft or WmszBottomLeft)
-        {
-            rect.Left = rect.Right - width;
-        }
-        else
-        {
-            rect.Right = rect.Left + width;
-        }
-
-        if (edge is WmszTop or WmszTopLeft or WmszTopRight)
-        {
-            rect.Top = rect.Bottom - height;
-        }
-        else
-        {
-            rect.Bottom = rect.Top + height;
-        }
+        var dragged = Marshal.PtrToStructure<RECT>(lParam);
+        var rect = ResizedBounds(wParam.ToInt32(), dragged, WorkAreaFor(hwnd), _aspect, MinTrackWidth);
 
         Marshal.StructureToPtr(rect, lParam, false);
         handled = true;
         return new IntPtr(1);
+    }
+
+    /// <summary>
+    /// Turns the rectangle the user has dragged out into the one the window will actually take:
+    /// the video's shape, anchored to the edge they are not dragging, and wholly on screen.
+    /// </summary>
+    internal static RECT ResizedBounds(int edge, RECT dragged, RECT workArea, double aspect, int minWidth)
+    {
+        var (width, height) = AspectCorrected(
+            edge,
+            dragged.Right - dragged.Left,
+            dragged.Bottom - dragged.Top,
+            aspect,
+            minWidth);
+
+        // The window can never be bigger than the screen it is on, or it could not sit inside it.
+        var workWidth = workArea.Right - workArea.Left;
+        var workHeight = workArea.Bottom - workArea.Top;
+
+        if (width > workWidth)
+        {
+            width = workWidth;
+            height = (int)Math.Round(width / aspect, MidpointRounding.AwayFromZero);
+        }
+
+        if (height > workHeight)
+        {
+            height = workHeight;
+            width = (int)Math.Round(height * aspect, MidpointRounding.AwayFromZero);
+        }
+
+        // Grow away from whichever edge is anchored, so the opposite corner stays put.
+        var left = edge is WmszLeft or WmszTopLeft or WmszBottomLeft
+            ? dragged.Right - width
+            : dragged.Left;
+
+        var top = edge is WmszTop or WmszTopLeft or WmszTopRight
+            ? dragged.Bottom - height
+            : dragged.Top;
+
+        // Dragging an outer edge of a window that is already against the side of the screen would
+        // otherwise push it off the screen, since the anchored edge cannot move out of the way.
+        // Sliding it back in means it grows towards the middle instead, and stays whole.
+        left = Math.Clamp(left, workArea.Left, workArea.Right - width);
+        top = Math.Clamp(top, workArea.Top, workArea.Bottom - height);
+
+        return new RECT
+        {
+            Left = left,
+            Top = top,
+            Right = left + width,
+            Bottom = top + height,
+        };
+    }
+
+    private const int MonitorDefaultToNearest = 2;
+
+    private static RECT WorkAreaFor(IntPtr hwnd)
+    {
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+
+        return monitor != IntPtr.Zero && GetMonitorInfo(monitor, ref info)
+            ? info.rcWork
+            : new RECT { Left = int.MinValue / 2, Top = int.MinValue / 2, Right = int.MaxValue / 2, Bottom = int.MaxValue / 2 };
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public int dwFlags;
     }
 
     /// <summary>The smallest the window may get, in physical pixels, before aspect is applied.</summary>
@@ -176,8 +237,6 @@ internal sealed class MediaPipWindow : Window
             (int)Math.Round(height, MidpointRounding.AwayFromZero));
     }
 
-    private (int Width, int Height) AspectCorrected(int edge, double width, double height) =>
-        AspectCorrected(edge, width, height, _aspect, MinTrackWidth);
 
     private const int WmNcLButtonDown = 0x00A1;
 
@@ -242,7 +301,7 @@ internal sealed class MediaPipWindow : Window
     private const int WmszBottomRight = 8;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
+    internal struct RECT
     {
         public int Left;
         public int Top;

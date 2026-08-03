@@ -138,4 +138,77 @@ public class PipAspectTests
 
     private static double Distance(double x1, double y1, double x2, double y2) =>
         Math.Sqrt(((x1 - x2) * (x1 - x2)) + ((y1 - y2) * (y1 - y2)));
+
+    private static MediaPipWindow.RECT Screen => Box(0, 0, 1920, 1040);
+
+    private static MediaPipWindow.RECT Box(int left, int top, int right, int bottom) =>
+        new() { Left = left, Top = top, Right = right, Bottom = bottom };
+
+    private static MediaPipWindow.RECT Resize(int edge, MediaPipWindow.RECT dragged) =>
+        MediaPipWindow.ResizedBounds(edge, dragged, Screen, Widescreen, NoMinimum);
+
+    /// <summary>
+    /// A window tucked into the bottom-right cannot grow down and right — there is nothing there.
+    /// It has to grow towards the middle of the screen instead of hanging off the edge.
+    /// </summary>
+    [Fact]
+    public void GrowingAgainstTheBottomRightPushesTheWindowBackOnScreen()
+    {
+        var result = Resize(BottomRight, Box(1520, 800, 2320, 1250));
+
+        Assert.True(result.Right <= Screen.Right, $"right edge ran off the screen ({result.Right})");
+        Assert.True(result.Bottom <= Screen.Bottom, $"bottom edge ran off the screen ({result.Bottom})");
+        Assert.Equal(800, result.Right - result.Left);
+    }
+
+    [Fact]
+    public void GrowingAgainstTheTopLeftPushesTheWindowBackOnScreen()
+    {
+        var result = Resize(TopLeft, Box(-400, -220, 400, 230));
+
+        Assert.True(result.Left >= Screen.Left, $"left edge ran off the screen ({result.Left})");
+        Assert.True(result.Top >= Screen.Top, $"top edge ran off the screen ({result.Top})");
+        Assert.Equal(800, result.Right - result.Left);
+    }
+
+    [Fact]
+    public void AWindowInTheMiddleIsLeftWhereItWasDragged()
+    {
+        var result = Resize(BottomRight, Box(600, 400, 1400, 850));
+
+        Assert.Equal(600, result.Left);
+        Assert.Equal(400, result.Top);
+    }
+
+    [Fact]
+    public void TheWindowCannotBeDraggedLargerThanTheScreen()
+    {
+        var result = Resize(BottomRight, Box(0, 0, 4000, 2250));
+
+        Assert.True(result.Right - result.Left <= Screen.Right - Screen.Left, "wider than the screen");
+        Assert.True(result.Bottom - result.Top <= Screen.Bottom - Screen.Top, "taller than the screen");
+    }
+
+    /// <summary>A short, wide screen has to cap height, not width, or the window would not fit.</summary>
+    [Fact]
+    public void AScreenTooShortForTheVideoCapsHeight()
+    {
+        var shortScreen = Box(0, 0, 4000, 500);
+        var result = MediaPipWindow.ResizedBounds(
+            BottomRight, Box(0, 0, 3000, 1690), shortScreen, Widescreen, NoMinimum);
+
+        Assert.True(result.Bottom - result.Top <= 500, "taller than the screen");
+        Assert.InRange(
+            (double)(result.Right - result.Left) / (result.Bottom - result.Top),
+            Widescreen - 0.01,
+            Widescreen + 0.01);
+    }
+
+    [Fact]
+    public void TheAnchoredEdgeStillHoldsWhenDraggingLeftwards()
+    {
+        var result = Resize(Left, Box(600, 400, 1400, 850));
+
+        Assert.Equal(1400, result.Right);
+    }
 }
