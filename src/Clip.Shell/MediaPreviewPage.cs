@@ -119,7 +119,24 @@ internal static class MediaPreviewPage
               #play { font-size: 13px; }
               #more { font-size: 15px; }
               .time { font-variant-numeric: tabular-nums; opacity: .9; white-space: nowrap; }
-              #seek { flex: 1; accent-color: #8ab4ff; height: 3px; cursor: pointer; -webkit-appearance: none; background: rgba(255,255,255,.28); border-radius: 2px; }
+
+              /* A stretchy item will not shrink past its own contents unless told it may, so at
+                 small window sizes the scrubber stopped shrinking and pushed the menu button off
+                 the end instead. Below a certain width the clock goes rather than the scrubber:
+                 the scrubber is the control worth keeping. */
+              #seek {
+                flex: 1 1 0;
+                min-width: 0;
+                accent-color: #8ab4ff;
+                height: 3px;
+                cursor: pointer;
+                -webkit-appearance: none;
+                background: rgba(255,255,255,.28);
+                border-radius: 2px;
+              }
+              .bar > button { flex: none; }
+              .wrap.detached .bar { container-type: inline-size; }
+              @container (max-width: 260px) { .time { display: none; } }
               #seek::-webkit-slider-thumb {
                 -webkit-appearance: none;
                 width: 9px;
