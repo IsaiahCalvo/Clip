@@ -1,4 +1,4 @@
-# Build output
+﻿# Build output
 bin/
 obj/
 artifacts/
@@ -36,5 +36,3 @@ Desktop.ini
 design-extract/
 Clip Redesign _standalone_.html
 
-# The video decoder is fetched by Get-FFmpeg.ps1, not kept here: it is 76 MB of binaries.
-src/Clip.Shell/FFmpeg/

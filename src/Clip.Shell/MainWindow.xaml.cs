@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
@@ -5619,7 +5619,6 @@ public partial class MainWindow : Window
     }
 
     private MediaPipWindow? _pipWindow;
-    private NativeMediaPipWindow? _nativePipWindow;
     private string? _pipSourcePath;
     private bool _pipSourceIsVideo;
 
@@ -5641,7 +5640,6 @@ public partial class MainWindow : Window
     private void OpenPictureInPicture(string path, bool isVideo, double startTime)
     {
         _pipWindow?.Close();
-        _nativePipWindow?.Close();
 
         // Put it on whichever monitor the palette is on, in that screen's own coordinates.
         var screen = System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(this).Handle);
@@ -5652,40 +5650,12 @@ public partial class MainWindow : Window
             screen.WorkingArea.Width / dpi.DpiScaleX,
             screen.WorkingArea.Height / dpi.DpiScaleY);
 
-        // Video plays in the window Clip draws itself, so the picture and the controls cannot fall
-        // behind the frame while it is being dragged. Audio has no picture to keep in step and its
-        // page already works, so it stays on the browser player — as does video on a machine whose
-        // decoder was never installed, and any file the decoder turns down.
-        if (isVideo && MediaEngine.EnsureStarted())
-        {
-            OpenNativePictureInPicture(path, startTime, work);
-            return;
-        }
-
         OpenBrowserPictureInPicture(path, isVideo, startTime, work);
-    }
-
-    private void OpenNativePictureInPicture(string path, double startTime, Rect work)
-    {
-        var native = new NativeMediaPipWindow(path, startTime, work);
-
-        native.BackRequested += ResumeInPalette;
-        native.PlaybackUnavailable += resumeAt =>
-        {
-            ShellLog.Info($"native picture-in-picture could not play {Path.GetExtension(path)}; using the browser player");
-            native.Close();
-            OpenBrowserPictureInPicture(path, isVideo: true, resumeAt, work);
-        };
-
-        native.Closed += (_, _) => _nativePipWindow = null;
-        _nativePipWindow = native;
-        native.Show();
     }
 
     private void ResumeInPalette(double resumeAt)
     {
         _pipWindow = null;
-        _nativePipWindow = null;
         Dispatcher.BeginInvoke(new Action(() =>
         {
             ShowPalette();

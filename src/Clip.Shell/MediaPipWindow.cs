@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
@@ -260,7 +260,7 @@ internal sealed class MediaPipWindow : Window
             ? _paintedWidth + PageAllowancePx
             : int.MaxValue;
 
-    private const int PageAllowancePx = 12;
+    private const int PageAllowancePx = 4;
 
     private const int MonitorDefaultToNearest = 2;
 

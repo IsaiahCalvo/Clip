@@ -252,8 +252,13 @@ internal static class MediaPreviewPage
                 position: fixed;
                 top: 0;
                 left: 0;
-                width: var(--host-w, 100vw);
-                height: var(--host-h, 100vh);
+                /* Whichever of the two is smaller. The host's figure is the newer one and stops the
+                   controls trailing a shrinking window, but it is sent before the browser resizes,
+                   so trusting it alone would put them past the edge for a frame on the way up. The
+                   page's own figure is late but never too big. Taking the smaller is never wrong in
+                   either direction, which is what keeps the controls inside the window at all times. */
+                width: min(100vw, var(--host-w, 100vw));
+                height: min(100vh, var(--host-h, 100vh));
               }
               .wrap.detached video { border-radius: 0; }
               .wrap.detached .stage { flex: 1; }

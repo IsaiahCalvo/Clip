@@ -1,7 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <PackageReference Include="FlyleafLib" Version="3.10.4" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3065.39" />
     <PackageReference Include="Svg" Version="3.4.7" />
@@ -38,13 +37,6 @@
 
   <ItemGroup>
     <Content Include="..\..\assets\app-icons\*.*" Link="assets\app-icons\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-
-    <!-- The video decoder, fetched by Get-FFmpeg.ps1 rather than kept in the repository. -->
-    <Content Include="FFmpeg\*.dll" Link="FFmpeg\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-
-  <Target Name="WarnIfDecoderMissing" BeforeTargets="Build" Condition="!Exists('$(MSBuildProjectDirectory)\FFmpeg')">
-    <Warning Text="The video decoder is not present. Run Get-FFmpeg.ps1 from the repository root; picture-in-picture will fall back to the browser player without it." />
-  </Target>
 
 </Project>
