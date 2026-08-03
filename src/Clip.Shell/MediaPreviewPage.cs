@@ -418,12 +418,15 @@ internal static class MediaPreviewPage
                   });
                 }
 
+                // How close to the window border counts as grabbing it to resize. Both the gesture
+                // and the cursor that advertises it read this, so they cannot drift apart.
+                const EDGE = 7;
+
                 if (detached) {
                   // The browser control covers the whole window, so mouse input never reaches it
                   // and neither dragging nor the resize borders work. The page reports those
                   // gestures instead and the host performs them. The drag only starts once the
                   // pointer actually moves, so a plain click still reaches play/pause.
-                  const EDGE = 7;
                   let pending = null;
 
                   document.addEventListener('mousedown', e => {
@@ -471,19 +474,22 @@ internal static class MediaPreviewPage
                 }
 
                 if (detached) {
-                  // Show the matching cursor so the edges feel grabbable.
-                  const EDGE2 = 7;
+                  // Show the matching double-headed arrow so the edges read as grabbable, the same
+                  // as any window border. This has to go on the wrap: it is what the idle-hide
+                  // rules set "cursor: none" on, and a cursor on the body would never be seen
+                  // through it. Setting it inline wins over those rules; clearing it hands them
+                  // back.
                   document.addEventListener('mousemove', e => {
                     const w = document.documentElement.clientWidth;
                     const h = document.documentElement.clientHeight;
-                    const l = e.clientX <= EDGE2, r = e.clientX >= w - EDGE2;
-                    const t = e.clientY <= EDGE2, b = e.clientY >= h - EDGE2;
+                    const l = e.clientX <= EDGE, r = e.clientX >= w - EDGE;
+                    const t = e.clientY <= EDGE, b = e.clientY >= h - EDGE;
                     let c = '';
                     if ((t && l) || (b && r)) c = 'nwse-resize';
                     else if ((t && r) || (b && l)) c = 'nesw-resize';
                     else if (l || r) c = 'ew-resize';
                     else if (t || b) c = 'ns-resize';
-                    document.body.style.cursor = c;
+                    wrap.style.cursor = c;
                   });
 
                   // Tell the host the real aspect so the window can keep it while resizing.

@@ -102,22 +102,10 @@ internal sealed class MediaPipWindow : Window
 
         var rect = Marshal.PtrToStructure<RECT>(lParam);
         var edge = wParam.ToInt32();
-        var width = rect.Right - rect.Left;
-        var height = rect.Bottom - rect.Top;
-
-        // Left/right drags drive height; top/bottom drags drive width; corners follow width.
-        if (edge is WmszLeft or WmszRight)
-        {
-            height = (int)Math.Round(width / _aspect);
-        }
-        else if (edge is WmszTop or WmszBottom)
-        {
-            width = (int)Math.Round(height * _aspect);
-        }
-        else
-        {
-            height = (int)Math.Round(width / _aspect);
-        }
+        var (width, height) = AspectCorrected(
+            edge,
+            rect.Right - rect.Left,
+            rect.Bottom - rect.Top);
 
         // Grow away from whichever edge is anchored, so the opposite corner stays put.
         if (edge is WmszLeft or WmszTopLeft or WmszBottomLeft)
@@ -142,6 +130,54 @@ internal sealed class MediaPipWindow : Window
         handled = true;
         return new IntPtr(1);
     }
+
+    /// <summary>The smallest the window may get, in physical pixels, before aspect is applied.</summary>
+    private int MinTrackWidth =>
+        (int)Math.Round(200 * System.Windows.Media.VisualTreeHelper.GetDpi(this).DpiScaleX);
+
+    /// <summary>
+    /// Snaps a dragged size back onto the video's aspect.
+    ///
+    /// A side edge only moves in one direction, so that direction leads and the other follows. A
+    /// corner moves in both at once, and letting either one lead means the window ignores half of
+    /// the gesture and springs back to where the leading axis says it should be — a visible shudder
+    /// under the pointer for the whole drag. Projecting the dragged box onto the line of
+    /// correctly-shaped sizes takes both axes into account, so the window lands as close to the
+    /// pointer as the aspect allows and tracks it smoothly.
+    /// </summary>
+    internal static (int Width, int Height) AspectCorrected(int edge, double width, double height, double aspect, int minWidth)
+    {
+        if (edge is WmszLeft or WmszRight)
+        {
+            height = width / aspect;
+        }
+        else if (edge is WmszTop or WmszBottom)
+        {
+            width = height * aspect;
+        }
+        else
+        {
+            // Closest point on h = w / aspect to the dragged (width, height).
+            var t = (width * aspect + height) / (aspect * aspect + 1);
+            width = t * aspect;
+            height = t;
+        }
+
+        if (width < minWidth)
+        {
+            width = minWidth;
+            height = width / aspect;
+        }
+
+        // Away-from-zero rather than the default to-even: a half pixel that rounds up or down
+        // depending on which side of it you landed on makes the edge wobble by one during a drag.
+        return (
+            (int)Math.Round(width, MidpointRounding.AwayFromZero),
+            (int)Math.Round(height, MidpointRounding.AwayFromZero));
+    }
+
+    private (int Width, int Height) AspectCorrected(int edge, double width, double height) =>
+        AspectCorrected(edge, width, height, _aspect, MinTrackWidth);
 
     private const int WmNcLButtonDown = 0x00A1;
 
@@ -203,6 +239,7 @@ internal sealed class MediaPipWindow : Window
     private const int WmszTopRight = 5;
     private const int WmszBottom = 6;
     private const int WmszBottomLeft = 7;
+    private const int WmszBottomRight = 8;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
