@@ -211,4 +211,92 @@ public class PipAspectTests
 
         Assert.Equal(1400, result.Right);
     }
+
+    public static TheoryData<string, int, int> EveryCorner => new()
+    {
+        { "top-left", 0, 0 },
+        { "top-right", 1920 - 400, 0 },
+        { "bottom-left", 0, 1040 - 225 },
+        { "bottom-right", 1920 - 400, 1040 - 225 },
+        { "top-middle", 760, 0 },
+        { "bottom-middle", 760, 1040 - 225 },
+        { "middle", 760, 400 },
+    };
+
+    /// <summary>
+    /// Wherever the window is parked, dragging any of its eight borders outwards has to grow it and
+    /// leave it whole and on screen. Against a side there is nowhere to grow into, so it has to
+    /// grow towards the middle instead — and it must still grow, not stick.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EveryCorner))]
+    public void EveryBorderGrowsTheWindowAndKeepsItOnScreen(string where, int left, int top)
+    {
+        var start = Box(left, top, left + 400, top + 225);
+        var startArea = (long)(start.Right - start.Left) * (start.Bottom - start.Top);
+
+        foreach (var edge in new[] { Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft, BottomRight })
+        {
+            // Push every border 120px outwards, as though dragged away from the window's centre.
+            var dragged = Box(
+                edge is Left or TopLeft or BottomLeft ? start.Left - 120 : start.Left,
+                edge is Top or TopLeft or TopRight ? start.Top - 120 : start.Top,
+                edge is Right or TopRight or BottomRight ? start.Right + 120 : start.Right,
+                edge is Bottom or BottomLeft or BottomRight ? start.Bottom + 120 : start.Bottom);
+
+            var result = Resize(edge, dragged);
+            var area = (long)(result.Right - result.Left) * (result.Bottom - result.Top);
+
+            Assert.True(area > startArea, $"edge {edge} at {where} did not grow the window");
+            Assert.True(result.Left >= Screen.Left, $"edge {edge} at {where} ran off the left");
+            Assert.True(result.Top >= Screen.Top, $"edge {edge} at {where} ran off the top");
+            Assert.True(result.Right <= Screen.Right, $"edge {edge} at {where} ran off the right");
+            Assert.True(result.Bottom <= Screen.Bottom, $"edge {edge} at {where} ran off the bottom");
+            Assert.InRange(
+                (double)(result.Right - result.Left) / (result.Bottom - result.Top),
+                Widescreen - 0.02,
+                Widescreen + 0.02);
+        }
+    }
+
+    /// <summary>Shrinking has to work from every border too, and must not shove the window around.</summary>
+    [Theory]
+    [MemberData(nameof(EveryCorner))]
+    public void EveryBorderShrinksTheWindow(string where, int left, int top)
+    {
+        var start = Box(left, top, left + 800, top + 450);
+        var startArea = (long)(start.Right - start.Left) * (start.Bottom - start.Top);
+
+        foreach (var edge in new[] { Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft, BottomRight })
+        {
+            var dragged = Box(
+                edge is Left or TopLeft or BottomLeft ? start.Left + 200 : start.Left,
+                edge is Top or TopLeft or TopRight ? start.Top + 112 : start.Top,
+                edge is Right or TopRight or BottomRight ? start.Right - 200 : start.Right,
+                edge is Bottom or BottomLeft or BottomRight ? start.Bottom - 112 : start.Bottom);
+
+            var result = Resize(edge, dragged);
+            var area = (long)(result.Right - result.Left) * (result.Bottom - result.Top);
+
+            Assert.True(area < startArea, $"edge {edge} at {where} did not shrink the window");
+            Assert.True(result.Left >= Screen.Left && result.Right <= Screen.Right, $"edge {edge} at {where} left the screen");
+            Assert.True(result.Top >= Screen.Top && result.Bottom <= Screen.Bottom, $"edge {edge} at {where} left the screen");
+        }
+    }
+
+    /// <summary>
+    /// A screen whose work area does not start at the origin — a second monitor, or one with the
+    /// taskbar on the left — must be respected just the same.
+    /// </summary>
+    [Fact]
+    public void AnOffsetScreenIsRespected()
+    {
+        var second = Box(1920, 0, 3840, 1040);
+        var result = MediaPipWindow.ResizedBounds(
+            BottomRight, Box(3500, 800, 4300, 1250), second, Widescreen, NoMinimum);
+
+        Assert.True(result.Right <= second.Right, $"ran off the right of the second screen ({result.Right})");
+        Assert.True(result.Left >= second.Left, $"ran off the left of the second screen ({result.Left})");
+        Assert.True(result.Bottom <= second.Bottom, $"ran off the bottom of the second screen ({result.Bottom})");
+    }
 }

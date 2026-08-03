@@ -218,6 +218,9 @@ internal static class MediaPreviewPage
               .wrap.video-mode.hot { cursor: default; }
               .wrap.video-mode:not(.hot) { cursor: none; }
 
+              /* Over a window border, everything under the pointer defers to the resize cursor. */
+              .wrap.on-edge * { cursor: inherit !important; }
+
               /* The mini window is just the video. Controls ride on top of it and only appear
                  while the pointer is over the window, so there is no surrounding frame. */
               .wrap.detached { padding: 0; gap: 0; background: #000; }
@@ -422,6 +425,23 @@ internal static class MediaPreviewPage
                 // and the cursor that advertises it read this, so they cannot drift apart.
                 const EDGE = 7;
 
+                // Which border the pointer is over, if any. A real window border wins over whatever
+                // it happens to overlap, and here it has to: the control bar runs the full width of
+                // the bottom of the window, so treating it as a control first would leave the
+                // bottom edge and both bottom corners impossible to grab.
+                const edgeAt = e => {
+                  const w = document.documentElement.clientWidth;
+                  const h = document.documentElement.clientHeight;
+                  const l = e.clientX <= EDGE, r = e.clientX >= w - EDGE;
+                  const t = e.clientY <= EDGE, b = e.clientY >= h - EDGE;
+
+                  if (t) return l ? 'topleft' : r ? 'topright' : 'top';
+                  if (b) return l ? 'bottomleft' : r ? 'bottomright' : 'bottom';
+                  if (l) return 'left';
+                  if (r) return 'right';
+                  return '';
+                };
+
                 if (detached) {
                   // The browser control covers the whole window, so mouse input never reaches it
                   // and neither dragging nor the resize borders work. The page reports those
@@ -431,26 +451,17 @@ internal static class MediaPreviewPage
 
                   document.addEventListener('mousedown', e => {
                     if (e.button !== 0) return;
-                    if (isControl(e.target)) return;
 
-                    const nearLeft = e.clientX <= EDGE;
-                    const nearRight = e.clientX >= document.documentElement.clientWidth - EDGE;
-                    const nearTop = e.clientY <= EDGE;
-                    const nearBottom = e.clientY >= document.documentElement.clientHeight - EDGE;
-
-                    let edge = '';
-                    if (nearTop) edge = nearLeft ? 'topleft' : nearRight ? 'topright' : 'top';
-                    else if (nearBottom) edge = nearLeft ? 'bottomleft' : nearRight ? 'bottomright' : 'bottom';
-                    else if (nearLeft) edge = 'left';
-                    else if (nearRight) edge = 'right';
-
-                    e.preventDefault();
-
+                    const edge = edgeAt(e);
                     if (edge) {
+                      e.preventDefault();
                       try { window.chrome.webview.postMessage(JSON.stringify({ action: 'resize', edge })); } catch {}
                       return;
                     }
 
+                    if (isControl(e.target)) return;
+
+                    e.preventDefault();
                     pending = { x: e.clientX, y: e.clientY };
                   });
 
@@ -479,17 +490,19 @@ internal static class MediaPreviewPage
                   // rules set "cursor: none" on, and a cursor on the body would never be seen
                   // through it. Setting it inline wins over those rules; clearing it hands them
                   // back.
+                  const CURSORS = {
+                    topleft: 'nwse-resize', bottomright: 'nwse-resize',
+                    topright: 'nesw-resize', bottomleft: 'nesw-resize',
+                    left: 'ew-resize', right: 'ew-resize',
+                    top: 'ns-resize', bottom: 'ns-resize',
+                  };
+
                   document.addEventListener('mousemove', e => {
-                    const w = document.documentElement.clientWidth;
-                    const h = document.documentElement.clientHeight;
-                    const l = e.clientX <= EDGE, r = e.clientX >= w - EDGE;
-                    const t = e.clientY <= EDGE, b = e.clientY >= h - EDGE;
-                    let c = '';
-                    if ((t && l) || (b && r)) c = 'nwse-resize';
-                    else if ((t && r) || (b && l)) c = 'nesw-resize';
-                    else if (l || r) c = 'ew-resize';
-                    else if (t || b) c = 'ns-resize';
-                    wrap.style.cursor = c;
+                    const edge = edgeAt(e);
+                    wrap.style.cursor = CURSORS[edge] || '';
+                    // The buttons and the scrubber set their own cursor, which would otherwise win
+                    // over the border they sit on top of along the bottom edge.
+                    wrap.classList.toggle('on-edge', !!edge);
                   });
 
                   // Tell the host the real aspect so the window can keep it while resizing.

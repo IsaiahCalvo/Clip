@@ -53,6 +53,13 @@ internal sealed class MediaPipWindow : Window
         ShowInTaskbar = false;
         Background = System.Windows.Media.Brushes.Black;
 
+        // The window is sized in whole screen pixels, but WPF lays its content out in scaled units,
+        // so on a display at anything other than 100% every size lands on a fraction of a pixel.
+        // Left alone, consecutive frames of a drag round that fraction different ways and the
+        // picture twitches a pixel back and forth. Rounding the layout pins it.
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+
         // A chromeless resizable window still reserves a caption strip, which shows as a white bar
         // across the top. WindowChrome removes it, but WindowChrome redraws the frame itself and
         // stutters badly when the content is a hosted native window — which the browser control is
@@ -89,14 +96,19 @@ internal sealed class MediaPipWindow : Window
     private const int WmSizing = 0x0214;
     private const int WmNcCalcSize = 0x0083;
 
+    /// <summary>WVR_HREDRAW | WVR_VREDRAW: repaint the client area rather than stretching it.</summary>
+    private const int WvrRedraw = 0x0300;
+
     private IntPtr AspectHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         // Accepting the proposed window rect unchanged as the client rect leaves no non-client
-        // frame for Windows to draw, which is what removes the caption strip.
+        // frame for Windows to draw, which is what removes the caption strip. Asking for a full
+        // redraw with it stops Windows salvaging the previous frame's pixels by stretching them
+        // into the new shape, which is what smears the picture while a drag is in progress.
         if (msg == WmNcCalcSize && wParam != IntPtr.Zero)
         {
             handled = true;
-            return IntPtr.Zero;
+            return new IntPtr(WvrRedraw);
         }
 
         if (msg != WmSizing || _aspect <= 0)
