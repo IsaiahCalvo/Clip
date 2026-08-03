@@ -5641,16 +5641,23 @@ public partial class MainWindow : Window
     {
         _pipWindow?.Close();
 
+        // Put it on whichever monitor the palette is on, in that screen's own coordinates.
+        var screen = System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(this).Handle);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var work = new Rect(
+            screen.WorkingArea.Left / dpi.DpiScaleX,
+            screen.WorkingArea.Top / dpi.DpiScaleY,
+            screen.WorkingArea.Width / dpi.DpiScaleX,
+            screen.WorkingArea.Height / dpi.DpiScaleY);
+
         var window = new MediaPipWindow(
             path,
             isVideo,
             startTime,
             BrushHex("Surface"),
             BrushHex("Text"),
-            CreateWebView2EnvironmentAsync)
-        {
-            Owner = null,
-        };
+            work,
+            CreateWebView2EnvironmentAsync);
 
         window.BackRequested += resumeAt =>
         {

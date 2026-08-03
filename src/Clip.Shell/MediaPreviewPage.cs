@@ -196,7 +196,7 @@ internal static class MediaPreviewPage
             </head>
             <body>
               <div class="{{wrapClass}}" id="wrap">
-                <button class="corner" id="back" title="Back to Clip">↙</button>
+                <button class="corner" id="back" title="Back to Clip">↖</button>
                 <button class="corner" id="close" title="Close">✕</button>
                 <div class="stage {{(isVideo ? "" : "audio")}}">
                   <{{element}} id="player" src="{{mediaUrl}}" type="{{mime}}" preload="metadata"></{{element}}>

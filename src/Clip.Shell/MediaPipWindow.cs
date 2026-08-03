@@ -35,6 +35,7 @@ internal sealed class MediaPipWindow : Window
         double startTime,
         string backgroundHex,
         string textHex,
+        Rect ownerWorkArea,
         Func<Task<CoreWebView2Environment>> environment)
     {
         _filePath = filePath;
@@ -50,13 +51,24 @@ internal sealed class MediaPipWindow : Window
         Topmost = true;
         ShowInTaskbar = false;
         Background = System.Windows.Media.Brushes.Black;
-        Width = isVideo ? 480 : 420;
-        Height = isVideo ? 300 : 140;
 
-        // Bottom-right of the working area, the corner these windows conventionally sit in.
-        var work = SystemParameters.WorkArea;
-        Left = work.Right - Width - 24;
-        Top = work.Bottom - Height - 24;
+        // A chromeless resizable window still reserves a caption strip, which showed as a white
+        // bar across the top. Zeroing the chrome removes it while keeping the resize grips.
+        System.Windows.Shell.WindowChrome.SetWindowChrome(this, new System.Windows.Shell.WindowChrome
+        {
+            CaptionHeight = 0,
+            GlassFrameThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            ResizeBorderThickness = new Thickness(6),
+            UseAeroCaptionButtons = false,
+        });
+
+        Width = isVideo ? 360 : 330;
+        Height = isVideo ? 230 : 116;
+
+        // Bottom-right of the screen Clip is on, not whichever screen Windows calls primary.
+        Left = ownerWorkArea.Right - Width - 24;
+        Top = ownerWorkArea.Bottom - Height - 24;
 
         Content = _view;
 
