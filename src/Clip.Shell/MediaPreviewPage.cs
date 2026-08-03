@@ -162,6 +162,12 @@ internal static class MediaPreviewPage
                 min-width: 132px;
               }
               .menu.open { display: block; }
+
+              /* Audio has no picture, so its bar sits in the middle of the pane rather than at the
+                 bottom, and a menu opening upwards from there runs off the top and loses its first
+                 few speeds. Hung from the top of the pane instead it has the whole height to use,
+                 which fits every option without scrolling or shrinking them. */
+              .wrap:not(.video-mode):not(.detached) .menu { top: 6px; bottom: auto; }
               .menu button {
                 display: flex;
                 justify-content: space-between;
