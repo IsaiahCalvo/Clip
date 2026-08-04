@@ -4,6 +4,9 @@ namespace Clip.Core;
 
 public static class FileExplorerReveal
 {
+    // Test seam: lets tests observe the launch without opening a real Explorer window.
+    internal static Action<ProcessStartInfo> Launch = startInfo => Process.Start(startInfo);
+
     public static ProcessStartInfo? CreateStartInfo(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -38,7 +41,7 @@ public static class FileExplorerReveal
             return false;
         }
 
-        Process.Start(startInfo);
+        Launch(startInfo);
         return true;
     }
 

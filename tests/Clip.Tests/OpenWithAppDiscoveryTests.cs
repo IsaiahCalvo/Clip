@@ -7,6 +7,7 @@ namespace Clip.Tests;
 // Palette surfaces, and is the pure, isolated logic worth pinning. The live
 // OpenWithAppDiscovery.GetApps reads OS state (registry, Start Menu, Get-StartApps), so it is
 // exercised only to confirm it returns the synthetic "Default app" row and never throws.
+[Collection("OpenWithStatics")]
 public sealed class OpenWithAppDiscoveryTests
 {
     [Fact]

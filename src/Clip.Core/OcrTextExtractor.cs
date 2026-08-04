@@ -48,11 +48,6 @@ public static class OcrTextExtractor
         try
         {
             using var bitmap = await LoadBitmapAsync(imagePath, cancellationToken).ConfigureAwait(false);
-            if (bitmap is null)
-            {
-                return null;
-            }
-
             cancellationToken.ThrowIfCancellationRequested();
             var result = await engine.RecognizeAsync(bitmap).AsTask(cancellationToken).ConfigureAwait(false);
             var text = result?.Text?.Trim();
@@ -68,7 +63,7 @@ public static class OcrTextExtractor
         }
     }
 
-    private static async Task<SoftwareBitmap?> LoadBitmapAsync(string imagePath, CancellationToken cancellationToken)
+    private static async Task<SoftwareBitmap> LoadBitmapAsync(string imagePath, CancellationToken cancellationToken)
     {
         var bytes = await File.ReadAllBytesAsync(imagePath, cancellationToken).ConfigureAwait(false);
         using var stream = new InMemoryRandomAccessStream();
@@ -81,12 +76,10 @@ public static class OcrTextExtractor
         stream.Seek(0);
         var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
 
+        // A decodable image always has positive dimensions; anything the decoder rejects throws
+        // and is turned into null by TryExtractAsync's catch.
         var width = (int)decoder.PixelWidth;
         var height = (int)decoder.PixelHeight;
-        if (width <= 0 || height <= 0)
-        {
-            return null;
-        }
 
         var maxDimension = (int)OcrEngine.MaxImageDimension;
         var scale = 1.0;

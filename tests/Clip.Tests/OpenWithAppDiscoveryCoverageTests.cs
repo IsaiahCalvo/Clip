@@ -7,6 +7,7 @@ namespace Clip.Tests;
 // GetApps, the launcher error paths (which throw before any process/window is created),
 // the shortcut-resolver catch path, association-query fallback, and the Get-StartApps
 // process cache. Nothing here launches an app or mutates OS state.
+[Collection("OpenWithStatics")]
 public sealed class OpenWithAppDiscoveryCoverageTests : IDisposable
 {
     private readonly string _tempRoot = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));

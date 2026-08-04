@@ -47,7 +47,23 @@ Picture-in-picture, video controls and audio controls are **done** and signed of
   is untouched. Caveat: verified against COM-launched instances (which reproduce the attach
   case), not an interactively launched one; the runtime gate in `CreateComApplication` covers
   any future attach case regardless.
-- 412 tests pass on `main`.
+- **874 tests pass on `main`** (2026-08-04). A second push took Clip.Core to 98.84% of
+  hand-written lines (3850/3895) by adding small internal test seams (ClipStoragePaths.RootOverride
+  AsyncLocal redirects the whole %LocalAppData%\Clip tree; registry roots, launch and
+  powershell-query hooks) plus 95 more tests. The 45 remaining Core lines are each analyzed:
+  dead guards Utf8JsonReader can't reach, success-only launch returns (would open real apps),
+  COM/WinRT branches that can't be forced, and race-only catches. Two dead private store
+  overloads and other provably unreachable code were deleted outright. Earlier the same day, a
+  coverage push added 364 tests
+  across 35 new `*CoverageTests.cs` files: overall lines 33.8% → 42.0%, Clip.Core 77.8% → 87.0%,
+  Clip.Shell 9.6% → 16.3%, Clip.Watcher 17.8% → 31.3%. Every pure-logic class is at or near
+  100%; what remains uncovered is live-UI (MainWindow's 9.9k lines, App, PiP, JankHarness),
+  network fetches, registry writes, Office COM and live-clipboard paths — those can't run
+  hermetically, and 100% overall is not attainable via unit tests without refactoring seams
+  into the product code. Two real finds fell out: the update checker's release-name fallback
+  never bound (missing `[JsonPropertyName("name")]`, fixed), and `PdfPage.Size` returns DIPs
+  (1/96") not points, with `RenderToStreamAsync` scaling output by display DPI — so PNG output
+  size is machine-dependent (behavior kept, comment corrected).
 
 ## Verify off screen — never take over the display
 

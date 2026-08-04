@@ -11,6 +11,7 @@ namespace Clip.Tests;
 /// The batch tests need the Windows OCR engine present (its language pack is a machine fact); on a
 /// machine without one they no-op, because without the engine the queue refuses work by design.
 /// </summary>
+[Collection("OcrStatics")]
 public sealed class OcrQueueCoverageTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));

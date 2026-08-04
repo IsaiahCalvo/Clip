@@ -166,9 +166,13 @@ public static class OpenWithAppDiscovery
         }
     }
 
-    private static IEnumerable<AppChoice> AppPathRegistryApps()
+    private static IEnumerable<AppChoice> AppPathRegistryApps() =>
+        AppPathRegistryApps(Registry.CurrentUser, Registry.LocalMachine);
+
+    // Roots are parameters so tests can hand in a sandbox key that has no "App Paths" subkey.
+    internal static IEnumerable<AppChoice> AppPathRegistryApps(params RegistryKey[] roots)
     {
-        foreach (var root in new[] { Registry.CurrentUser, Registry.LocalMachine })
+        foreach (var root in roots)
         {
             using var key = root.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths");
             if (key is null)
@@ -340,6 +344,12 @@ internal static class PackagedAppDiscovery
 {
     private static IReadOnlyList<PackagedAppInfo>? _cache;
 
+    // Test seam: replaces the powershell Get-StartApps query so the empty/failed branches can
+    // run without a real process. Tests that use it must also reset the cache.
+    internal static Func<string?>? QueryOverride;
+
+    internal static void ResetCacheForTests() => _cache = null;
+
     public static IReadOnlyList<PackagedAppInfo> GetStartApps()
     {
         if (_cache is not null)
@@ -349,22 +359,7 @@ internal static class PackagedAppDiscovery
 
         try
         {
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell",
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            });
-            if (process is null)
-            {
-                return _cache = [];
-            }
-
-            var json = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(3500);
+            var json = QueryOverride is not null ? QueryOverride() : QueryStartAppsJson();
             if (string.IsNullOrWhiteSpace(json))
             {
                 return _cache = [];
@@ -381,6 +376,24 @@ internal static class PackagedAppDiscovery
         {
             return _cache = [];
         }
+    }
+
+    private static string QueryStartAppsJson()
+    {
+        // Process.Start with a filename either starts or throws; a hypothetical null here would
+        // NRE into GetStartApps' catch, which is the same empty result the old check produced.
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell",
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        })!;
+        var json = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(3500);
+        return json;
     }
 
     internal sealed class StartAppJson

@@ -2,6 +2,7 @@ using Clip.Core;
 
 namespace Clip.Tests;
 
+[Collection("OcrStatics")]
 public sealed class OcrTextExtractorCoverageTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "Clip.Tests", Guid.NewGuid().ToString("N"));

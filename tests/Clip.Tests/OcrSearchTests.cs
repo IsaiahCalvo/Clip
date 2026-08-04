@@ -2,6 +2,7 @@ using Clip.Core;
 
 namespace Clip.Tests;
 
+[Collection("OcrStatics")]
 public sealed class OcrSearchTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "clip-ocr-tests", Guid.NewGuid().ToString("N"));

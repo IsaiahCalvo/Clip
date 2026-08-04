@@ -27,13 +27,18 @@ public static class WindowsClipboardHistory
     }
 
     /// <summary>Enables Windows clipboard history if it isn't already on. Returns true if it is on afterwards.</summary>
-    public static bool EnsureEnabled()
+    public static bool EnsureEnabled() =>
+        EnsureEnabled(Registry.CurrentUser, Registry.LocalMachine, KeyPath, PolicyKeyPath);
+
+    // Roots and paths are parameters so tests can point this at a sandbox key instead of the
+    // real HKCU\Software\Microsoft\Clipboard flag.
+    internal static bool EnsureEnabled(RegistryKey currentUser, RegistryKey localMachine, string keyPath, string policyKeyPath)
     {
         try
         {
-            var policy = ReadDword(Registry.LocalMachine, PolicyKeyPath, PolicyValueName)
-                         ?? ReadDword(Registry.CurrentUser, PolicyKeyPath, PolicyValueName);
-            using var key = Registry.CurrentUser.CreateSubKey(KeyPath, writable: true);
+            var policy = ReadDword(localMachine, policyKeyPath, PolicyValueName)
+                         ?? ReadDword(currentUser, policyKeyPath, PolicyValueName);
+            using var key = currentUser.CreateSubKey(keyPath, writable: true);
             var current = key?.GetValue(ValueName) as int?;
             if (!ShouldEnable(current, policy))
             {

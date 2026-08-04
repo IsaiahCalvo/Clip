@@ -8,10 +8,8 @@ namespace Clip.Core;
 // surface appears as "Recent" in the other.
 public static class OpenWithRecentStore
 {
-    private static readonly string StorePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
-        "open-with-recent.json");
+    // A property (not a cached field) so the ClipStoragePaths test seam applies here too.
+    private static string StorePath => Path.Combine(ClipStoragePaths.Root, "open-with-recent.json");
 
     public static IReadOnlyList<AppChoice> Load(string targetPath)
     {

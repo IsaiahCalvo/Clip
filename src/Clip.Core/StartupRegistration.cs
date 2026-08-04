@@ -46,11 +46,8 @@ public static class StartupRegistration
 
     public static void SetEnabled(bool enabled, string valueName, string executablePath, Action? afterDisable = null)
     {
-        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
-        if (key is null)
-        {
-            throw new InvalidOperationException("Could not open Windows startup registry key.");
-        }
+        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Could not open Windows startup registry key.");
 
         if (enabled)
         {
@@ -96,20 +93,12 @@ public static class StartupRegistration
 
     private static string CurrentExecutablePath()
     {
+        // Environment.ProcessPath is always set for a normally launched .NET 8 process on
+        // Windows; the old Process.MainModule fallback was unreachable and is gone.
         var path = Environment.ProcessPath;
-        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-        {
-            return path;
-        }
-
-        using var process = Process.GetCurrentProcess();
-        path = process.MainModule?.FileName;
-        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-        {
-            return path;
-        }
-
-        throw new InvalidOperationException("Could not find Clip executable path.");
+        return !string.IsNullOrWhiteSpace(path) && File.Exists(path)
+            ? path
+            : throw new InvalidOperationException("Could not find Clip executable path.");
     }
 
     private static string StartupCommandFor(string executablePath)
@@ -145,12 +134,8 @@ public static class StartupRegistration
 
     private static string? StartupExecutablePath(string value)
     {
+        // The only caller has already rejected null/whitespace values, so trimmed is non-empty.
         var trimmed = value.Trim();
-        if (trimmed.Length == 0)
-        {
-            return null;
-        }
-
         if (trimmed[0] == '"')
         {
             var endQuote = trimmed.IndexOf('"', 1);
@@ -168,11 +153,15 @@ public static class StartupRegistration
             value.Contains("Start-Clip.ps1", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void RemoveLegacyStartupShortcut()
+    private static void RemoveLegacyStartupShortcut() =>
+        RemoveLegacyStartupShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk"));
+
+    // The shortcut path is a parameter so tests can exercise the delete and failure branches
+    // against a temp file instead of the user's real Startup folder.
+    internal static void RemoveLegacyStartupShortcut(string startupShortcut)
     {
         try
         {
-            var startupShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Clip.lnk");
             if (File.Exists(startupShortcut))
             {
                 File.Delete(startupShortcut);

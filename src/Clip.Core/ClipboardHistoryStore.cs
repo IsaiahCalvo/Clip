@@ -11,6 +11,9 @@ public sealed class ClipboardHistoryStore
     private const string ContentFolderName = "Clipboard History";
     private const string PreviousContentFolderName = "Clipboard";
     private static readonly string LegacyAppDataFolderName = "Ray" + "Clipboard";
+
+    // Test seam for MigrateLegacyStore; see its use there.
+    internal static readonly AsyncLocal<string?> LegacyRootOverrideForTests = new();
     private const string SidecarExtension = ".clip.json";
     private const string DirectorySidecarName = ".clip.json";
     private const string HistoryIndexFileName = "history.index.json";
@@ -1228,16 +1231,6 @@ public sealed class ClipboardHistoryStore
         }
     }
 
-    private static bool CanAppendWithoutTrim(IReadOnlyCollection<ClipboardHistoryItem> summaries, ClipboardHistoryItem item, int maxItems)
-    {
-        if (item.IsPinned || maxItems < 0)
-        {
-            return true;
-        }
-
-        return summaries.Count(existing => !existing.IsPinned) < maxItems;
-    }
-
     private static bool CanAppendWithoutTrim(IReadOnlyCollection<ClipboardHistoryKeyItem> keys, ClipboardHistoryItem item, int maxItems)
     {
         if (item.IsPinned || maxItems < 0)
@@ -1246,17 +1239,6 @@ public sealed class ClipboardHistoryStore
         }
 
         return keys.Count(existing => !existing.IsPinned) < maxItems;
-    }
-
-    private void AppendNewWithoutRetention(IReadOnlyCollection<ClipboardHistoryItem> summaries, ClipboardHistoryItem item)
-    {
-        var summary = CreateSummaryItem(item);
-        AppendStoredHistoryItem(item, hasExistingItems: summaries.Count > 0);
-        AppendSummaryIndexItem(summary, hasExistingItems: summaries.Count > 0);
-        SaveTopIndexCore(OrderedItems(summaries.Append(summary)));
-        QueueSidecarWrite(item);
-        _itemsCache = null;
-        _summaryItemsCache = null;
     }
 
     private void AppendNewWithoutRetention(IReadOnlyCollection<ClipboardHistoryKeyItem> keys, ClipboardHistoryItem item)
@@ -3057,7 +3039,9 @@ public sealed class ClipboardHistoryStore
             return;
         }
 
-        var legacyRoot = Path.Combine(
+        // Overridable so tests can run the migration against a temp folder instead of the
+        // user's real %LocalAppData%\RayClipboard.
+        var legacyRoot = LegacyRootOverrideForTests.Value ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             LegacyAppDataFolderName);
         var legacyHistory = Path.Combine(legacyRoot, "history.json");
