@@ -64,11 +64,13 @@ attach case without putting a window on screen.
 
 ## Next steps
 
-1. **Old-format spreadsheets still go through Excel.** `.xlsx` and `.xlsm` are read straight out of
-   the file by `ExcelWorkbookReader` in about 25ms, which is what made them instant and gave them a
-   real tab strip. `.xls` and `.xlsb` are not zip archives, so they still start Excel and take
-   tens of seconds the first time. Worth doing only if such a file ever actually turns up — and
-   as of 2026-08-04 zero `.xls`/`.xlsb` have appeared in 492 history entries.
+1. **RESOLVED 2026-08-04 — `.xls` now reads natively.** Isaiah asked for it despite zero `.xls`
+   ever appearing in history, so `ExcelWorkbookReader` parses the old binary format through
+   ExcelDataReader (new package, read-only, no Excel process) into the same grid and tab strip
+   the zip formats get, with the COM export kept as the fallback for a file that will not parse.
+   Verified against a real xlExcel8 fixture written by Excel itself
+   (`tests/Clip.Tests/Fixtures/legacy.xls` — dates, booleans, codepage text, two sheets).
+   Only `.xlsb` still goes to Excel.
 2. **RESOLVED 2026-08-04 — Excel and Visio ownership verified by experiment.** Both landed in a
    fresh process (`owned=True`); PIDs and the COM-launched caveat are in "Where things stand".
 3. **The 120s cold budget is deliberately above the measurements**, because killing `WINWORD.EXE`

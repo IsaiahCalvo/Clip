@@ -40,17 +40,49 @@ public class ExcelPreviewTests
     [InlineData("book.xlsx", true)]
     [InlineData("book.xlsm", true)]
     [InlineData("book.XLSX", true)]
-    [InlineData("book.xls", false)]   // not a zip archive; Excel still has to open it
+    [InlineData("book.xls", true)]    // old binary format, parsed by ExcelDataReader
+    [InlineData("book.xlsb", false)]  // still Excel's problem
     [InlineData("book.csv", false)]
     [InlineData("deck.pptx", false)]
-    public void OnlyTheZipBasedWorkbookFormatsAreReadDirectly(string name, bool expected) =>
+    public void WorkbookFormatsWithANativeParserAreReadDirectly(string name, bool expected) =>
         Assert.Equal(expected, ExcelWorkbookReader.CanRead(name));
 
+    /// <summary>
+    /// A real legacy workbook, written by Excel itself as xlExcel8. The old binary format must
+    /// come back as the same grid the zip formats do: sheets in tab order, formatted dates,
+    /// TRUE/FALSE booleans, and text that survived the codepage round trip.
+    /// </summary>
     [Fact]
-    public void AWorkbookThatIsNotAZipIsLeftToExcel()
+    public void ALegacyBinaryWorkbookIsReadWithoutExcel()
     {
-        var fake = Path.Combine(Path.GetTempPath(), $"clip-fake-{Guid.NewGuid():N}.xlsx");
-        File.WriteAllText(fake, "this is not a zip archive");
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "legacy.xls");
+        var sheets = ExcelWorkbookReader.TryRead(path);
+
+        Assert.NotNull(sheets);
+        Assert.Equal(2, sheets!.Count);
+        Assert.Equal("Inventory", sheets[0].Name);
+        Assert.Equal("Notes", sheets[1].Name);
+
+        var rows = sheets[0].Rows;
+        Assert.Equal(new[] { "Item", "Qty", "Updated", "Active" }, rows[0]);
+        Assert.Equal("Camera", rows[1][0]);
+        Assert.Equal("12", rows[1][1]);
+        Assert.Equal("2026-08-04", rows[1][2]);
+        Assert.Equal("TRUE", rows[1][3]);
+        Assert.Equal("Cable — shielded", rows[2][0]);
+        Assert.Equal("3.5", rows[2][1]);
+        Assert.Equal("FALSE", rows[2][3]);
+
+        Assert.Equal("second sheet", sheets[1].Rows[0][0]);
+    }
+
+    [Theory]
+    [InlineData(".xlsx")]
+    [InlineData(".xls")]
+    public void AWorkbookThatWillNotParseIsLeftToExcel(string extension)
+    {
+        var fake = Path.Combine(Path.GetTempPath(), $"clip-fake-{Guid.NewGuid():N}{extension}");
+        File.WriteAllText(fake, "this is not a workbook of any format");
         try
         {
             Assert.Null(ExcelWorkbookReader.TryRead(fake));

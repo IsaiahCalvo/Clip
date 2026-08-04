@@ -19,8 +19,8 @@ internal sealed record ExcelSheet(string Name, IReadOnlyList<IReadOnlyList<strin
 /// workbook was previewed, and started an Excel process to do it. Nothing about showing a grid of
 /// values needs either.
 ///
-/// The old formats — .xls and .xlsb — are not zip archives and are not handled; those still fall
-/// back to asking Excel.
+/// The old binary format — .xls — is not a zip archive; ExcelDataReader parses it instead, into
+/// the same grid. Only .xlsb still falls back to asking Excel.
 /// </summary>
 internal static class ExcelWorkbookReader
 {
@@ -28,13 +28,22 @@ internal static class ExcelWorkbookReader
     private const int MaxRows = 500;
     private const int MaxColumns = 50;
 
+    static ExcelWorkbookReader() =>
+        // Pre-Unicode .xls files name their text encoding by Windows codepage number.
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+
     public static bool CanRead(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".xlsx" or ".xlsm";
+        Path.GetExtension(path).ToLowerInvariant() is ".xlsx" or ".xlsm" or ".xls";
 
     public static IReadOnlyList<ExcelSheet>? TryRead(string path)
     {
         try
         {
+            if (Path.GetExtension(path).ToLowerInvariant() == ".xls")
+            {
+                return TryReadBinary(path);
+            }
+
             using var archive = ZipFile.OpenRead(path);
 
             var shared = ReadSharedStrings(archive);
@@ -56,9 +65,80 @@ internal static class ExcelWorkbookReader
         }
         catch
         {
-            // A workbook that will not open as a zip is one for Excel to deal with.
+            // A workbook that will not open here is one for Excel to deal with.
             return null;
         }
+    }
+
+    private static IReadOnlyList<ExcelSheet>? TryReadBinary(string path)
+    {
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = ExcelDataReader.ExcelReaderFactory.CreateBinaryReader(stream);
+
+        var sheets = new List<ExcelSheet>();
+        do
+        {
+            var rows = new List<IReadOnlyList<string>>();
+            var truncated = false;
+            var widest = 0;
+
+            while (reader.Read())
+            {
+                if (rows.Count >= MaxRows)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                var columns = reader.FieldCount;
+                if (columns > MaxColumns)
+                {
+                    columns = MaxColumns;
+                    truncated = true;
+                }
+
+                var cells = new List<string>(columns);
+                for (var i = 0; i < columns; i++)
+                {
+                    cells.Add(BinaryCellText(reader, i));
+                }
+
+                widest = Math.Max(widest, cells.Count);
+                rows.Add(cells);
+            }
+
+            foreach (var row in rows.OfType<List<string>>())
+            {
+                while (row.Count < widest)
+                {
+                    row.Add(string.Empty);
+                }
+            }
+
+            sheets.Add(new ExcelSheet(reader.Name, rows, truncated));
+        }
+        while (reader.NextResult());
+
+        return sheets.Count > 0 ? sheets : null;
+    }
+
+    private static string BinaryCellText(ExcelDataReader.IExcelDataReader reader, int index)
+    {
+        var value = reader.GetValue(index);
+        return value switch
+        {
+            null => string.Empty,
+            // The reader already turns date-formatted serials into DateTime where it can; a
+            // date-formatted double that slips through is converted the same way the xlsx path
+            // converts styled serials.
+            DateTime date => date.TimeOfDay == TimeSpan.Zero
+                ? date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : date.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+            double serial when LooksLikeADate(reader.GetNumberFormatString(index)) => FromSerialDate(serial),
+            double number => number.ToString(CultureInfo.InvariantCulture),
+            bool flag => flag ? "TRUE" : "FALSE",
+            _ => value.ToString() ?? string.Empty,
+        };
     }
 
     private static readonly XNamespace Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
