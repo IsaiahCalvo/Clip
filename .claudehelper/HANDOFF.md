@@ -1,6 +1,6 @@
 # Clip — handoff
 
-_Last updated 2026-08-03. **`main` is the trunk and the only branch.** All work pushed._
+_Last updated 2026-08-04. **`main` is the trunk and the only branch.** All work pushed._
 
 ## Branches
 
@@ -26,7 +26,21 @@ Picture-in-picture, video controls and audio controls are **done** and signed of
 - **The first Office preview after a reboot no longer times out.** One flat 25s budget had to
   cover both a cold COM start (measured 22.7–26.2s) and a warm export; it is now 120s cold /
   45s warm, with the flag set only where COM actually completed an export.
-- 379 tests pass on `main`.
+- **The Word flicker is fixed at its root** (commit d81f7f1, 2026-08-04, after a 30-agent audit
+  of every preview path). `await Dispatcher.InvokeAsync(async ...)` completes at the lambda's
+  FIRST await and discards the inner task, so `shown` in the pdf/office branches was always
+  false — the raster fallback ran on top of every live viewer, and the orphaned reveal then
+  resurrected a blank pane. `LoadFilePreviewAsync` is now flat (it already resumes on the UI
+  thread), `RevealWhenLoadedAsync` only accepts its own navigation's completion (NavigationId +
+  IsSuccess) and re-checks `_previewToken` before revealing, and the placeholder is swapped for
+  the pane in one dispatcher frame. Every browser-backed preview (media included) goes through
+  that reveal; the loading placeholder masks every transition. `BlankHtmlPreview` is gone — its
+  blank navigation was what raced the reveals — replaced by a script that pauses `video`/`audio`
+  when the pane hides or the palette conceals (also fixes Esc/pip leaving audio playing).
+  Image decode, code highlighting and workbook HTML now build off the UI thread. Office exports
+  are serialized per cache file, written to a temp name and moved into place, and a cache hit
+  requires the PDF `%%EOF` / PNG `IEND` tail marker (verified against all 25 real cache files).
+- 412 tests pass on `main`.
 
 ## Verify off screen — never take over the display
 
@@ -62,6 +76,10 @@ attach case without putting a window on screen.
 - **The preview cache hides everything.** Results are keyed by path + mtime + size under
   `%LOCALAPPDATA%\Clip\document-previews`, so re-previewing the same document never touches COM.
   Copy the file to a fresh name for every A/B run or you will measure nothing.
+- **Never wrap preview work in `await Dispatcher.InvokeAsync(async ...)`.** It returns at the
+  lambda's first await and discards the inner task — results read too early, exceptions vanish.
+  `LoadFilePreviewAsync` already resumes on the UI thread; write straight-line awaits with
+  `if (token != _previewToken) return;` after each one.
 - **The timeout is not a leak guard**, whatever the code comment implies. On timeout the STA
   thread is abandoned, not killed, so a genuine Office hang leaks regardless of the number. What
   the timeout controls is how long the pane waits before falling back.
