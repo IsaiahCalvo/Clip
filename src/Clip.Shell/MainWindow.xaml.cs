@@ -810,6 +810,7 @@ public partial class MainWindow : Window
     public bool PaletteSessionMode { get; set; }
     public bool PaletteSessionStartHidden { get; set; }
     public bool KeepWarmSession { get; set; }
+    public bool OpenTestOffscreen { get; set; }
     internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
@@ -1129,12 +1130,21 @@ public partial class MainWindow : Window
 
         Opacity = 0;
         IsHitTestVisible = false;
-        PositionOnMouseScreen();
+        if (OpenTestOffscreen)
+        {
+            // The harness measures with the window parked off screen; Windows renders it all the same.
+            MoveOffscreen();
+        }
+        else
+        {
+            PositionOnMouseScreen();
+        }
+
         EnsureAppHeaderIcon();
         EnsureChromeIcons();
         Opacity = 1;
         IsHitTestVisible = true;
-        if (ShouldActivatePaletteWindow(_paletteNoActivate))
+        if (!OpenTestOffscreen && ShouldActivatePaletteWindow(_paletteNoActivate))
         {
             _ = Dispatcher.BeginInvoke(new Action(() => ActivatePaletteWindow(ownHwnd)), System.Windows.Threading.DispatcherPriority.Input);
         }
@@ -1481,6 +1491,8 @@ public partial class MainWindow : Window
         CheckForUpdatesFromTray();
     }
 
+    internal void ConcealForOpenTest() => ConcealPalette("open-test");
+
     private void ConcealPalette(string reason)
     {
         _outsideClickTimer.Stop();
@@ -1566,7 +1578,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (KeepOpenForDebug || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
+        if (KeepOpenForDebug || OpenTestOffscreen || _suppressDeactivate || ActionMenuPopup.IsOpen || IsContextMenuOpen(this))
         {
             return;
         }
@@ -12601,6 +12613,7 @@ internal static class ShellLog
     private static readonly Lazy<Thread> Writer = new(StartWriter);
     private static volatile bool _stopping;
     private static volatile bool _traceEnabled = TraceEnabledByEnvironment();
+    internal static Action<string>? Mirror;
 
     public static void Configure(string[] args)
     {
@@ -12611,7 +12624,8 @@ internal static class ShellLog
 
         _traceEnabled = args.Any(arg =>
             string.Equals(arg, "--debug-perf", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(arg, "--debug-log", StringComparison.OrdinalIgnoreCase));
+            string.Equals(arg, "--debug-log", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(arg, "--open-test", StringComparison.OrdinalIgnoreCase));
     }
 
     public static void Info(string message) => Write("INFO", message);
@@ -12645,6 +12659,7 @@ internal static class ShellLog
         }
 
         _ = Writer.Value;
+        Mirror?.Invoke($"[{level}] {message}");
         Pending.Enqueue($"{DateTimeOffset.Now:O} [{level}] {message}{Environment.NewLine}");
         Signal.Set();
     }

@@ -2772,7 +2772,8 @@ internal static class StaticDocumentPreviewRenderer
     }
 
     // An Office application handed to us by COM is not necessarily ours. Measured on this machine
-    // with a user-launched instance already running: Word, Excel and Visio each start a fresh
+    // with an instance already running (user-launched for Word and PowerPoint; COM-launched
+    // Visible=false for Excel and Visio, 2026-08-04): Word, Excel and Visio each start a fresh
     // process for the automation caller, but PowerPoint hands back the very process the user is
     // sitting in front of -- CoCreateInstance returned the same POWERPNT.EXE, its Presentations
     // collection held the user's unsaved deck, and Quit() on it closed that deck with no save

@@ -40,6 +40,13 @@ Picture-in-picture, video controls and audio controls are **done** and signed of
   Image decode, code highlighting and workbook HTML now build off the UI thread. Office exports
   are serialized per cache file, written to a temp name and moved into place, and a cache hit
   requires the PDF `%%EOF` / PNG `IEND` tail marker (verified against all 25 real cache files).
+- **Excel and Visio ownership is settled by experiment** (2026-08-04). With a COM-launched
+  `Visible=false` instance already running, a second Clip-style `CoCreateInstance` landed in a
+  new process both times — Excel user=33940 clip=10588, Visio user=55680 clip=41544; independent
+  repro Excel 38336→47592, Visio 43628→63216 — so both read `owned=True` and the user's instance
+  is untouched. Caveat: verified against COM-launched instances (which reproduce the attach
+  case), not an interactively launched one; the runtime gate in `CreateComApplication` covers
+  any future attach case regardless.
 - 412 tests pass on `main`.
 
 ## Verify off screen — never take over the display
@@ -49,6 +56,7 @@ Isaiah works on this machine and has escalated about this repeatedly.
 ```
 Clip.exe --jank-test --shot=out.png --audio --show=speeds --w=550 --h=230   # picture of the player
 Clip.exe --jank-test --steps=30 --step-px=16                                # resize smoothness
+Clip.exe --open-test                                # palette open timings, cold + warm, stderr + shell.log
 ```
 
 For Office work, drive real instances over COM with `Visible = $false` — that reproduces the
@@ -59,16 +67,22 @@ attach case without putting a window on screen.
 1. **Old-format spreadsheets still go through Excel.** `.xlsx` and `.xlsm` are read straight out of
    the file by `ExcelWorkbookReader` in about 25ms, which is what made them instant and gave them a
    real tab strip. `.xls` and `.xlsb` are not zip archives, so they still start Excel and take
-   tens of seconds the first time. Worth doing only if such a file ever actually turns up.
-2. **Excel and Visio ownership is unverified against a running user instance.** Both got their own
-   process when measured, so they should read `owned=True` and be unaffected — but only Word and
-   PowerPoint were confirmed by experiment.
+   tens of seconds the first time. Worth doing only if such a file ever actually turns up — and
+   as of 2026-08-04 zero `.xls`/`.xlsb` have appeared in 492 history entries.
+2. **RESOLVED 2026-08-04 — Excel and Visio ownership verified by experiment.** Both landed in a
+   fresh process (`owned=True`); PIDs and the COM-launched caveat are in "Where things stand".
 3. **The 120s cold budget is deliberately above the measurements**, because killing `WINWORD.EXE`
    leaves Word's binaries in the OS file cache, so every "cold" number is a floor rather than a
    worst case. If a real post-reboot preview is ever seen timing out, raise it; the debug log
    prints which budget was in force.
-4. **Palette load time with thumbnails and favicons** — the 33ms open / 17ms for 93 rows figure
-   predates both, so it is stale.
+4. **Palette load time with thumbnails and favicons** — measured 2026-08-04 (Release build,
+   off-screen `--open-test`, real history: 374 items = 378 render entries with date headers).
+   Cold: palette shown 80–88ms, first rows painted ~560–580ms, recent set of 8 rows complete
+   ~655–670ms, background full-history load done at 1.1–1.35s (the queries themselves are
+   20–33ms). Warm re-open: 45–68ms, rows already rendered, no reload. Visible rows render
+   eagerly and the rest append on scroll, so a full render of all 378 never happens without
+   scrolling. The old 33ms open / 17ms for 93 rows figure predated thumbnails and favicons and
+   is retired.
 5. **Word and PowerPoint are only instant if the palette was open first.** They still need their
    application, which takes tens of seconds cold, so the export is done in the background while the
    palette is being read. A document copied and previewed within a few seconds of each other can

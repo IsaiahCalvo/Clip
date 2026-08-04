@@ -35,6 +35,26 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // The open-test harness boots the real shell off screen and reports how long the palette
+        // takes to open. Like the jank harness it runs beside whatever Clip is already open, so it
+        // also goes before the single-instance check.
+        if (OpenTestHarness.Requested(e.Args))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            ShellLog.Mirror = line => Console.Error.WriteLine(line);
+            _window = new MainWindow
+            {
+                PaletteSessionMode = true,
+                PaletteSessionStartHidden = true,
+                OpenTestOffscreen = true,
+            };
+            _window.InitializeShell();
+            // Like the jank harness: a throw inside the run must exit nonzero, not hang off screen.
+            _ = OpenTestHarness.RunAsync(_window).ContinueWith(run =>
+                Dispatcher.Invoke(() => Shutdown(run.Status == TaskStatus.RanToCompletion ? 0 : 4)));
+            return;
+        }
+
         _singleInstanceMutex = new Mutex(true, Clip.Watcher.Program.RichPaletteSingleInstanceMutexName, out _ownsSingleInstanceMutex);
         if (!_ownsSingleInstanceMutex)
         {
