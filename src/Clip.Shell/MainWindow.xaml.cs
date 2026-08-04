@@ -1162,6 +1162,7 @@ public partial class MainWindow : Window
         {
             ScheduleDebugInitialSearch();
             ScheduleDebugOpenSurface();
+            WarmOfficePreviewsInBackground();
         }
 
         if (loadItems && !PaletteSessionMode)
@@ -3711,7 +3712,25 @@ public partial class MainWindow : Window
                 }
             }
 
-            // Word, Excel and PowerPoint are exported to a cached PDF and shown in the same viewer
+            // A workbook is read straight out of the file and drawn as a grid with a tab per sheet.
+            // A .xlsx is a zip of XML, so this takes milliseconds and starts nothing, where asking
+            // Excel to export the same workbook took the better part of twenty seconds the first
+            // time and put a window on screen while it did. It is also the right shape: the export
+            // showed sheets as pages of print output rather than as sheets.
+            if (ExcelWorkbookReader.CanRead(path)
+                && await Task.Run(() => ExcelWorkbookReader.TryRead(path)) is { } sheets)
+            {
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    if (token != _previewToken) return;
+                    await ShowWorkbookPreviewAsync(sheets, path);
+                });
+
+                ShellLog.Info($"preview workbook path={path} sheets={sheets.Count} elapsedMs={watch.ElapsedMilliseconds}");
+                return;
+            }
+
+            // Word and PowerPoint are exported to a cached PDF and shown in the same viewer
             // the .pdf branch uses. Rasterising instead threw away everything after the first page
             // along with the text layer, and only worked where a PDF rasteriser was installed —
             // and a document is not one page. A workbook arrives as a page per sheet and a deck as
@@ -5883,6 +5902,77 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, $"document preview failed path={path}");
             return false;
         }
+    }
+
+    private bool _warmingOfficePreviews;
+
+    /// <summary>
+    /// Exports the recent documents that have no cached preview yet, quietly, while the palette is
+    /// open and the user is reading it.
+    ///
+    /// Driving Word or PowerPoint takes tens of seconds the first time, and doing it at the moment
+    /// the row is clicked puts every second of that in front of the user. Doing it beforehand
+    /// spends the same time where nobody is waiting on it, and a preview whose export already
+    /// finished opens as fast as the cache can be read. One document at a time: several Office
+    /// applications starting at once is slower than doing them in turn, and far more disruptive.
+    /// </summary>
+    private void WarmOfficePreviewsInBackground()
+    {
+        if (_warmingOfficePreviews)
+        {
+            return;
+        }
+
+        var pending = _allItems
+            .Select(item => item.FilePaths is { Count: 1 } paths ? paths[0] : null)
+            .Where(path => path is not null
+                && IsPdfBackedOfficeFile(Path.GetExtension(path).ToLowerInvariant())
+                && !ExcelWorkbookReader.CanRead(path)
+                && File.Exists(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToArray();
+
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        _warmingOfficePreviews = true;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                foreach (var path in pending)
+                {
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
+                    var exported = WatcherStaticDocumentPreviewRenderer.TryExportDocumentPdfOnStaThread(path!);
+                    ShellLog.Info(
+                        $"preview warmed path={path} ok={exported is not null} elapsedMs={watch.ElapsedMilliseconds}");
+                }
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Error(ex, "warming office previews failed");
+            }
+            finally
+            {
+                _warmingOfficePreviews = false;
+            }
+        });
+    }
+
+    private async Task ShowWorkbookPreviewAsync(IReadOnlyList<ExcelSheet> sheets, string path)
+    {
+        var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+        htmlPreview.Visibility = Visibility.Visible;
+        await EnsureWebViewReadyAsync(htmlPreview);
+
+        htmlPreview.CoreWebView2.NavigateToString(ExcelPreviewPage.Build(
+            sheets,
+            Path.GetFileName(path),
+            BrushHex("Surface"),
+            BrushHex("Text")));
     }
 
     private async Task ShowCodePreviewAsync(string path)

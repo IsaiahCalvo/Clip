@@ -317,6 +317,22 @@ internal static class JankHarness
         window.Show();
         await view.EnsureCoreWebView2Async(await CreateEnvironmentAsync());
 
+        // Any page, not just the player: a workbook drawn as a grid is layout that wants looking at
+        // just as much as a control bar does.
+        if (JankOptions.Value(args, "--html") is { } page)
+        {
+            view.CoreWebView2.Navigate(new Uri(page).AbsoluteUri);
+            await Task.Delay(1500);
+            using (var only = File.Create(shot))
+            {
+                await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, only);
+            }
+
+            window.Close();
+            Report($"shot saved to {shot} at {width}x{height}");
+            return 0;
+        }
+
         // A real file, so the page draws its player rather than its cannot-play message.
         var sample = audio
             ? Path.Combine(Path.GetTempPath(), "clip-jank-audio.m4a")
