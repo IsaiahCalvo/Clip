@@ -5850,9 +5850,8 @@ public partial class MainWindow : Window
     private async Task ShowHtmlPreviewAsync(string path)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
-        htmlPreview.Visibility = Visibility.Visible;
         await EnsureWebViewReadyAsync(htmlPreview);
-        htmlPreview.Source = new Uri(path);
+        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.Navigate(new Uri(path).AbsoluteUri));
     }
 
     /// <summary>
@@ -5875,7 +5874,6 @@ public partial class MainWindow : Window
             }
 
             var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
-            htmlPreview.Visibility = Visibility.Visible;
             await EnsureWebViewReadyAsync(htmlPreview);
             htmlPreview.ZoomFactor = 1.0;
 
@@ -5893,8 +5891,9 @@ public partial class MainWindow : Window
                 folder,
                 CoreWebView2HostResourceAccessKind.Allow);
 
-            htmlPreview.CoreWebView2.Navigate(
-                $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}");
+            await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.Navigate(
+                $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}"));
+
             return true;
         }
         catch (Exception ex)
@@ -5902,6 +5901,39 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, $"document preview failed path={path}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Loads the document first and shows the pane only once it has arrived, so the placeholder
+    /// stays up for as long as the wait lasts rather than the pane appearing empty.
+    ///
+    /// The browser suspends drawing while it is hidden but still loads, so waiting costs nothing.
+    /// The timeout is there because a document that never finishes loading must not leave the pane
+    /// hidden forever — showing a partly-drawn document beats showing none at all.
+    /// </summary>
+    private async Task RevealWhenLoadedAsync(Microsoft.Web.WebView2.Wpf.WebView2 view, Action navigate)
+    {
+        var loaded = new TaskCompletionSource();
+
+        void OnCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            view.CoreWebView2.NavigationCompleted -= OnCompleted;
+            loaded.TrySetResult();
+        }
+
+        view.CoreWebView2.NavigationCompleted += OnCompleted;
+
+        try
+        {
+            navigate();
+            await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            view.CoreWebView2.NavigationCompleted -= OnCompleted;
+        }
+
+        view.Visibility = Visibility.Visible;
     }
 
     private bool _warmingOfficePreviews;
@@ -5965,20 +5997,15 @@ public partial class MainWindow : Window
     private async Task ShowWorkbookPreviewAsync(IReadOnlyList<ExcelSheet> sheets, string path)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
-        htmlPreview.Visibility = Visibility.Visible;
         await EnsureWebViewReadyAsync(htmlPreview);
 
-        htmlPreview.CoreWebView2.NavigateToString(ExcelPreviewPage.Build(
-            sheets,
-            Path.GetFileName(path),
-            BrushHex("Surface"),
-            BrushHex("Text")));
+        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.NavigateToString(
+            ExcelPreviewPage.Build(sheets, Path.GetFileName(path), BrushHex("Surface"), BrushHex("Text"))));
     }
 
     private async Task ShowCodePreviewAsync(string path)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
-        htmlPreview.Visibility = Visibility.Visible;
         await EnsureWebViewReadyAsync(htmlPreview);
 
         var html = CodePreviewPage.Build(
@@ -5988,7 +6015,7 @@ public partial class MainWindow : Window
             BrushHex("Muted"),
             BrushHex("Accent"));
 
-        htmlPreview.CoreWebView2.NavigateToString(html);
+        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.NavigateToString(html));
     }
 
     /// <summary>
@@ -6093,6 +6120,28 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Throws away whatever the browser pane is showing, the moment the selection moves off it.
+    ///
+    /// The pane is made visible before the next document has finished loading, because the browser
+    /// will not load a document it cannot draw. Left holding the last one, that gap showed the
+    /// previous file's contents under the new file's name and icon — a PDF still on screen while a
+    /// Word document was being opened. Blanking it here means the gap shows nothing, and the
+    /// "Loading preview..." placeholder underneath is what the user sees instead.
+    /// </summary>
+    private void BlankHtmlPreview()
+    {
+        try
+        {
+            (_htmlPreview as Microsoft.Web.WebView2.Wpf.WebView2)?.CoreWebView2?
+                .NavigateToString("<html><body></body></html>");
+        }
+        catch
+        {
+            // Nothing loaded yet, or the browser is mid-teardown; either way there is nothing stale.
+        }
+    }
+
     private void HidePreviews()
     {
         CloseExpandedImage();
@@ -6102,6 +6151,7 @@ public partial class MainWindow : Window
         if (_htmlPreview is not null)
         {
             _htmlPreview.Visibility = Visibility.Collapsed;
+            BlankHtmlPreview();
         }
 
         PlaceholderPreview.Visibility = Visibility.Collapsed;
