@@ -85,25 +85,43 @@ public sealed class PreviewRoutingTests
     [Theory]
     [InlineData(".doc")]
     [InlineData(".docx")]
-    public void WordGetsTheLivePdfRoute(string extension)
+    [InlineData(".xlsx")]
+    [InlineData(".pptx")]
+    public void PdfBackedFormatsKeepTheirRenderedImageFallback(string extension)
     {
-        // Word is the only Office format previewed through the browser's PDF viewer, so it must
-        // still answer to the shared Office route that supplies the rendered-image fallback.
-        Assert.True(Call("IsWordFile", extension));
+        // Previewing through the exported PDF is the good path, not the only one. If the export or
+        // the viewer fails these must still answer to the shared Office route that draws a picture
+        // instead, or a failure would leave no preview at all rather than a lesser one.
+        Assert.True(Call("IsPdfBackedOfficeFile", extension));
         Assert.True(Call("IsOfficeOrVisio", extension));
     }
 
+    /// <summary>
+    /// Word, Excel and PowerPoint all preview as their exported PDF, because a document is not one
+    /// page and the viewer that scrolls a PDF scrolls a workbook's sheets and a deck's slides for
+    /// free.
+    /// </summary>
     [Theory]
+    [InlineData(".docx")]
+    [InlineData(".doc")]
     [InlineData(".xlsx")]
     [InlineData(".xlsm")]
     [InlineData(".xls")]
     [InlineData(".pptx")]
     [InlineData(".ppt")]
+    public void PagedOfficeFormatsPreviewThroughTheirExportedPdf(string extension) =>
+        Assert.True(Call("IsPdfBackedOfficeFile", extension));
+
+    /// <summary>
+    /// Visio draws one page per sheet of a drawing and has always previewed as a picture of the
+    /// first, and a PDF is already a PDF. Neither belongs in the Office export route.
+    /// </summary>
+    [Theory]
     [InlineData(".vsdx")]
     [InlineData(".vsd")]
     [InlineData(".pdf")]
-    public void NonWordFormatsAreNotDivertedIntoTheWordRoute(string extension) =>
-        Assert.False(Call("IsWordFile", extension));
+    public void VisioAndPdfStayOutOfTheOfficeExportRoute(string extension) =>
+        Assert.False(Call("IsPdfBackedOfficeFile", extension));
 
     [Fact]
     public void PdfIsNotClaimedByAnyOtherRoute()

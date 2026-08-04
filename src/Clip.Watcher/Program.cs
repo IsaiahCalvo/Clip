@@ -2480,24 +2480,42 @@ internal static class StaticDocumentPreviewRenderer
     });
 
     /// <summary>
-    /// Exports a Word document to its cached PDF and returns that path rather than a picture of
-    /// page one. Showing the PDF itself keeps every page, the text layer and the original
+    /// Exports an Office document to its cached PDF and returns that path rather than a picture of
+    /// its first page. Showing the PDF itself keeps every page, the text layer and the original
     /// fidelity, none of which survive a rasteriser, and it works on machines where no PDF
     /// rasteriser is available at all.
+    ///
+    /// It is also what makes a document navigable: a spreadsheet arrives as one page per sheet and
+    /// a deck as one page per slide, so the viewer that already scrolls a PDF scrolls those too. A
+    /// single rasterised image of sheet one or slide one could never do that.
     /// </summary>
-    public static string? TryExportWordPdfOnStaThread(string path)
+    public static string? TryExportDocumentPdfOnStaThread(string path)
     {
-        if (!File.Exists(path) || Path.GetExtension(path).ToLowerInvariant() is not (".docx" or ".doc"))
+        if (!File.Exists(path) || PdfExportFor(Path.GetExtension(path)) is not var (progId, export, suffix))
         {
             return null;
         }
 
         return RunOnStaThread(path, () =>
         {
-            var pdfPath = CachedExportPath(path, ".word.pdf");
-            return TryExportOfficePdf(path, pdfPath, "Word.Application", ExportWordToPdf) ? pdfPath : null;
+            var pdfPath = CachedExportPath(path, suffix);
+            return TryExportOfficePdf(path, pdfPath, progId, export) ? pdfPath : null;
         });
     }
+
+    /// <summary>
+    /// Which application exports this format, and under what cache name. Visio is absent on
+    /// purpose: it draws one page per sheet of a drawing, and a picture of the first is what that
+    /// preview has always shown.
+    /// </summary>
+    private static (string ProgId, Action<OfficeApplication, string, string> Export, string Suffix)? PdfExportFor(string extension) =>
+        extension.ToLowerInvariant() switch
+        {
+            ".doc" or ".docx" => ("Word.Application", ExportWordToPdf, ".word.pdf"),
+            ".xls" or ".xlsx" or ".xlsm" => ("Excel.Application", ExportExcelToPdf, ".excel.pdf"),
+            ".ppt" or ".pptx" => ("PowerPoint.Application", ExportPowerPointToPdf, ".powerpoint.pdf"),
+            _ => null,
+        };
 
     private static T? RunOnStaThread<T>(string path, Func<T?> work) where T : class
     {
@@ -2715,7 +2733,14 @@ internal static class StaticDocumentPreviewRenderer
         // it is ours to hide, silence and quit. No new process means COM attached us to one that was
         // already running -- the user's. An unrecognised progId falls through to "not ours", which
         // costs a leaked process at worst and never costs the user their work.
-        var owned = before is not null && CreatedNewProcess(before, RunningOfficeProcessIds(progId));
+        //
+        // When nothing of that application was running there is nothing for COM to have attached to,
+        // so the answer is already known and the second sweep is skipped. That sweep is not free:
+        // it sits between creating the application and hiding it, and Visio and Excel show a window
+        // the moment they start, so the wait was visible as a window flashing open and shut on every
+        // preview.
+        var owned = before is not null
+            && (before.Count == 0 || CreatedNewProcess(before, RunningOfficeProcessIds(progId)));
         Program.LogDebug($"Static preview COM instance progId={progId} owned={owned}");
         return new OfficeApplication(app, owned);
     }
@@ -2845,6 +2870,27 @@ internal static class StaticDocumentPreviewRenderer
         finally
         {
             ReleaseOrClose(workbook, alreadyOpen, false);
+        }
+    }
+
+    private static void ExportPowerPointToPdf(OfficeApplication office, string sourcePath, string pdfPath)
+    {
+        dynamic app = office.Application;
+
+        dynamic? presentation = office.Owned ? null : FindOpenDocument(app.Presentations, sourcePath);
+        var alreadyOpen = presentation is not null;
+        try
+        {
+            presentation ??= app.Presentations.Open(sourcePath, true, false, false);
+
+            // SaveCopyAs rather than an export that could be taken as saving: PowerPoint hands back
+            // the user's own presentation when one is already open, and 32 is its PDF format.
+            presentation.SaveCopyAs(pdfPath, 32);
+            Program.LogDebug($"Static preview PowerPoint exported path={sourcePath}");
+        }
+        finally
+        {
+            ReleaseOrClose(presentation, alreadyOpen, null);
         }
     }
 

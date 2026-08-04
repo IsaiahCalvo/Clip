@@ -114,21 +114,22 @@ public sealed class DocumentThumbnailPreviewTests
     }
 
     [Theory]
-    [InlineData(".xlsx")]
-    [InlineData(".pptx")]
     [InlineData(".vsdx")]
     [InlineData(".pdf")]
     [InlineData(".zip")]
-    public void WordPdfExportRefusesEveryFormatThatIsNotWord(string extension)
+    [InlineData(".txt")]
+    public void OfficePdfExportRefusesFormatsNoOfficeAppExports(string extension)
     {
-        // The Word preview route hands its cached PDF straight to the browser viewer. Letting any
-        // other format in would mean driving Word against a file it cannot open, so the guard is
-        // checked before COM is ever touched and this test never starts an Office process.
-        var source = Path.Combine(Path.GetTempPath(), $"clip-word-{Guid.NewGuid():N}{extension}");
-        File.WriteAllText(source, "not a word document");
+        // The export route hands its cached PDF straight to the browser viewer. Letting through a
+        // format no Office application can open would mean driving one against a file it cannot
+        // read, so the guard is checked before COM is ever touched and this test never starts an
+        // Office process. Visio is on this list deliberately: a drawing previews as a picture of
+        // its first page rather than through a PDF.
+        var source = Path.Combine(Path.GetTempPath(), $"clip-office-{Guid.NewGuid():N}{extension}");
+        File.WriteAllText(source, "not an office document");
         try
         {
-            Assert.Null(StaticDocumentPreviewRenderer.TryExportWordPdfOnStaThread(source));
+            Assert.Null(StaticDocumentPreviewRenderer.TryExportDocumentPdfOnStaThread(source));
         }
         finally
         {
@@ -137,10 +138,57 @@ public sealed class DocumentThumbnailPreviewTests
     }
 
     [Fact]
-    public void WordPdfExportRefusesAMissingFile()
+    public void OfficePdfExportRefusesAMissingFile()
     {
         var missing = Path.Combine(Path.GetTempPath(), $"clip-missing-{Guid.NewGuid():N}.docx");
-        Assert.Null(StaticDocumentPreviewRenderer.TryExportWordPdfOnStaThread(missing));
+        Assert.Null(StaticDocumentPreviewRenderer.TryExportDocumentPdfOnStaThread(missing));
+    }
+
+    /// <summary>
+    /// A spreadsheet and a deck are documents with many pages, so they preview as their exported
+    /// PDF rather than as a picture of sheet one or slide one. Dropping any of these from the
+    /// routing silently returns that format to a single flat image.
+    /// </summary>
+    [Theory]
+    [InlineData(".docx")]
+    [InlineData(".doc")]
+    [InlineData(".xlsx")]
+    [InlineData(".xls")]
+    [InlineData(".xlsm")]
+    [InlineData(".pptx")]
+    [InlineData(".ppt")]
+    public void EveryPagedOfficeFormatPreviewsThroughAPdf(string extension)
+    {
+        var shell = File.ReadAllText(RepoPath("src", "Clip.Shell", "MainWindow.xaml.cs"));
+        var routing = shell[shell.IndexOf("IsPdfBackedOfficeFile(string ext)", StringComparison.Ordinal)..];
+
+        Assert.Contains($"\"{extension}\"", routing[..200]);
+    }
+
+    [Fact]
+    public void PowerPointExportsEverySlideRatherThanAPictureOfTheFirst()
+    {
+        var watcher = File.ReadAllText(RepoPath("src", "Clip.Watcher", "Program.cs"));
+
+        // 32 is PowerPoint's PDF format, and SaveCopyAs cannot be mistaken for saving over the
+        // user's own presentation when COM has handed us theirs.
+        Assert.Contains("SaveCopyAs(pdfPath, 32)", watcher);
+        Assert.Contains("ExportPowerPointToPdf", watcher);
+    }
+
+    /// <summary>
+    /// Starting an Office application shows its window, and Visio and Excel show one immediately.
+    /// Deciding ownership by sweeping the process list a second time put that sweep between
+    /// creating the application and hiding it, which was visible as a window flashing open and shut
+    /// on every preview. With nothing of that application running there is nothing to have
+    /// attached to, so the sweep is skipped.
+    /// </summary>
+    [Fact]
+    public void NothingRunningMeansOwnershipIsSettledWithoutASecondProcessSweep()
+    {
+        var watcher = File.ReadAllText(RepoPath("src", "Clip.Watcher", "Program.cs"));
+
+        Assert.Contains("before.Count == 0 || CreatedNewProcess(before,", watcher);
     }
 
     [Fact]
