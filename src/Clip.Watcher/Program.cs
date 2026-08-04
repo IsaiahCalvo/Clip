@@ -2616,31 +2616,106 @@ internal static class StaticDocumentPreviewRenderer
         return PdfPreviewRenderer.TryRenderFirstPage(pdfPath, out image);
     }
 
+    /// <summary>
+    /// One export at a time per cache file. The background warmer and a clicked preview used to
+    /// drive two Office instances at the same document and write the same cache path at once, so
+    /// whichever preview read it could get half a file.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> ExportGates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A cache hit is only a hit when the export actually finished. Exports write to a temporary
+    /// name and move into place, so new entries are complete by construction — but entries written
+    /// before that change (or by a killed process) can be truncated, and existence-as-validity
+    /// cached that corruption forever. Detected leftovers are deleted so they re-export.
+    /// </summary>
+    private static bool IsCompleteExport(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            using var stream = File.OpenRead(path);
+            if (stream.Length >= 8)
+            {
+                var tail = new byte[Math.Min(1024, stream.Length)];
+                stream.Seek(-tail.Length, SeekOrigin.End);
+                stream.ReadExactly(tail);
+                var text = Encoding.ASCII.GetString(tail);
+
+                // A PDF ends with %%EOF; a PNG's final chunk is IEND. A truncated file has neither.
+                if (path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? text.Contains("%%EOF") : text.Contains("IEND"))
+                {
+                    return true;
+                }
+            }
+
+            stream.Dispose();
+            Program.LogDebug($"Static preview cache entry incomplete, deleting path={path}");
+            File.Delete(path);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Program.LogError(ex);
+            return false;
+        }
+    }
+
+    private static void ExportViaTempFile(OfficeApplication app, string sourcePath, string targetPath, Action<OfficeApplication, string, string> export)
+    {
+        // The temporary name keeps the real extension because Visio and PowerPoint pick their
+        // output format from it. The move is atomic on the same volume, so the cache path either
+        // holds a finished export or nothing.
+        var tempPath = Path.Combine(
+            Path.GetDirectoryName(targetPath)!,
+            Guid.NewGuid().ToString("N") + Path.GetExtension(targetPath));
+        try
+        {
+            export(app, sourcePath, tempPath);
+            File.Move(tempPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try { File.Delete(tempPath); } catch { /* best effort */ }
+            }
+        }
+    }
+
     private static bool TryExportOfficePdf(string sourcePath, string pdfPath, string progId, Action<OfficeApplication, string, string> export)
     {
         try
         {
-            if (!File.Exists(pdfPath))
+            lock (ExportGates.GetOrAdd(pdfPath, _ => new object()))
             {
-                var app = CreateComApplication(progId);
-                if (app is null)
+                if (!IsCompleteExport(pdfPath))
                 {
-                    Program.LogDebug($"Static preview skipped progId={progId} path={sourcePath}");
-                    return false;
+                    var app = CreateComApplication(progId);
+                    if (app is null)
+                    {
+                        Program.LogDebug($"Static preview skipped progId={progId} path={sourcePath}");
+                        return false;
+                    }
+
+                    try
+                    {
+                        ExportViaTempFile(app, sourcePath, pdfPath, export);
+                        _officeComWarm = true;
+                    }
+                    finally
+                    {
+                        QuitAndRelease(app);
+                    }
                 }
 
-                try
-                {
-                    export(app, sourcePath, pdfPath);
-                    _officeComWarm = true;
-                }
-                finally
-                {
-                    QuitAndRelease(app);
-                }
+                return File.Exists(pdfPath);
             }
-
-            return File.Exists(pdfPath);
         }
         catch (Exception ex)
         {
@@ -2654,23 +2729,26 @@ internal static class StaticDocumentPreviewRenderer
         image = new Bitmap(1, 1);
         try
         {
-            if (!File.Exists(imagePath))
+            lock (ExportGates.GetOrAdd(imagePath, _ => new object()))
             {
-                var app = CreateComApplication(progId);
-                if (app is null)
+                if (!IsCompleteExport(imagePath))
                 {
-                    Program.LogDebug($"Static preview skipped progId={progId} path={sourcePath}");
-                    return false;
-                }
+                    var app = CreateComApplication(progId);
+                    if (app is null)
+                    {
+                        Program.LogDebug($"Static preview skipped progId={progId} path={sourcePath}");
+                        return false;
+                    }
 
-                try
-                {
-                    export(app, sourcePath, imagePath);
-                    _officeComWarm = true;
-                }
-                finally
-                {
-                    QuitAndRelease(app);
+                    try
+                    {
+                        ExportViaTempFile(app, sourcePath, imagePath, export);
+                        _officeComWarm = true;
+                    }
+                    finally
+                    {
+                        QuitAndRelease(app);
+                    }
                 }
             }
 

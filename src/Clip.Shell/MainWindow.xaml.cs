@@ -1495,6 +1495,11 @@ public partial class MainWindow : Window
         // object + already-arranged visual tree stay in memory, so the re-show is still fast/warm.
         Hide();
 
+        // A video or song must not keep playing out of a hidden window — and when the palette is
+        // concealed for picture-in-picture, the palette's copy must stop before the mini window's
+        // copy starts, or both play at once.
+        PauseHtmlPreviewMedia();
+
         // Don't tear the browser down the instant the palette closes. Rebuilding it costs a
         // noticeable pause on the next video, audio, code or HTML preview, and the palette is
         // usually reopened within seconds. Keep it warm briefly, then release it if it goes unused.
@@ -3579,10 +3584,10 @@ public partial class MainWindow : Window
 
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
-                ImagePreview.Source = LoadCachedBitmap(item.AssetPath, PreviewImageDecodePixels);
-                _currentPreviewImagePath = item.AssetPath;
-                ImagePreview.Visibility = Visibility.Visible;
-                ExpandImageButton.Visibility = Visibility.Visible;
+                // Decoding a large screenshot on the UI thread froze the palette with the previous
+                // preview still painted. The placeholder masks the decode instead.
+                ShowPlaceholder(item, "Loading preview...");
+                _ = ShowImagePreviewAsync(item, item.AssetPath, token);
                 ShellLog.Info($"preview image id={item.Id} path={item.AssetPath}");
                 return;
             }
@@ -3610,6 +3615,13 @@ public partial class MainWindow : Window
         }
     }
 
+    // This method starts on the UI thread and every await resumes there, so it mutates the pane
+    // directly. It must NOT wrap work in `await Dispatcher.InvokeAsync(async ...)`: awaiting a
+    // DispatcherOperation<Task> completes at the lambda's FIRST await and discards the inner task,
+    // which made `shown` read as false while the live viewer was still loading — so the raster
+    // fallback always ran, killed the navigation, and every Word/PDF preview flickered.
+    // The "Loading preview..." placeholder from RenderPreview stays up until a branch has its
+    // content fully ready; each branch swaps it out in a single dispatcher frame.
     private async Task LoadFilePreviewAsync(ClipboardHistoryItem item, string path, int token)
     {
         var watch = Stopwatch.StartNew();
@@ -3617,50 +3629,29 @@ public partial class MainWindow : Window
         {
             if (Directory.Exists(path))
             {
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (token != _previewToken) return;
-                    ShowPlaceholder(item, path);
-                });
+                if (token != _previewToken) return;
+                ShowPlaceholder(item, path);
                 return;
             }
 
             var ext = Path.GetExtension(path).ToLowerInvariant();
             if (IsImageFile(ext))
             {
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (token != _previewToken) return;
-                    HidePreviews();
-                    ImagePreview.Source = LoadCachedBitmap(path, PreviewImageDecodePixels);
-                    _currentPreviewImagePath = path;
-                    ImagePreview.Visibility = Visibility.Visible;
-                    ExpandImageButton.Visibility = Visibility.Visible;
-                });
+                await ShowImagePreviewAsync(item, path, token);
                 ShellLog.Info($"preview file image path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
 
             if (IsHtmlFile(ext))
             {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (token != _previewToken) return;
-                    HidePreviews();
-                    await ShowHtmlPreviewAsync(path);
-                });
+                await ShowHtmlPreviewAsync(path, token);
                 ShellLog.Info($"preview html path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
 
             if (IsVideoFile(ext) || IsAudioFile(ext))
             {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (token != _previewToken) return;
-                    HidePreviews();
-                    await ShowMediaPreviewAsync(path, IsVideoFile(ext));
-                });
+                await ShowMediaPreviewAsync(path, IsVideoFile(ext), token);
                 ShellLog.Info($"preview media path={path} video={IsVideoFile(ext)} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
@@ -3668,12 +3659,7 @@ public partial class MainWindow : Window
             // Source files get a coloured, scrollable, selectable page instead of flat text.
             if (CodePreviewPage.IsCodeFile(ext))
             {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (token != _previewToken) return;
-                    HidePreviews();
-                    await ShowCodePreviewAsync(path);
-                });
+                await ShowCodePreviewAsync(path, token);
                 ShellLog.Info($"preview code path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
@@ -3681,14 +3667,10 @@ public partial class MainWindow : Window
             if (IsTextFile(ext))
             {
                 var text = await TextFilePreviewReader.ReadAsync(path, TextPreviewCharacterLimit);
-
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (token != _previewToken) return;
-                    HidePreviews();
-                    TextPreview.Text = text;
-                    TextPreview.Visibility = Visibility.Visible;
-                });
+                if (token != _previewToken) return;
+                HidePreviews();
+                TextPreview.Text = text;
+                TextPreview.Visibility = Visibility.Visible;
                 ShellLog.Info($"preview text-file path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
@@ -3698,18 +3680,13 @@ public partial class MainWindow : Window
             // if that fails for any reason.
             if (ext == ".pdf")
             {
-                var shown = false;
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (token != _previewToken) return;
-                    shown = await TryShowDocumentPreviewAsync(path);
-                });
-
-                if (shown)
+                if (await TryShowDocumentPreviewAsync(path, token))
                 {
                     ShellLog.Info($"preview pdf-live path={path} elapsedMs={watch.ElapsedMilliseconds}");
                     return;
                 }
+
+                if (token != _previewToken) return;
             }
 
             // A workbook is read straight out of the file and drawn as a grid with a tab per sheet.
@@ -3720,12 +3697,8 @@ public partial class MainWindow : Window
             if (ExcelWorkbookReader.CanRead(path)
                 && await Task.Run(() => ExcelWorkbookReader.TryRead(path)) is { } sheets)
             {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (token != _previewToken) return;
-                    await ShowWorkbookPreviewAsync(sheets, path);
-                });
-
+                if (token != _previewToken) return;
+                await ShowWorkbookPreviewAsync(sheets, path, token);
                 ShellLog.Info($"preview workbook path={path} sheets={sheets.Count} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
@@ -3738,21 +3711,14 @@ public partial class MainWindow : Window
             if (IsPdfBackedOfficeFile(ext))
             {
                 var officePdf = await Task.Run(() => WatcherStaticDocumentPreviewRenderer.TryExportDocumentPdfOnStaThread(path));
-                if (!string.IsNullOrWhiteSpace(officePdf))
+                if (token != _previewToken) return;
+                if (!string.IsNullOrWhiteSpace(officePdf) && await TryShowDocumentPreviewAsync(officePdf!, token))
                 {
-                    var shown = false;
-                    await Dispatcher.InvokeAsync(async () =>
-                    {
-                        if (token != _previewToken) return;
-                        shown = await TryShowDocumentPreviewAsync(officePdf);
-                    });
-
-                    if (shown)
-                    {
-                        ShellLog.Info($"preview office-live path={path} elapsedMs={watch.ElapsedMilliseconds}");
-                        return;
-                    }
+                    ShellLog.Info($"preview office-live path={path} elapsedMs={watch.ElapsedMilliseconds}");
+                    return;
                 }
+
+                if (token != _previewToken) return;
             }
 
             DrawingImage? rendered = null;
@@ -3767,25 +3733,22 @@ public partial class MainWindow : Window
 
             if (rendered is not null)
             {
-                await Dispatcher.InvokeAsync(() =>
+                if (token != _previewToken)
                 {
-                    if (token != _previewToken)
-                    {
-                        rendered.Dispose();
-                        return;
-                    }
-
-                    HidePreviews();
-                    ImagePreview.Source = BitmapFromDrawingImage(rendered);
-                    if (ext == ".pdf")
-                    {
-                        _currentPreviewPdfPath = path;
-                    }
-
-                    ImagePreview.Visibility = Visibility.Visible;
-                    ExpandImageButton.Visibility = Visibility.Visible;
                     rendered.Dispose();
-                });
+                    return;
+                }
+
+                HidePreviews();
+                ImagePreview.Source = BitmapFromDrawingImage(rendered);
+                if (ext == ".pdf")
+                {
+                    _currentPreviewPdfPath = path;
+                }
+
+                ImagePreview.Visibility = Visibility.Visible;
+                ExpandImageButton.Visibility = Visibility.Visible;
+                rendered.Dispose();
                 ShellLog.Info($"preview rendered file path={path} elapsedMs={watch.ElapsedMilliseconds}");
                 return;
             }
@@ -3793,21 +3756,36 @@ public partial class MainWindow : Window
             // Guarded like every other branch: a slow render that finishes after the user has
             // moved on must not repaint the panel, which is how a Visio ended up showing under a
             // selected PDF.
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (token != _previewToken) return;
-                ShowPlaceholder(item, path);
-            });
+            if (token != _previewToken) return;
+            ShowPlaceholder(item, path);
             ShellLog.Info($"preview fallback file path={path} elapsedMs={watch.ElapsedMilliseconds}");
         }
         catch (Exception ex)
         {
             ShellLog.Error(ex, $"file preview failed path={path}");
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (token != _previewToken) return;
-                ShowPlaceholder(item, "Preview unavailable");
-            });
+            if (token != _previewToken) return;
+            ShowPlaceholder(item, "Preview unavailable");
+        }
+    }
+
+    private async Task ShowImagePreviewAsync(ClipboardHistoryItem item, string path, int token)
+    {
+        try
+        {
+            // LoadBitmap freezes what it returns, so decoding off-thread is safe.
+            var bitmap = await Task.Run(() => LoadCachedBitmap(path, PreviewImageDecodePixels));
+            if (token != _previewToken) return;
+            HidePreviews();
+            ImagePreview.Source = bitmap;
+            _currentPreviewImagePath = path;
+            ImagePreview.Visibility = Visibility.Visible;
+            ExpandImageButton.Visibility = Visibility.Visible;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, $"image preview failed path={path}");
+            if (token != _previewToken) return;
+            ShowPlaceholder(item, "Preview unavailable");
         }
     }
 
@@ -5649,8 +5627,24 @@ public partial class MainWindow : Window
             options: options);
     }
 
-    /// <summary>Initializes the WebView2 once; later calls just wait for it to be ready.</summary>
-    private async Task EnsureWebViewReadyAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
+    private Task? _webViewReady;
+
+    /// <summary>
+    /// Initializes the WebView2 once; later calls just wait for it to be ready. Single-flighted
+    /// through a shared task: two previews racing the first initialization each subscribed the
+    /// CoreWebView2 event handlers, and every player message then arrived twice.
+    /// </summary>
+    private Task EnsureWebViewReadyAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
+    {
+        if (_webViewReady is null || _webViewReady.IsFaulted || _webViewReady.IsCanceled)
+        {
+            _webViewReady = InitWebViewAsync(view);
+        }
+
+        return _webViewReady;
+    }
+
+    private async Task InitWebViewAsync(Microsoft.Web.WebView2.Wpf.WebView2 view)
     {
         if (view.CoreWebView2 is not null)
         {
@@ -5658,8 +5652,9 @@ public partial class MainWindow : Window
         }
 
         await view.EnsureCoreWebView2Async(await CreateWebView2EnvironmentAsync());
-        view.CoreWebView2.ContainsFullScreenElementChanged += OnWebViewFullScreenChanged;
-        view.CoreWebView2.WebMessageReceived += OnPlayerMessage;
+        var core = view.CoreWebView2 ?? throw new InvalidOperationException("WebView2 initialization completed without a CoreWebView2");
+        core.ContainsFullScreenElementChanged += OnWebViewFullScreenChanged;
+        core.WebMessageReceived += OnPlayerMessage;
     }
 
     private MediaPipWindow? _pipWindow;
@@ -5839,26 +5834,31 @@ public partial class MainWindow : Window
         var htmlPreview = new Microsoft.Web.WebView2.Wpf.WebView2
         {
             Visibility = Visibility.Collapsed,
-            DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Bg")),
+            // Surface, not Bg: the generated pages paint Surface, so a Bg-colored control
+            // flashed an off-color rectangle for the frame before the page painted.
+            DefaultBackgroundColor = ToDrawingColor((SolidColorBrush)FindResource("Surface")),
         };
         _htmlPreview = htmlPreview;
         _setHtmlPreviewBackground = color => htmlPreview.DefaultBackgroundColor = color;
+        // Added last, so it sits above the placeholder in the visual tree — irrelevant while
+        // collapsed, and as an HWND child it draws over WPF content whenever visible anyway.
         PreviewHost.Children.Add(_htmlPreview);
         return _htmlPreview;
     }
 
-    private async Task ShowHtmlPreviewAsync(string path)
+    private async Task ShowHtmlPreviewAsync(string path, int token)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
         await EnsureWebViewReadyAsync(htmlPreview);
-        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.Navigate(new Uri(path).AbsoluteUri));
+        if (token != _previewToken) return;
+        await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.Navigate(new Uri(path).AbsoluteUri));
     }
 
     /// <summary>
     /// Opens a document in the WebView2's built-in viewer. Returns false when it could not be
     /// shown, so the caller keeps the existing rendered-image path rather than showing nothing.
     /// </summary>
-    private async Task<bool> TryShowDocumentPreviewAsync(string path)
+    private async Task<bool> TryShowDocumentPreviewAsync(string path, int token)
     {
         try
         {
@@ -5875,6 +5875,7 @@ public partial class MainWindow : Window
 
             var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
             await EnsureWebViewReadyAsync(htmlPreview);
+            if (token != _previewToken) return false;
             htmlPreview.ZoomFactor = 1.0;
 
             try
@@ -5891,10 +5892,8 @@ public partial class MainWindow : Window
                 folder,
                 CoreWebView2HostResourceAccessKind.Allow);
 
-            await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.Navigate(
+            return await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.Navigate(
                 $"https://{MediaVirtualHost}/{Uri.EscapeDataString(Path.GetFileName(path))}"));
-
-            return true;
         }
         catch (Exception ex)
         {
@@ -5904,36 +5903,66 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Loads the document first and shows the pane only once it has arrived, so the placeholder
-    /// stays up for as long as the wait lasts rather than the pane appearing empty.
+    /// Loads the document first and shows the pane only once it has arrived, so the loading
+    /// placeholder stays up for as long as the wait lasts rather than the pane appearing empty.
+    /// The placeholder is collapsed and the pane revealed in the same dispatcher frame, so no
+    /// intermediate state ever paints.
+    ///
+    /// The completion handler only accepts the navigation this call started (matched by the
+    /// NavigationId captured from NavigationStarting — the navigation issued here is always the
+    /// last one issued, so the first NavigationStarting after attach is ours). A completion from
+    /// a superseded earlier navigation must not reveal the pane: that is exactly how a Word
+    /// preview used to flash blank or show under another file's name. The reveal also re-checks
+    /// the preview token, because by the time the document arrives the user may have moved on —
+    /// revealing then would cover the newer item's preview with a stale HWND pane that WPF
+    /// cannot draw over.
     ///
     /// The browser suspends drawing while it is hidden but still loads, so waiting costs nothing.
     /// The timeout is there because a document that never finishes loading must not leave the pane
     /// hidden forever — showing a partly-drawn document beats showing none at all.
     /// </summary>
-    private async Task RevealWhenLoadedAsync(Microsoft.Web.WebView2.Wpf.WebView2 view, Action navigate)
+    private async Task<bool> RevealWhenLoadedAsync(Microsoft.Web.WebView2.Wpf.WebView2 view, int token, Action navigate)
     {
-        var loaded = new TaskCompletionSource();
+        var loaded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ulong? navigationId = null;
+
+        void OnStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            navigationId ??= e.NavigationId;
+        }
 
         void OnCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
         {
-            view.CoreWebView2.NavigationCompleted -= OnCompleted;
-            loaded.TrySetResult();
+            if (navigationId is ulong id && e.NavigationId == id)
+            {
+                loaded.TrySetResult(e.IsSuccess);
+            }
         }
 
+        view.CoreWebView2.NavigationStarting += OnStarting;
         view.CoreWebView2.NavigationCompleted += OnCompleted;
 
+        bool ok;
         try
         {
             navigate();
-            await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+            var done = await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+            ok = done != loaded.Task || loaded.Task.Result;
         }
         finally
         {
+            view.CoreWebView2.NavigationStarting -= OnStarting;
             view.CoreWebView2.NavigationCompleted -= OnCompleted;
         }
 
+        if (!ok || token != _previewToken)
+        {
+            return false;
+        }
+
+        HidePreviews(pauseMedia: false);
         view.Visibility = Visibility.Visible;
+        return true;
     }
 
     private bool _warmingOfficePreviews;
@@ -5994,28 +6023,36 @@ public partial class MainWindow : Window
         });
     }
 
-    private async Task ShowWorkbookPreviewAsync(IReadOnlyList<ExcelSheet> sheets, string path)
+    private async Task ShowWorkbookPreviewAsync(IReadOnlyList<ExcelSheet> sheets, string path, int token)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
         await EnsureWebViewReadyAsync(htmlPreview);
+        if (token != _previewToken) return;
 
-        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.NavigateToString(
-            ExcelPreviewPage.Build(sheets, Path.GetFileName(path), BrushHex("Surface"), BrushHex("Text"))));
+        // Building tens of thousands of HTML cells froze the palette when done on the UI thread.
+        var surface = BrushHex("Surface");
+        var text = BrushHex("Text");
+        var html = await Task.Run(() => ExcelPreviewPage.Build(sheets, Path.GetFileName(path), surface, text));
+        if (token != _previewToken) return;
+
+        await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.NavigateToString(html));
     }
 
-    private async Task ShowCodePreviewAsync(string path)
+    private async Task ShowCodePreviewAsync(string path, int token)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
         await EnsureWebViewReadyAsync(htmlPreview);
+        if (token != _previewToken) return;
 
-        var html = CodePreviewPage.Build(
-            path,
-            BrushHex("Surface"),
-            BrushHex("Text"),
-            BrushHex("Muted"),
-            BrushHex("Accent"));
+        // Build reads and highlights up to 400k characters — off the UI thread.
+        var surface = BrushHex("Surface");
+        var text = BrushHex("Text");
+        var muted = BrushHex("Muted");
+        var accent = BrushHex("Accent");
+        var html = await Task.Run(() => CodePreviewPage.Build(path, surface, text, muted, accent));
+        if (token != _previewToken) return;
 
-        await RevealWhenLoadedAsync(htmlPreview, () => htmlPreview.CoreWebView2.NavigateToString(html));
+        await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.NavigateToString(html));
     }
 
     /// <summary>
@@ -6023,11 +6060,11 @@ public partial class MainWindow : Window
     /// previews supplies real playback controls — scrubbing, volume, speed — so Clip does not need
     /// a media stack of its own.
     /// </summary>
-    private async Task ShowMediaPreviewAsync(string path, bool isVideo)
+    private async Task ShowMediaPreviewAsync(string path, bool isVideo, int token)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
-        htmlPreview.Visibility = Visibility.Visible;
         await EnsureWebViewReadyAsync(htmlPreview);
+        if (token != _previewToken) return;
 
         // A generated page has no file-system origin, so the media is served from a virtual host
         // mapped to the file's own folder rather than referenced as file://.
@@ -6074,7 +6111,10 @@ public partial class MainWindow : Window
             detached: false,
             startTime: resumeAt);
 
-        htmlPreview.CoreWebView2.NavigateToString(html);
+        // Revealed only once the player page has loaded, like every other browser-backed
+        // preview. Showing the pane before navigating flashed the previous page (or a blank
+        // one) over the loading placeholder.
+        await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.NavigateToString(html));
     }
 
     private const string MediaVirtualHost = "clip-media.local";
@@ -6117,32 +6157,35 @@ public partial class MainWindow : Window
         {
             _htmlPreview = null;
             _setHtmlPreviewBackground = null;
+            _webViewReady = null;
         }
     }
 
     /// <summary>
-    /// Throws away whatever the browser pane is showing, the moment the selection moves off it.
-    ///
-    /// The pane is made visible before the next document has finished loading, because the browser
-    /// will not load a document it cannot draw. Left holding the last one, that gap showed the
-    /// previous file's contents under the new file's name and icon — a PDF still on screen while a
-    /// Word document was being opened. Blanking it here means the gap shows nothing, and the
-    /// "Loading preview..." placeholder underneath is what the user sees instead.
+    /// Stops any playing media the moment the pane is hidden, without navigating. The old
+    /// approach navigated to a blank page, but that blank navigation's completion raced the next
+    /// preview's reveal and resurrected an empty pane over it — the collapsed WebView2 never
+    /// shows stale content anyway, because the reveal path only makes it visible after its own
+    /// navigation completes for the currently selected item.
     /// </summary>
-    private void BlankHtmlPreview()
+    private void PauseHtmlPreviewMedia()
     {
         try
         {
-            (_htmlPreview as Microsoft.Web.WebView2.Wpf.WebView2)?.CoreWebView2?
-                .NavigateToString("<html><body></body></html>");
+            _ = (_htmlPreview as Microsoft.Web.WebView2.Wpf.WebView2)?.CoreWebView2?
+                .ExecuteScriptAsync("document.querySelectorAll('video,audio').forEach(m => m.pause())");
         }
         catch
         {
-            // Nothing loaded yet, or the browser is mid-teardown; either way there is nothing stale.
+            // Nothing loaded yet, or the browser is mid-teardown; either way nothing is playing.
         }
     }
 
-    private void HidePreviews()
+    /// <summary>
+    /// pauseMedia is false only when called from RevealWhenLoadedAsync, which is about to show
+    /// the page it just loaded — pausing there would stop the very player being revealed.
+    /// </summary>
+    private void HidePreviews(bool pauseMedia = true)
     {
         CloseExpandedImage();
         TextPreview.Visibility = Visibility.Collapsed;
@@ -6151,7 +6194,10 @@ public partial class MainWindow : Window
         if (_htmlPreview is not null)
         {
             _htmlPreview.Visibility = Visibility.Collapsed;
-            BlankHtmlPreview();
+            if (pauseMedia)
+            {
+                PauseHtmlPreviewMedia();
+            }
         }
 
         PlaceholderPreview.Visibility = Visibility.Collapsed;
@@ -7252,7 +7298,14 @@ public partial class MainWindow : Window
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
         ApplySystemAccentBrushes(useDark);
         Background = (WpfBrush)FindResource("Bg");
-        _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Bg")));
+        _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Surface")));
+
+        // Browser-backed previews bake theme colors into their generated pages, so a theme
+        // change has to rebuild the visible preview rather than leave it in the old palette.
+        if (_selected is not null && IsVisible)
+        {
+            RenderPreview(_selected);
+        }
 
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
         TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
