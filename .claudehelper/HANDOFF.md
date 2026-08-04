@@ -56,9 +56,10 @@ attach case without putting a window on screen.
 
 ## Next steps
 
-1. **Excel previews** — still not working generally. Needs `SaveAs xlHtml` plus a sheet-tab strip
-   inside an `<iframe name="frSheet">` (the `name` is required or sheets redirect). Roughly 7×
-   slower than the PDF route, and the `_files` directories need cleaning up.
+1. **Old-format spreadsheets still go through Excel.** `.xlsx` and `.xlsm` are read straight out of
+   the file by `ExcelWorkbookReader` in about 25ms, which is what made them instant and gave them a
+   real tab strip. `.xls` and `.xlsb` are not zip archives, so they still start Excel and take
+   tens of seconds the first time. Worth doing only if such a file ever actually turns up.
 2. **Excel and Visio ownership is unverified against a running user instance.** Both got their own
    process when measured, so they should read `owned=True` and be unaffected — but only Word and
    PowerPoint were confirmed by experiment.
@@ -68,8 +69,11 @@ attach case without putting a window on screen.
    prints which budget was in force.
 4. **Palette load time with thumbnails and favicons** — the 33ms open / 17ms for 93 rows figure
    predates both, so it is stale.
-5. Two worktree directories under `.claude/worktrees/` are unregistered from git but were locked
-   by another process and could not be deleted. They are inert; remove them whenever.
+5. **Word and PowerPoint are only instant if the palette was open first.** They still need their
+   application, which takes tens of seconds cold, so the export is done in the background while the
+   palette is being read. A document copied and previewed within a few seconds of each other can
+   still wait once. Doing the export at copy time instead would fix that at the cost of starting
+   Office for documents nobody ever looks at, which was considered and rejected.
 
 ## Traps
 
