@@ -190,6 +190,7 @@ Start-Process -FilePath (Join-Path $target 'Clip.exe')
 
     private sealed class GitHubRelease
     {
+        [JsonPropertyName("name")]
         public string? Name { get; set; }
 
         [JsonPropertyName("html_url")]

@@ -60,7 +60,9 @@ internal static class WindowsPdfRenderer
 
         using var page = document.GetPage(0);
 
-        // Page size is in points (1/72 inch), so this turns the requested DPI into real pixels.
+        // Page.Size is in DIPs (1/96 inch), not points, and RenderToStreamAsync additionally
+        // scales DestinationWidth by the display-DPI context — so the output comes out larger
+        // than the requested DPI implies. Harmless for thumbnails (MaxPixels caps it), kept as-is.
         var width = (uint)Math.Clamp(Math.Round(page.Size.Width * dpi / 72.0), 1, MaxPixels);
 
         using var stream = new InMemoryRandomAccessStream();
