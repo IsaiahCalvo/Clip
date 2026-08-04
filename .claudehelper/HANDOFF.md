@@ -1,55 +1,73 @@
 # Clip — handoff
 
-_Last updated 2026-08-03. Branch `ui/grayscale-text-rendering`, all work pushed. The Office
-cold-start fix sits on top of it in `claude/eloquent-bardeen-fac4a5` (commit `bc39743`), not yet
-merged down._
+_Last updated 2026-08-03. **`main` is the trunk and the only branch.** All work pushed._
+
+## Branches
+
+There is one branch now. `main` was 59 commits behind while the real work sat on
+`ui/grayscale-text-rendering`, which is why two worktree sessions picked bases and one picked
+wrong. `main` was fast-forwarded onto that work, and `ui/grayscale-text-rendering`, both
+`claude/*` fix branches and two long-dead `codex/*` branches were deleted after confirming each
+had nothing `main` lacked. Cut new work from `main`.
 
 ## Where things stand
 
 Picture-in-picture, video controls and audio controls are **done** and signed off.
 
-- **Player stays in the browser.** A fully native mini window was built (WPF window, WPF
-  controls, then Windows playback, then a bundled GPU decoder) and **rejected** — it fixed the
-  resize lag but lost the interface, and both decoders were worse than the browser's. All of it
-  was removed. Do not revisit without new information.
-- **Resize jitter** is down to a 3–4px gap between frame and picture, flat across drag speeds
-  (was 8–45px and grew with drag speed). Accepted as-is.
-- **Word previews** now open the cached PDF in the browser viewer instead of rasterising page one,
-  so all pages and the text layer survive — and they work at all, since the rasteriser this
-  machine lacks was the reason they showed a placeholder.
-- **Office preview cold start** is fixed. The old flat 25s cutoff was sized for a warm Word and
-  killed the cold one, so the first preview after a reboot fell back to the placeholder. Now the
-  first export in a process gets 120s and everything after a successful export gets 45s. Measured
-  cold 22.7–26.2s, warm 5.0–13.3s, and a warm Visio floor plan at 26.5s — the old cap would have
-  killed that one too, which is why the warm budget is 45s and not 25s.
-- 376 tests pass.
+- **Player stays in the browser.** A fully native mini window was built and **rejected** — it
+  fixed the resize lag but lost the interface, and both decoders tried were worse than the
+  browser's. Do not revisit without new information.
+- **Resize jitter** is a 3–4px gap between frame and picture, flat across drag speeds. Accepted.
+- **Word previews** open the cached PDF in the browser viewer — all pages, real text layer.
+- **Office previews no longer close the user's PowerPoint.** COM hands PowerPoint callers the
+  instance the user is already working in, and the preview used to hide it and `Quit()` it,
+  discarding unsaved work with no prompt. Ownership is now decided at runtime from whether a
+  process appeared, and `Visible`, `DisplayAlerts` and `Quit` all sit behind it.
+- **The first Office preview after a reboot no longer times out.** One flat 25s budget had to
+  cover both a cold COM start (measured 22.7–26.2s) and a warm export; it is now 120s cold /
+  45s warm, with the flag set only where COM actually completed an export.
+- 379 tests pass on `main`.
 
 ## Verify off screen — never take over the display
 
-Isaiah works on this machine and has escalated repeatedly about it. `--jank-test` does both jobs
-without touching the screen:
+Isaiah works on this machine and has escalated about this repeatedly.
 
 ```
 Clip.exe --jank-test --shot=out.png --audio --show=speeds --w=550 --h=230   # picture of the player
 Clip.exe --jank-test --steps=30 --step-px=16                                # resize smoothness
 ```
 
+For Office work, drive real instances over COM with `Visible = $false` — that reproduces the
+attach case without putting a window on screen.
+
 ## Next steps
 
-1. **Excel previews** — still not working. Needs `SaveAs xlHtml` plus a sheet-tab strip inside an
-   `<iframe name="frSheet">` (the `name` is required or sheets redirect). Roughly 7× slower than
-   the PDF export route, and the `_files` directories need cleaning up.
-2. **Previews may be hijacking an open Word.** `CreateComApplication` goes through the
-   `Word.Application` ProgID, and Office apps are single-instance, so when Isaiah already has Word
-   open this likely attaches to *his* instance — then sets `Visible = false`, suppresses alerts and
-   calls `Quit()`. Unverified, but it would hide and close his Word and could discard unsaved work.
-   Same shape in the Excel and Visio exports. Flagged as its own task.
-3. **Palette load time with thumbnails and favicons** — the 33ms open / 17ms for 93 rows
-   measurement predates both, so it is stale and worth re-taking before deciding anything.
+1. **Excel previews** — still not working generally. Needs `SaveAs xlHtml` plus a sheet-tab strip
+   inside an `<iframe name="frSheet">` (the `name` is required or sheets redirect). Roughly 7×
+   slower than the PDF route, and the `_files` directories need cleaning up.
+2. **Excel and Visio ownership is unverified against a running user instance.** Both got their own
+   process when measured, so they should read `owned=True` and be unaffected — but only Word and
+   PowerPoint were confirmed by experiment.
+3. **The 120s cold budget is deliberately above the measurements**, because killing `WINWORD.EXE`
+   leaves Word's binaries in the OS file cache, so every "cold" number is a floor rather than a
+   worst case. If a real post-reboot preview is ever seen timing out, raise it; the debug log
+   prints which budget was in force.
+4. **Palette load time with thumbnails and favicons** — the 33ms open / 17ms for 93 rows figure
+   predates both, so it is stale.
+5. Two worktree directories under `.claude/worktrees/` are unregistered from git but were locked
+   by another process and could not be deleted. They are inert; remove them whenever.
 
 ## Traps
 
-- Never round-trip a `.cs` file through PowerShell `Get-Content`/`Set-Content` — it double-encodes
-  the player's button glyphs into mojibake. Use Edit/Write.
-- A media library compiled against one FFmpeg major version fails at *run* time with a mismatched
-  one, so the app silently falls back and the decoder looks poor rather than absent.
+- **The preview cache hides everything.** Results are keyed by path + mtime + size under
+  `%LOCALAPPDATA%\Clip\document-previews`, so re-previewing the same document never touches COM.
+  Copy the file to a fresh name for every A/B run or you will measure nothing.
+- **The timeout is not a leak guard**, whatever the code comment implies. On timeout the STA
+  thread is abandoned, not killed, so a genuine Office hang leaks regardless of the number. What
+  the timeout controls is how long the pane waits before falling back.
+- **Never round-trip a `.cs` file through PowerShell `Get-Content`/`Set-Content`** — it
+  double-encodes the media player's button glyphs into mojibake. Use Edit/Write.
+- **A clean auto-merge is not a correct merge.** Both Office branches were reported as
+  conflict-free; the ownership branch's stale base meant git happily produced a tree that did not
+  compile, and the failure was the only thing standing between that and Word and Excel silently
+  keeping the ungated COM path.
