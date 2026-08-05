@@ -1,8 +1,142 @@
 # Clip — handoff
 
-_Last updated 2026-08-04. **`main` is the trunk and the only branch.** All work pushed._
+_Last updated 2026-08-05. **`main` is the trunk.** All work pushed. The installed copy has **not**
+been updated — see "Open latency" for the one command that does it._
+
+## Open latency (2026-08-05)
+
+**Cold open is 69–76% faster on every page. Warm open is 6–29% faster. The comparison against
+Raycast could not be taken — the session was locked all night, and that measurement needs real
+keystrokes on an unlocked desktop. The command is written and ready; it takes about a minute.**
+
+### The numbers
+
+Five cold and ten warm samples per page, off screen, against a frozen fixture history of 146 items.
+Cold is the first open in a fresh process; warm is a reopen with the list marked stale as though a
+clip had arrived, which is why the palette is usually being opened at all.
+
+| page | cold median | cold p95 | warm median | warm p95 | preview ready |
+|---|---|---|---|---|---|
+| palette | 518 → **159** | 534 → **164** | 100 → **94** | 128 → **104** | — |
+| preview-text | 567 → **160** | 877 → **165** | 121 → **102** | 150 → **116** | 217 → **178** |
+| preview-image | 583 → **156** | 619 → **173** | 112 → **95** | 153 → **110** | 397 → 433 |
+| preview-code | 608 → **150** | 724 → **160** | 190 → **135** | 248 → **148** | 1028 → **771** |
+| preview-html | 555 → **144** | 571 → **148** | 173 → **145** | 197 → **171** | 678 → 683 |
+| preview-textfile | 533 → **160** | 688 → **168** | 117 → **87** | 143 → **97** | — |
+| settings | 541 → **167** | 624 → **181** | 117 → **87** | 138 → **102** | 276 → **225** |
+
+All milliseconds. Raw samples are in `.claudehelper/perf/{baseline,round1,round2,round3}.json`.
+
+The p95 column is the bigger story than the median: preview-text's worst case went from 877ms to
+165ms. Cold opens are now boringly consistent (145–180ms across every page and every sample),
+where before they ranged 484–929ms.
+
+### What "open" means here
+
+The clock starts when the hotkey message arrives and stops when **a keystroke would be handled and
+find the window usable**: shown and opaque, search box focused, a screenful of rows present. Rows
+past the fold are deliberately not waited for — nobody can see them and deferring them is correct.
+
+Readiness is checked at **Input** dispatcher priority, because that is where a key press sits in the
+queue. This detail is worth about 60ms: checking at Background (the obvious first choice) waits
+behind the deferred rows and the preview and reports the window as unusable while it would happily
+accept typing.
+
+### What got faster, and why
+
+1. **Rows no longer render in one uninterruptible cascade.** Adding rows re-lays out, layout raises
+   `ScrollChanged`, and the handler appended the next batch straight from that event. Because layout
+   runs at Render priority — above Input — the whole 146-row list rendered without yielding, and the
+   search box did not get focus until it finished: 377ms into a cold open. Batches now go back
+   through the dispatcher, which is what batching was for.
+2. **The list is rendered while the window is still hidden at startup.** The startup pre-render built
+   the frame but left the list empty, so the first Alt+V paid for the query and for building every
+   visible row. Rows are expensive on a cold process — the first file row measured **193ms** and the
+   first image row **49ms**, because a row resolves its icon by asking the shell for the file type's
+   icon or by decoding the picture itself. That was most of a cold open. This is the single biggest
+   win.
+3. **The first TextBox focus is paid at startup.** Focusing a TextBox the first time costs ~100ms
+   while WPF brings up the text services behind it. It now happens during the one moment at startup
+   when the window is really shown (off screen, about to be concealed). It has to be there: focusing
+   a control in a *hidden* window returns immediately and initialises nothing — an earlier attempt
+   measured `focusMs=0` and changed nothing.
+
+### What did not get faster, and why
+
+- **Warm open barely moved (100 → 94ms on the palette).** It never paid the costs above. What is
+  left, measured: `Show()` itself ~19ms, ~39ms laying out the first screenful before the Input queue
+  is reached, ~15ms in the focus call. The `Show()` cost is the deliberate `Hide()` in
+  `ConcealPalette` — it exists to avoid a stale black surface (a DWM glitch), so it is not free to
+  remove.
+- **Preview-ready for code and HTML is still 680–770ms.** The palette is interactive at ~145ms and
+  the preview fills in after; this is a separate problem from open latency and was not investigated
+  to root cause. It is not the WebView2 being torn down between opens — that already has a 3-minute
+  idle timer. Best remaining lead.
+- **Two attempts produced no gain and were reverted.** Dropping the first render batch to 8 to match
+  the query limit *doubled* the open — date headers consume entries, so it built only 7 rows and the
+  list waited for the next batch. Requesting a 1ms timer resolution to sharpen the poll did nothing,
+  because the ~20ms it was aimed at is real dispatcher work, not timer granularity.
+
+### Raycast — not measured, and why
+
+The real goal was matching or beating Raycast, not the 50ms proxy. That number was **not obtained**:
+
+- The session was locked all night. Synthetic keystrokes go to the input desktop, which while locked
+  is the secure desktop, so neither app would have received them. Reporting silence as a slow
+  application would have been worse than reporting nothing.
+- Raycast's `raycast://` deeplink *does* work locked, but it costs **1438ms** end to end (384ms of
+  that inside `ShellExecute` before the process is even reached). That is MSIX activation, not its
+  hotkey path, so it is not a usable comparison — it would flatter Clip enormously.
+- Its hotkey could not be driven by message instead. Raycast owns Alt+Shift+V through
+  `RegisterHotKey` (confirmed: registering it returns `ERROR_HOTKEY_ALREADY_REGISTERED`), but
+  posting `WM_HOTKEY` to every one of its windows and threads with ids 0–15, across both its
+  processes, never opened it.
+
+**Useful thing found while trying:** Raycast hides its window by keeping it mapped at layered
+**alpha 0** and flipping it to 255 in one step, no fade. That is a precise, cheap, poll-able "it is
+on screen now" signal, and it is what `Measure-VsRaycast.ps1` uses.
+
+To take the measurement, on an unlocked session, keyboard free for ~30 seconds:
+
+```bash
+pwsh -File tools/Measure-VsRaycast.ps1 -Runs 10
+```
+
+It presses the real Alt+V and Alt+Shift+V and watches each window by its own hiding mechanism. The
+comparison is deliberately generous to Raycast: its alpha flip is stamped when it *decides* to show,
+while Clip must additionally have painted — and Clip's own harness is stricter still, waiting for
+the search box to take focus. If Clip wins there, it wins while being judged more harshly.
+
+### Re-running the harness
+
+```bash
+dotnet build Clip.sln -c Release
+pwsh -File tools/New-BenchFixture.ps1              # once; -Force to rebuild
+pwsh -File tools/Measure-OpenLatency.ps1 -Label whatever
+```
+
+Do not rebuild the fixture between an optimization and its re-measurement — that invalidates the
+comparison. Everything runs off screen; nothing takes the display.
+
+### Two traps this work walked into
+
+- **The fixture builder seeded 145 items into the real clipboard history** on its first run, because
+  `CLIP_ROOT` silently did nothing: the shell, the watcher and the store each rebuilt
+  `%LocalAppData%\Clip` themselves rather than asking `ClipStoragePaths`. All 145 were removed and
+  Isaiah's 139 items were untouched, but the lesson stands: **prove a redirect seam before bulk
+  writes**. The builder now writes one probe item and aborts if it lands in the wrong place.
+  (`Environment.GetFolderPath(LocalApplicationData)` also ignores the `LOCALAPPDATA` env var — it
+  asks the shell — so redirecting via the environment alone is impossible.)
+- **Pre-warming the rows quietly broke selection.** With rows already present the first open skipped
+  the reload, and the reload was what selected the first item — so the palette opened with nothing
+  selected and a blank preview. The bench did not catch it (the palette page ignores selection);
+  running the real shell through `--open-test` did. Fixed in b04e4e9. **Off-screen benchmarks measure
+  time, not correctness — run `--open-test` and read the trace after any change to the open path.**
 
 ## Branches
+
+The 2026-08-05 open-latency work was done on `perf/open-latency` and merged into `main`. Four
+commits, each revertable on its own: the harness, the baseline, and one per optimization round.
 
 There is one branch now. `main` was 59 commits behind while the real work sat on
 `ui/grayscale-text-rendering`, which is why two worktree sessions picked bases and one picked
@@ -72,8 +206,13 @@ Isaiah works on this machine and has escalated about this repeatedly.
 ```
 Clip.exe --jank-test --shot=out.png --audio --show=speeds --w=550 --h=230   # picture of the player
 Clip.exe --jank-test --steps=30 --step-px=16                                # resize smoothness
-Clip.exe --open-test                                # palette open timings, cold + warm, stderr + shell.log
+Clip.exe --open-test                                # one cold + one warm open, read the trace
+Clip.exe --open-bench --page=palette --runs=10      # N opens, every sample + stage breakdown
 ```
+
+`--open-test` is the correctness check (does it select, does the preview render); `--open-bench`
+is the timing one. Use `tools/Measure-OpenLatency.ps1` rather than `--open-bench` directly unless
+you want the raw stages — the script handles cold-vs-warm and the median/p95.
 
 For Office work, drive real instances over COM with `Visible = $false` — that reproduces the
 attach case without putting a window on screen.
@@ -93,14 +232,15 @@ attach case without putting a window on screen.
    leaves Word's binaries in the OS file cache, so every "cold" number is a floor rather than a
    worst case. If a real post-reboot preview is ever seen timing out, raise it; the debug log
    prints which budget was in force.
-4. **Palette load time with thumbnails and favicons** — measured 2026-08-04 (Release build,
-   off-screen `--open-test`, real history: 374 items = 378 render entries with date headers).
-   Cold: palette shown 80–88ms, first rows painted ~560–580ms, recent set of 8 rows complete
-   ~655–670ms, background full-history load done at 1.1–1.35s (the queries themselves are
-   20–33ms). Warm re-open: 45–68ms, rows already rendered, no reload. Visible rows render
-   eagerly and the rest append on scroll, so a full render of all 378 never happens without
-   scrolling. The old 33ms open / 17ms for 93 rows figure predated thumbnails and favicons and
-   is retired.
+4. **RETIRED 2026-08-05 — the palette load figures here are superseded.** They were single runs of
+   `--open-test` read off the trace, and the trace lines each start their own stopwatch, so they
+   never added up to an open. See "Open latency" at the top for the replacement, which measures one
+   clock end to end with a median and a p95. Left here only so the old numbers are not mistaken for
+   current ones.
+
+   Still open from that work, and now quantified: **preview-ready for code and HTML is 680–770ms**
+   while the palette itself is interactive at ~145ms. Not root-caused; it is not WebView2 teardown
+   (3-minute idle timer). Best next lead if open latency is revisited.
 5. **Word and PowerPoint are only instant if the palette was open first.** They still need their
    application, which takes tens of seconds cold, so the export is done in the background while the
    palette is being read. A document copied and previewed within a few seconds of each other can
