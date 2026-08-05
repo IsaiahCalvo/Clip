@@ -684,7 +684,11 @@ public partial class MainWindow : Window
     private const int PreviewImageDecodePixels = 900;
     private const int MaxCachedRasterImages = 256;
     private const int TextPreviewCharacterLimit = 80_000;
-    private const int InitialRenderEntryBatch = 3;
+    // A screenful. Three was enough only because appending used to cascade through the layout pass
+    // and fill the rest before anyone looked; now that batches yield, three rows is what the open
+    // actually shows, and the rest arrives a dispatcher turn later. Rendering what fits costs a few
+    // milliseconds and is the difference between an open that looks finished and one that fills in.
+    private const int InitialRenderEntryBatch = 12;
     private const int DeferredRenderEntryBatch = 36;
     private const int InitialSummaryFirstPaintLimit = 8;
     private const int DebugOpenSurfaceMaxAttempts = 80;
@@ -919,6 +923,10 @@ public partial class MainWindow : Window
             {
                 _ = Dispatcher.BeginInvoke(new Action(() => ShowPalette()), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             }
+            else
+            {
+                WarmFirstPaintWhileHidden();
+            }
 
             if (!string.IsNullOrWhiteSpace(TrayStartupAction))
             {
@@ -1148,10 +1156,13 @@ public partial class MainWindow : Window
         {
             // Off screen there is no foreground to take, but typing has to land in the search box
             // for the window to count as open, and the wait for it is part of what is being timed.
+            BenchMarks.Mark("focus-queued");
             _ = Dispatcher.BeginInvoke(
                 new Action(() =>
                 {
+                    BenchMarks.Mark("focus-start");
                     SearchBox.Focus();
+                    BenchMarks.Mark("focus-searchbox");
                     Keyboard.Focus(SearchBox);
                     BenchMarks.Mark("focused");
                 }),
@@ -1645,6 +1656,48 @@ public partial class MainWindow : Window
             ConcealPalette("outside-click");
             ShellLog.Info("palette hidden on outside click");
         }
+    }
+
+    /// <summary>
+    /// Renders the rows the first open will show, while the window is still hidden.
+    ///
+    /// Pre-rendering the window at startup built the frame but left the list empty, so the first
+    /// Alt+V still paid for the query and for building every visible row — and building a row is
+    /// not cheap on a cold process: the first file row measured 193ms and the first image row 49ms,
+    /// because a row resolves its icon by asking the shell for the file type's icon or by decoding
+    /// the picture itself. That is most of what a cold open cost.
+    ///
+    /// Doing it here spends the same work while the machine is idle after login, minutes before
+    /// anyone presses anything, and it stays correct because it changes nothing about staleness:
+    /// a clip arriving marks the list dirty exactly as before, and the next open re-queries. All
+    /// this removes is the case where the first open rebuilds a list that nothing had changed.
+    ///
+    /// Runs at ApplicationIdle so it cannot delay startup or compete with anything the user does.
+    /// </summary>
+    private void WarmFirstPaintWhileHidden()
+    {
+        _ = Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                if (_isClosing || _paletteOpen || _rows.Count > 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    var watch = Stopwatch.StartNew();
+                    QueueLoadItems(selectFirst: false, reason: "startup-warm");
+                    ShellLog.Info($"first paint warmed while hidden elapsedMs={watch.ElapsedMilliseconds} rows={_rows.Count}");
+                }
+                catch (Exception ex)
+                {
+                    // A warm-up that fails must cost nothing but the warm-up: the open path is
+                    // unchanged and will do the work itself.
+                    ShellLog.Error(ex, "first paint warm failed");
+                }
+            }),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
     private void MoveOffscreen()
@@ -2908,7 +2961,7 @@ public partial class MainWindow : Window
             _deferredRenderGeneration = generation;
             _deferredRenderReason = reason;
             _deferredRenderWatch = watch;
-            _ = Dispatcher.BeginInvoke(new Action(() => AppendDeferredRowsIfNeeded(force: ListScroll.ScrollableHeight <= 0)), System.Windows.Threading.DispatcherPriority.Background);
+            QueueDeferredAppend();
         }
 
         BenchMarks.Mark("rows-first");
@@ -2969,6 +3022,38 @@ public partial class MainWindow : Window
         return end;
     }
 
+    /// <summary>
+    /// Asks for the next batch of rows on a later dispatcher turn, and only ever has one such ask
+    /// outstanding.
+    ///
+    /// Batching the rows is supposed to leave the thread free between batches. It did not: adding
+    /// rows changes the layout, laying out raises ScrollChanged, and the handler appended the next
+    /// batch straight from that event. Because layout runs at Render priority — above Input — the
+    /// whole list rendered in one unbroken cascade that outranked anything waiting to run, and the
+    /// search box did not get focus until it was over: 377ms into a cold open. Going back through
+    /// the queue for each batch restores the yield the batching was for.
+    /// </summary>
+    private void QueueDeferredAppend()
+    {
+        if (_deferredAppendQueued || _deferredRenderEntries.Count == 0)
+        {
+            return;
+        }
+
+        _deferredAppendQueued = true;
+        _ = Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                _deferredAppendQueued = false;
+                // Re-read rather than capture: whether the list can scroll yet decides whether more
+                // rows are needed, and it changes as the batches land.
+                AppendDeferredRowsIfNeeded(force: ListScroll.ScrollableHeight <= 0);
+            }),
+            System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private bool _deferredAppendQueued;
+
     private void AppendDeferredRowsIfNeeded(bool force = false)
     {
         if (_deferredRenderEntries.Count == 0 || _deferredRenderIndex >= _deferredRenderEntries.Count)
@@ -2988,10 +3073,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        BenchMarks.Mark("deferred-batch");
         _deferredRenderIndex = AddRenderEntries(_deferredRenderEntries, _deferredRenderIndex, DeferredRenderEntryBatch);
         if (_deferredRenderIndex < _deferredRenderEntries.Count)
         {
             ShellLog.Info($"render items appended reason={_deferredRenderReason} rows={_rows.Count} next={_deferredRenderIndex}/{_deferredRenderEntries.Count}");
+            // Keep filling until the list can scroll, otherwise there is nothing to scroll and no
+            // scroll event to ask for the rest.
+            QueueDeferredAppend();
             return;
         }
 
@@ -7906,7 +7995,9 @@ public partial class MainWindow : Window
 
     private void OnListScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        AppendDeferredRowsIfNeeded();
+        // Never append straight from the layout pass that raised this: appending re-lays out, which
+        // raises it again, and the list renders itself in one cascade nothing else can interrupt.
+        QueueDeferredAppend();
     }
 
     private void OnDateDropClick(object sender, RoutedEventArgs e)

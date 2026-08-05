@@ -38,6 +38,17 @@ internal static class BenchMarks
         Stamps.Add(new Stage(stage, clock.Elapsed.TotalMilliseconds));
     }
 
+    /// <summary>Stamps a stage the first time only — for conditions polled in a loop.</summary>
+    public static void MarkOnce(string stage)
+    {
+        if (!Enabled || When(stage) is not null)
+        {
+            return;
+        }
+
+        Mark(stage);
+    }
+
     public static double Elapsed => _clock?.Elapsed.TotalMilliseconds ?? 0;
 
     /// <summary>When a stage first happened, or null if it never did.</summary>

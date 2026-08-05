@@ -74,6 +74,13 @@ internal static class OpenBenchHarness
             await Task.Delay(settleMs);
         }
 
+        // Every stamp of the last run, in order, so the sequence can be read rather than inferred
+        // from priorities — the harness's own polling sits in the same queue as the work it watches,
+        // and an ordering that looks impossible is usually the harness interfering.
+        Report("stages: " + string.Join(
+            "  ",
+            BenchMarks.Taken.Select(s => $"{s.Name}={s.Ms:F1}")));
+
         Write(output, page, samples);
         ShellLog.Flush();
     }
@@ -87,9 +94,20 @@ internal static class OpenBenchHarness
         // something wait for the palette first and then time the selection on the same clock.
         var openMs = await WaitForAsync(
             window,
-            () => window.BenchWindowShown
-                && window.BenchSearchFocused
-                && window.BenchRenderedRows >= Math.Min(window.BenchTotalItems, RowsForAScreenful),
+            () =>
+            {
+                // Stamped separately so a slow open says which of the three conditions it waited on
+                // rather than leaving it to be inferred.
+                var shown = window.BenchWindowShown;
+                var focused = window.BenchSearchFocused;
+                var rows = window.BenchRenderedRows >= Math.Min(window.BenchTotalItems, RowsForAScreenful);
+
+                if (shown) BenchMarks.MarkOnce("cond-shown");
+                if (focused) BenchMarks.MarkOnce("cond-focused");
+                if (rows) BenchMarks.MarkOnce("cond-rows");
+
+                return shown && focused && rows;
+            },
             timeoutMs);
 
         double? readyMs = null;
