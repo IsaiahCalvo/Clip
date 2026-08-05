@@ -913,6 +913,15 @@ public partial class MainWindow : Window
 
             MoveOffscreen();
             Opacity = 1;
+
+            // Focus the search box during the one moment at startup when the window is really
+            // shown, off screen and about to be hidden again. The first focus of a TextBox costs
+            // about 100ms while WPF brings up the text services behind it, and that cost lands on
+            // whichever open happens first unless it is paid here. It has to happen while the
+            // window is visible: focusing a control in a hidden window returns immediately and
+            // initialises nothing, which is what an earlier attempt at this measured (focusMs=0).
+            SearchBox.Focus();
+
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
             ConcealPalette("startup");
             WarmMouseScreenCache();
