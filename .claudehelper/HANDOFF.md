@@ -42,15 +42,19 @@ Five cold and ten warm samples per page, off screen, against a frozen fixture hi
 Cold is the first open in a fresh process; warm is a reopen with the list marked stale as though a
 clip had arrived, which is why the palette is usually being opened at all.
 
-| page | cold median | cold p95 | warm median | warm p95 | preview ready |
-|---|---|---|---|---|---|
-| palette | 518 → **159** | 534 → **164** | 100 → **94** | 128 → **104** | — |
-| preview-text | 567 → **160** | 877 → **165** | 121 → **102** | 150 → **116** | 217 → **178** |
-| preview-image | 583 → **156** | 619 → **173** | 112 → **95** | 153 → **110** | 397 → 433 |
-| preview-code | 608 → **150** | 724 → **160** | 190 → **135** | 248 → **148** | 1028 → **771** |
-| preview-html | 555 → **144** | 571 → **148** | 173 → **145** | 197 → **171** | 678 → 683 |
-| preview-textfile | 533 → **160** | 688 → **168** | 117 → **87** | 143 → **97** | — |
-| settings | 541 → **167** | 624 → **181** | 117 → **87** | 138 → **102** | 276 → **225** |
+| page | cold median | cold p95 | warm median | preview ready |
+|---|---|---|---|---|
+| palette | 518 → **163** | 534 → **174** | 100 → **100** | — |
+| preview-text | 567 → **172** | 877 → **177** | 121 → **102** | 217 → **194** |
+| preview-image | 583 → **160** | 619 → **172** | 112 → **96** | 397 → 354 |
+| preview-code | 608 → **159** | 724 → **182** | 190 → **153** | 1028 → **176** |
+| preview-html | 555 → **164** | 571 → **190** | 173 → **168** | 678 → **207** |
+| preview-textfile | 533 → **159** | 688 → **166** | 117 → **103** | — |
+| settings | 541 → **183** | 624 → **205** | 117 → **120** | 276 → **304** |
+
+The preview column is the headline of the second pass: a code preview appears in 176 ms instead of
+just over a second. Later rounds were taken on a busier machine than the baseline, so cold and warm
+drifted a little; treat differences under ~20 ms as noise and see the warning below.
 
 All milliseconds. Raw samples are in `.claudehelper/perf/{baseline,round1,round2,round3}.json`.
 
@@ -82,7 +86,15 @@ accept typing.
    first image row **49ms**, because a row resolves its icon by asking the shell for the file type's
    icon or by decoding the picture itself. That was most of a cold open. This is the single biggest
    win.
-3. **The first TextBox focus is paid at startup.** Focusing a TextBox the first time costs ~100ms
+3. **A preview already on screen is not rendered again.** Reopening re-rendered the selected item's
+   preview unconditionally, on the stated grounds that concealing tears the WebView2 down — it does
+   not, it starts a three-minute idle timer. So a reopen navigated to the page it was already
+   showing. Reusing it takes a code preview from ~900–1240 ms to ~180 ms and an HTML one from
+   ~480–1180 ms to ~135–205 ms, makes the open itself ~12 ms quicker (the navigation is no longer
+   competing for the UI thread), and stops discarding a video's position on every reopen. Guarded on
+   same item + browser alive *and visible* + the file's path/size/mtime unchanged, and cleared on
+   theme switch since the generated pages bake the colours in.
+4. **The first TextBox focus is paid at startup.** Focusing a TextBox the first time costs ~100ms
    while WPF brings up the text services behind it. It now happens during the one moment at startup
    when the window is really shown (off screen, about to be concealed). It has to be there: focusing
    a control in a *hidden* window returns immediately and initialises nothing — an earlier attempt
@@ -169,6 +181,17 @@ dotnet build Clip.sln -c Release
 pwsh -File tools/New-BenchFixture.ps1              # once; -Force to rebuild
 pwsh -File tools/Measure-OpenLatency.ps1 -Label whatever
 ```
+
+**Look at the pane, do not just time it.** A blank preview is extremely fast, so any change that
+skips work needs a picture, not a number:
+
+```bash
+Clip.exe --open-bench --page=preview-code --runs=3 --dump-preview=out.png
+```
+
+renders the pane straight from the browser (no display taken). It needs the occlusion flags — a
+throttled browser has no frame to give, which is how a 0-byte PNG was produced — and must run before
+the palette is concealed; both are handled when `--dump-preview` is passed.
 
 Do not rebuild the fixture between an optimization and its re-measurement — that invalidates the
 comparison. Everything runs off screen; nothing takes the display.
