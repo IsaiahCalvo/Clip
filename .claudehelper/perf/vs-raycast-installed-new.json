@@ -1,0 +1,40 @@
+﻿{
+    "Label":  "vs-raycast-installed-new",
+    "TakenUtc":  "2026-08-05T15:21:03.9226788Z",
+    "Commit":  "36f1b47",
+    "Runs":  12,
+    "SessionLocked":  true,
+    "ClipExe":  "C:\\Users\\icalvo\\AppData\\Roaming\\Programs\\Clip\\Clip.exe",
+    "ClipMedianMs":  100.5,
+    "ClipP95Ms":  147.8,
+    "RaycastMedianMs":  108.5,
+    "RaycastP95Ms":  126.8,
+    "ClipSamples":  [
+                        100.6196,
+                        93.9325,
+                        107.3785,
+                        137.1028,
+                        100.3654,
+                        110.2749,
+                        91.0834,
+                        102.3547,
+                        160.9572,
+                        97.7143,
+                        99.2583,
+                        73.4882
+                    ],
+    "RaycastSamples":  [
+                           105.2779,
+                           107.6855,
+                           106.119,
+                           99.1717,
+                           105.807,
+                           109.4048,
+                           112.1227,
+                           119.1472,
+                           112.6031,
+                           136.1918,
+                           106.3648,
+                           114.0909
+                       ]
+}

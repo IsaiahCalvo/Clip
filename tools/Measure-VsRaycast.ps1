@@ -180,7 +180,17 @@ public static class OpenRace
     /// attempt - the harness, not the application. Confirming the closed state before each press
     /// removes them.
     /// </summary>
-    public static bool WaitHidden(IntPtr[] windows, bool raycast, int timeoutMs)
+    /// <summary>
+    /// Closes the window using the application's own toggle hotkey, and waits until it is gone.
+    ///
+    /// Escape was the obvious way and it does not work here. A posted WM_KEYDOWN never reaches
+    /// WPF's focused element, and a real Escape goes to whatever has focus — which, with the lock
+    /// screen up, is never the palette, because it cannot take the foreground. The registered
+    /// hotkey does not care about focus, which is exactly why it works. Getting this wrong left the
+    /// palette stuck open and turned every other run into a "miss", because the next press toggled
+    /// it shut instead of opening it.
+    /// </summary>
+    public static bool WaitHidden(IntPtr[] windows, bool raycast, ushort[] mods, ushort key, int timeoutMs)
     {
         long start = Now();
         int nudges = 0;
@@ -188,13 +198,19 @@ public static class OpenRace
         {
             if (!Shown(windows, raycast)) return true;
 
-            // Ask once, then wait. Re-sending on every pass of a tight loop posts thousands of
-            // Escapes a second into both applications' message queues, which does not close them
-            // any sooner and wrecks the timings of every run after: medians went from 40ms to 92ms
-            // and the worst case from 47ms to 624ms purely from the harness thrashing.
-            if (nudges == 0 || MsSince(start) > nudges * 400) { DismissAll(windows); nudges++; }
+            // Ask once, then wait. Re-sending on every pass of a tight loop floods both
+            // applications' message queues, which does not close them any sooner and wrecks the
+            // timings of every run after: medians went from 40ms to 92ms and the worst case from
+            // 47ms to 624ms purely from the harness thrashing.
+            if (nudges == 0 || MsSince(start) > nudges * 500)
+            {
+                Press(mods, key);
+                nudges++;
+            }
+
             Sleep(10);
         }
+
         return false;
     }
 
@@ -243,7 +259,7 @@ foreach ($probe in @(
     @{ Name = "Clip"; Windows = $clipWindows; Mods = @([uint16]$VK_MENU); Ray = $false },
     @{ Name = "Raycast"; Windows = $rayWindows; Mods = @([uint16]$VK_MENU, [uint16]$VK_SHIFT); Ray = $true })) {
     $t = [OpenRace]::Race($probe.Windows, $probe.Mods, [uint16]$VK_V, $probe.Ray, 4000)
-    [OpenRace]::DismissAll($probe.Windows)
+    [OpenRace]::WaitHidden($probe.Windows, $probe.Ray, $probe.Mods, [uint16]$VK_V, 3000) | Out-Null
     Start-Sleep -Milliseconds 700
     if ($t -lt 0) {
         throw "$($probe.Name) did not open from a synthetic key press, so nothing can be measured. Its hotkey may be unregistered, remapped, or blocked."
@@ -255,17 +271,20 @@ foreach ($probe in @(
 $clipTimes = @(); $rayTimes = @()
 
 for ($i = 1; $i -le $Runs; $i++) {
-    Start-Sleep -Milliseconds $SettleMs
-    $null = [OpenRace]::WaitHidden($clipWindows, $false, 3000)
-    $c = [OpenRace]::Race($clipWindows, @([uint16]$VK_MENU), [uint16]$VK_V, $false, 4000)
-    if ($c -ge 0) { $clipTimes += $c }
-    [OpenRace]::DismissAll($clipWindows)
+    $clipMods = @([uint16]$VK_MENU)
+    $rayMods = @([uint16]$VK_MENU, [uint16]$VK_SHIFT)
 
     Start-Sleep -Milliseconds $SettleMs
-    $null = [OpenRace]::WaitHidden($rayWindows, $true, 3000)
-    $r = [OpenRace]::Race($rayWindows, @([uint16]$VK_MENU, [uint16]$VK_SHIFT), [uint16]$VK_V, $true, 4000)
+    $null = [OpenRace]::WaitHidden($clipWindows, $false, $clipMods, [uint16]$VK_V, 3000)
+    $c = [OpenRace]::Race($clipWindows, $clipMods, [uint16]$VK_V, $false, 4000)
+    if ($c -ge 0) { $clipTimes += $c }
+    [OpenRace]::WaitHidden($clipWindows, $false, $clipMods, [uint16]$VK_V, 3000) | Out-Null
+
+    Start-Sleep -Milliseconds $SettleMs
+    $null = [OpenRace]::WaitHidden($rayWindows, $true, $rayMods, [uint16]$VK_V, 3000)
+    $r = [OpenRace]::Race($rayWindows, $rayMods, [uint16]$VK_V, $true, 4000)
     if ($r -ge 0) { $rayTimes += $r }
-    [OpenRace]::DismissAll($rayWindows)
+    [OpenRace]::WaitHidden($rayWindows, $true, $rayMods, [uint16]$VK_V, 3000) | Out-Null
 
     Write-Host ("  run {0,2}: clip {1,7} ms   raycast {2,7} ms" -f $i,
         $(if ($c -ge 0) { "{0:F1}" -f $c } else { "miss" }),
