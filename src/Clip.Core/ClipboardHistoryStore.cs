@@ -37,9 +37,7 @@ public sealed class ClipboardHistoryStore
     {
         _enableLoadMaintenance = enableLoadMaintenance;
         _retainLoadedItems = retainLoadedItems;
-        RootPath = rootPath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            AppDataFolderName);
+        RootPath = rootPath ?? ClipStoragePaths.Root;
         ContentRootPath = string.IsNullOrWhiteSpace(contentRootPath)
             ? Path.Combine(RootPath, ContentFolderName)
             : contentRootPath;

@@ -218,6 +218,8 @@ internal static class Program
                     return AddPerfText(args);
                 case "perf-add-file":
                     return AddPerfFile(args);
+                case "perf-add-image":
+                    return AddPerfImage(args);
                 default:
                     PrintHelp();
                     return 1;
@@ -438,6 +440,31 @@ internal static class Program
         {
             Kind = ClipboardItemKind.Files,
             FilePaths = [path],
+            Preview = Path.GetFileName(path),
+            SourceApplication = "ClipPerf"
+        });
+        Console.WriteLine(item.Id);
+        return 0;
+    }
+
+    /// <summary>
+    /// Seeds a pasted-image item for the timing harness. A screenshot is the most expensive thing
+    /// the preview pane routinely decodes, and it takes a different path from a .png dropped in as
+    /// a file, so a fixture history that only has file items never measures it.
+    /// </summary>
+    private static int AddPerfImage(string[] args)
+    {
+        var path = args.Length > 1 ? args[1] : string.Empty;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return 2;
+        }
+
+        var item = Store.AddOrUpdate(new ClipboardHistoryItem
+        {
+            Kind = ClipboardItemKind.Image,
+            AssetPath = path,
+            AssetSizeBytes = new FileInfo(path).Length,
             Preview = Path.GetFileName(path),
             SourceApplication = "ClipPerf"
         });
@@ -878,14 +905,10 @@ internal sealed class WatcherSettings
     public PasteFormatPreference DefaultPasteFormat { get; init; } = PasteFormatPreference.PlainText;
     public WatcherPrivacySettings Privacy { get; init; } = new();
 
-    public static string SettingsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
-        "settings.json");
+    public static string SettingsPath => Clip.Core.ClipStoragePaths.SettingsPath;
 
     private static string DefaultClipboardFolderPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
+        Clip.Core.ClipStoragePaths.Root,
         ClipboardFolderName);
 
     public string EffectiveClipboardFolderPath() => string.IsNullOrWhiteSpace(ClipboardFolderPath) ? DefaultClipboardFolderPath : ClipboardFolderPath;

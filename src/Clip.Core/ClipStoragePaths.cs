@@ -11,7 +11,15 @@ public static class ClipStoragePaths
     // parallel test classes from seeing each other's override. Never set in production.
     internal static readonly AsyncLocal<string?> RootOverride = new();
 
-    internal static string Root => RootOverride.Value ?? Path.Combine(
+    // Harness seam: the same redirect for a whole process rather than one async context, so a
+    // timing run can be pointed at a frozen copy of a history and measure the same work every
+    // time. Windows resolves LocalApplicationData from the shell, not the environment, so an
+    // env var is the only way to move the tree without touching the real one. Never set in
+    // production.
+    private static readonly string? EnvironmentRoot =
+        Environment.GetEnvironmentVariable("CLIP_ROOT") is { Length: > 0 } configured ? configured : null;
+
+    public static string Root => RootOverride.Value ?? EnvironmentRoot ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Clip");
 

@@ -55,6 +55,24 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // Same idea as the open-test, but repeated: it opens a named page many times and reports
+        // every sample so a median and a p95 can be taken. Also runs beside a live Clip.
+        if (OpenBenchHarness.Requested(e.Args))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            ShellLog.Mirror = line => Console.Error.WriteLine(line);
+            _window = new MainWindow
+            {
+                PaletteSessionMode = true,
+                PaletteSessionStartHidden = true,
+                OpenTestOffscreen = true,
+            };
+            _window.InitializeShell();
+            _ = OpenBenchHarness.RunAsync(_window, e.Args).ContinueWith(run =>
+                Dispatcher.Invoke(() => Shutdown(run.Status == TaskStatus.RanToCompletion ? 0 : 4)));
+            return;
+        }
+
         _singleInstanceMutex = new Mutex(true, Clip.Watcher.Program.RichPaletteSingleInstanceMutexName, out _ownsSingleInstanceMutex);
         if (!_ownsSingleInstanceMutex)
         {

@@ -88,13 +88,11 @@ internal sealed class ClipShellSettings
     public List<ClipAppOverride> AppOverrides { get; set; } = new();
 
     public static string DefaultClipboardFolderPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
+        Clip.Core.ClipStoragePaths.Root,
         ClipboardFolderName);
 
     public static string PreviousDefaultClipboardFolderPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
+        Clip.Core.ClipStoragePaths.Root,
         PreviousClipboardFolderName);
 
     public string EffectiveClipboardFolderPath()
@@ -121,10 +119,7 @@ internal sealed class ClipShellSettings
         AppOverrides = new List<ClipAppOverride>();
     }
 
-    public static string SettingsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Clip",
-        "settings.json");
+    public static string SettingsPath => Clip.Core.ClipStoragePaths.SettingsPath;
 
     public static ClipShellSettings Load()
     {
@@ -1144,9 +1139,23 @@ public partial class MainWindow : Window
         EnsureChromeIcons();
         Opacity = 1;
         IsHitTestVisible = true;
+        BenchMarks.Mark("shown");
         if (!OpenTestOffscreen && ShouldActivatePaletteWindow(_paletteNoActivate))
         {
             _ = Dispatcher.BeginInvoke(new Action(() => ActivatePaletteWindow(ownHwnd)), System.Windows.Threading.DispatcherPriority.Input);
+        }
+        else if (OpenTestOffscreen)
+        {
+            // Off screen there is no foreground to take, but typing has to land in the search box
+            // for the window to count as open, and the wait for it is part of what is being timed.
+            _ = Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    SearchBox.Focus();
+                    Keyboard.Focus(SearchBox);
+                    BenchMarks.Mark("focused");
+                }),
+                System.Windows.Threading.DispatcherPriority.Input);
         }
 
         _outsideClickTimer.Start();
@@ -1473,6 +1482,7 @@ public partial class MainWindow : Window
         Activate();
         SearchBox.Focus();
         Keyboard.Focus(SearchBox);
+        BenchMarks.Mark("focused");
     }
 
     public void CheckForUpdatesFromTray()
@@ -1492,6 +1502,45 @@ public partial class MainWindow : Window
     }
 
     internal void ConcealForOpenTest() => ConcealPalette("open-test");
+
+    // What the open-latency harness needs to see from outside. It decides what "open" means; this
+    // only reports the state, so the rule lives in one place next to the numbers it produces.
+    internal bool BenchWindowShown => IsVisible && Opacity >= 1;
+
+    internal bool BenchSearchFocused => SearchBox.IsFocused;
+
+    internal int BenchRenderedRows => _rows.Count;
+
+    internal int BenchTotalItems => _allItems.Count;
+
+    internal IReadOnlyList<ClipboardHistoryItem> BenchItems => _allItems;
+
+    internal ClipboardHistoryItem? BenchSelected => _selected;
+
+    internal void BenchSelect(ClipboardHistoryItem item) => SelectItem(item, "bench");
+
+    /// <summary>
+    /// Puts the window back to the state a real reopen starts from, so run five measures what run
+    /// one did. Concealing keeps the focus and the rendered rows, which no reopen in real use gets:
+    /// focus has moved to whatever the user was typing in, and something was almost always copied
+    /// in between — that is the reason the palette is being opened — which is what makes the list
+    /// stale and forces the refresh. Without this a warm run measures only Show(), and reports a
+    /// number no user will ever see.
+    /// </summary>
+    internal void BenchResetForRun(bool clipboardChanged)
+    {
+        Keyboard.ClearFocus();
+        System.Windows.Input.FocusManager.SetFocusedElement(this, null);
+
+        if (clipboardChanged)
+        {
+            _itemsDirtySinceRender = true;
+        }
+    }
+
+    internal void BenchOpenSettings() => OpenSettingsFromTray();
+
+    internal bool BenchSettingsOpen => _settingsOverlay is not null;
 
     private void ConcealPalette(string reason)
     {
@@ -1656,6 +1705,9 @@ public partial class MainWindow : Window
             }
             else
             {
+                // The clock starts where the user's key press arrives, not where the show begins:
+                // anything between the two is part of what the press costs.
+                BenchMarks.Begin();
                 ShowPalette();
             }
 
@@ -2859,6 +2911,7 @@ public partial class MainWindow : Window
             _ = Dispatcher.BeginInvoke(new Action(() => AppendDeferredRowsIfNeeded(force: ListScroll.ScrollableHeight <= 0)), System.Windows.Threading.DispatcherPriority.Background);
         }
 
+        BenchMarks.Mark("rows-first");
         ShellLog.Info($"render items reason={reason} rows={_rows.Count}/{visibleItems.Count} selected={selectedId ?? "none"} elapsedMs={watch.ElapsedMilliseconds} deferred={nextIndex < entries.Count}");
         return visibleItems;
     }
@@ -2942,6 +2995,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        BenchMarks.Mark("rows-complete");
         ShellLog.Info($"render items complete reason={_deferredRenderReason} rows={_rows.Count} elapsedMs={_deferredRenderWatch?.ElapsedMilliseconds ?? 0}");
         _deferredRenderEntries = [];
         _deferredRenderIndex = 0;
@@ -3581,6 +3635,7 @@ public partial class MainWindow : Window
                 ColorPreviewSwatch.Fill = BrushFromHex(TextPayload(item));
                 ColorPreviewText.Text = TextPayload(item);
                 ColorPreview.Visibility = Visibility.Visible;
+                BenchMarks.Mark("preview-ready");
                 ShellLog.Info($"preview color id={item.Id} hex={TextPayload(item)}");
                 return;
             }
@@ -3590,6 +3645,7 @@ public partial class MainWindow : Window
                 TextPreview.Text = TextFilePreviewReader.Format(TextPayload(item), TextPreviewCharacterLimit);
                 TextPreview.Foreground = (WpfBrush)FindResource("Text");
                 TextPreview.Visibility = Visibility.Visible;
+                BenchMarks.Mark("preview-ready");
                 ShellLog.Info($"preview text id={item.Id} chars={TextPreview.Text.Length}");
                 return;
             }
@@ -3792,6 +3848,7 @@ public partial class MainWindow : Window
             _currentPreviewImagePath = path;
             ImagePreview.Visibility = Visibility.Visible;
             ExpandImageButton.Visibility = Visibility.Visible;
+            BenchMarks.Mark("preview-ready");
         }
         catch (Exception ex)
         {
@@ -5974,6 +6031,7 @@ public partial class MainWindow : Window
 
         HidePreviews(pauseMedia: false);
         view.Visibility = Visibility.Visible;
+        BenchMarks.Mark("preview-ready");
         return true;
     }
 
