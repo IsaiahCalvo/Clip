@@ -1,7 +1,36 @@
 # Clip — handoff
 
-_Last updated 2026-08-05. **`main` is the trunk.** All work pushed. The installed copy has **not**
-been updated — see "Open latency" for the one command that does it._
+_Last updated 2026-08-05. **`main` is the trunk.** All work pushed, and **installed** — the copy in
+`%APPDATA%\Programs\Clip` is this build._
+
+## What a user could see (2026-08-05, second pass)
+
+Three complaints, all about what is on screen rather than what a stopwatch says:
+
+- **The palette appeared empty and then filled in.** It became visible before the rows were loaded,
+  so the search box, filters and preview painted with a blank list column beside them. Fixed by
+  loading the rows *and calling `UpdateLayout`* before making the window opaque — adding rows to the
+  tree is not the same as having them arranged, so without the layout pass a window shown in the
+  same breath still paints an empty column for a frame. Costs ~12 ms; the first visible frame is now
+  the finished window.
+- **Images showed "Loading preview..." over a blown-up row thumbnail.** Preview decodes were never
+  cached — `ShouldCacheBitmap` capped caching at 48 px row icons while previews decode at 900 px —
+  so every look at an image re-read it from disk. Previews are now cached (12, kept apart from the
+  256 row icons), a decoded picture is assigned on the spot, a new one decodes off-thread with the
+  *previous* preview left up, and the images either side of the selection are decoded in the
+  background. No placeholder for images at all.
+- **Video/audio took over a second the first time.** The startup warm-up now selects the item the
+  first open will land on, renders its preview and stands the browser up while the window is still
+  hidden. First video preview 1308 → 346 ms, first code preview 1274 → 482 ms, reopens ~200–270 ms.
+
+Verify this class of change by **looking**: `--film=<prefix>` photographs the window every ~16 ms
+during an open, with the window's opacity in each filename (`RenderTargetBitmap` draws the tree
+whatever the opacity is, so without that a frame captured while transparent looks like something the
+user saw). `--dump-preview` does the same for the browser pane, which `--film` cannot capture.
+
+Still open: the video controls auto-hide until hover by design (`.wrap.video-mode .bar`), which was
+left alone — if they should be visible when the preview first appears, that is a one-line CSS change
+in `MediaPreviewPage.cs`.
 
 ## Open latency (2026-08-05)
 
@@ -10,12 +39,23 @@ been updated — see "Open latency" for the one command that does it._
 
 ### Versus Raycast — measured
 
-Pressing the real hotkey for both and watching each window appear, 12 runs each, interleaved:
+Pressing the real hotkey for both and watching each window appear, 12 runs each, interleaved,
+against the **installed** build:
 
 | | median | p95 |
 |---|---|---|
-| **Clip** | **42.3 ms** | **56.8 ms** |
-| Raycast | 87.5 ms | 149.7 ms |
+| **Clip** | **100.5 ms** | 147.8 ms |
+| Raycast | 108.5 ms | **126.8 ms** |
+
+Neck and neck — Clip a little ahead on the median, a little behind on the tail. Clip is also doing
+strictly more before it shows anything, since the window no longer appears until the list is in it.
+
+**An earlier run here claimed 42 ms vs 87 ms. That was wrong** — the harness dismissed windows with
+Escape, which never closed Clip's palette (a posted `WM_KEYDOWN` misses WPF's focused element, and a
+real Escape goes to whatever has focus, never the palette while the lock screen is up). The palette
+stayed open, so the next press toggled it *shut*, 2–3 runs in 10 recorded a miss, and the surviving
+samples were skewed. Both apps are now dismissed with their own toggle hotkey, which is
+focus-independent, and 12 of 12 runs register.
 
 Identical treatment, and deliberately generous to Raycast: its window is stamped the moment it
 flips from layered alpha 0 to 255 — when it *decides* to show — while Clip must additionally have
