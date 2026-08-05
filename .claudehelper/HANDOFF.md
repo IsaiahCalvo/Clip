@@ -109,6 +109,11 @@ attach case without putting a window on screen.
 
 ## Traps
 
+- **Log lines mentioning `Clip.Tests` or `clip-thumb-` paths are test noise, not app failures.**
+  One triage session chased "PDF preview skipped" errors that were the suite's corrupt-PDF
+  fixtures. Since 8200d92 the tests redirect logging via `CLIP_LOG_ROOT` (module initializer in
+  `TestLogRedirect.cs`), so new pollution can't happen — but older log history still has it.
+
 - **The preview cache hides everything.** Results are keyed by path + mtime + size under
   `%LOCALAPPDATA%\Clip\document-previews`, so re-previewing the same document never touches COM.
   Copy the file to a fresh name for every A/B run or you will measure nothing.
