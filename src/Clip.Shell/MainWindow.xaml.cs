@@ -688,6 +688,9 @@ public partial class MainWindow : Window
     // and fill the rest before anyone looked; now that batches yield, three rows is what the open
     // actually shows, and the rest arrives a dispatcher turn later. Rendering what fits costs a few
     // milliseconds and is the difference between an open that looks finished and one that fills in.
+    // Entries, not rows: date headers take some of them, so this has to run ahead of the screenful
+    // it is meant to fill. Dropping it to 8 to match the first-paint query built only 7 rows, left
+    // the list short of a screen, and doubled the open while it waited for the next batch.
     private const int InitialRenderEntryBatch = 12;
     private const int DeferredRenderEntryBatch = 36;
     private const int InitialSummaryFirstPaintLimit = 8;
@@ -1132,13 +1135,17 @@ public partial class MainWindow : Window
             CaptureReturnFocus(foreground);
         }
 
+        BenchMarks.Mark("return-focus");
         _paletteNoActivate = _returnFocusCouldNeedNoActivate && ShouldShowPaletteWithoutActivation(_returnFocusHwnd, _returnFocusElement);
         ApplyNoActivatePaletteStyle(_paletteNoActivate);
+        BenchMarks.Mark("no-activate-decided");
 
         if (!IsVisible)
         {
             Show();
         }
+
+        BenchMarks.Mark("window-shown");
 
         Opacity = 0;
         IsHitTestVisible = false;
@@ -1152,8 +1159,10 @@ public partial class MainWindow : Window
             PositionOnMouseScreen();
         }
 
+        BenchMarks.Mark("positioned");
         EnsureAppHeaderIcon();
         EnsureChromeIcons();
+        BenchMarks.Mark("chrome-icons");
         Opacity = 1;
         IsHitTestVisible = true;
         BenchMarks.Mark("shown");
@@ -1195,6 +1204,14 @@ public partial class MainWindow : Window
         if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
         {
             QueueLoadItems(selectFirst: _selected is null, reason: "show-refresh");
+        }
+        else if (loadItems && _selected is null)
+        {
+            // The rows can now already exist at the very first open, because they are rendered while
+            // the window is still hidden at startup. That skips the reload above — and the reload is
+            // what used to pick the first item. Without this the palette opens with nothing selected
+            // and an empty preview pane, which is what the pre-warm quietly broke.
+            SelectInitialItemIfNeeded(selectFirst: true, visibleItems: FilteredItems(), defer: true);
         }
 
         if (loadItems)
