@@ -705,6 +705,13 @@ public partial class MainWindow : Window
     private static readonly object SvgCacheGate = new();
     private static readonly Dictionary<string, ImageSource> RasterImageCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object RasterImageCacheGate = new();
+
+    // Kept apart from the row-icon cache because the sizes are nothing alike: a 48px icon is a few
+    // KB and hundreds are wanted, a 900px preview is a megabyte or two and only the last handful
+    // looked at are. Twelve covers stepping up and down a run of screenshots, which is the case
+    // that used to decode from disk every single time.
+    private const int MaxCachedPreviewImages = 12;
+    private static readonly Dictionary<string, ImageSource> PreviewImageCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, Style> ThinScrollBarStyleCache = new(StringComparer.OrdinalIgnoreCase);
     private static System.Drawing.Rectangle _cachedMouseScreenWorkingArea;
     private static bool _hasCachedMouseScreenWorkingArea;
@@ -1188,6 +1195,31 @@ public partial class MainWindow : Window
         EnsureAppHeaderIcon();
         EnsureChromeIcons();
         BenchMarks.Mark("chrome-icons");
+
+        // Fill the list before the window is allowed to be seen. Showing first and loading after
+        // put an empty column on screen for the ~60ms it took the rows to arrive — the frame was
+        // up, with the search box, the filters and the preview all painted, and the clipboard list
+        // simply blank. Nothing here is faster than it was; the window just no longer appears
+        // before it has anything to say.
+        if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
+        {
+            QueueLoadItems(selectFirst: _selected is null, reason: "show-refresh");
+        }
+        else if (loadItems && _selected is null)
+        {
+            // The rows can already exist at the very first open, because they are rendered while
+            // the window is still hidden at startup. That skips the reload above — and the reload
+            // is what used to pick the first item.
+            SelectInitialItemIfNeeded(selectFirst: true, visibleItems: FilteredItems(), defer: false);
+        }
+
+        // Adding the rows is not the same as having them on screen: they are in the tree but have
+        // not been measured or arranged, so a window made visible in the same breath still shows an
+        // empty column for a frame. Laying out here, while still transparent, is what makes the
+        // first visible frame the finished one.
+        UpdateLayout();
+        BenchMarks.Mark("laid-out");
+
         Opacity = 1;
         IsHitTestVisible = true;
         BenchMarks.Mark("shown");
@@ -1230,19 +1262,6 @@ public partial class MainWindow : Window
         }
 
         ShellLog.Info($"palette shown elapsedMs={watch.ElapsedMilliseconds} selected={_selected?.Id ?? "none"} rows={_rows.Count} dirty={_itemsDirtySinceRender} noActivate={_paletteNoActivate}");
-
-        if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
-        {
-            QueueLoadItems(selectFirst: _selected is null, reason: "show-refresh");
-        }
-        else if (loadItems && _selected is null)
-        {
-            // The rows can now already exist at the very first open, because they are rendered while
-            // the window is still hidden at startup. That skips the reload above — and the reload is
-            // what used to pick the first item. Without this the palette opens with nothing selected
-            // and an empty preview pane, which is what the pre-warm quietly broke.
-            SelectInitialItemIfNeeded(selectFirst: true, visibleItems: FilteredItems(), defer: true);
-        }
 
         if (loadItems)
         {
@@ -1775,6 +1794,42 @@ public partial class MainWindow : Window
     /// thing, and no timing number can tell you that — a blank pane is very fast. This renders from
     /// the browser itself rather than the screen, so the check costs nobody their display.
     /// </summary>
+    /// <summary>
+    /// Photographs the palette's own visual tree, off screen.
+    ///
+    /// "Is anything actually in the window yet" is not a question a stopwatch can answer, and it is
+    /// the exact complaint about seeing an empty frame that then fills in. Rendering the tree gives
+    /// a frame-by-frame answer without anyone's display being touched.
+    ///
+    /// Caveat worth knowing before trusting one of these: WebView2 draws into its own child window,
+    /// so a browser-backed preview shows up blank here. Use BenchCapturePreviewAsync for that pane.
+    /// </summary>
+    internal bool BenchCaptureWindow(string path)
+    {
+        var width = (int)Math.Ceiling(ActualWidth);
+        var height = (int)Math.Ceiling(ActualHeight);
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var target = new RenderTargetBitmap(
+            (int)(width * dpi.DpiScaleX),
+            (int)(height * dpi.DpiScaleY),
+            96 * dpi.DpiScaleX,
+            96 * dpi.DpiScaleY,
+            PixelFormats.Pbgra32);
+
+        target.Render(this);
+
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(target));
+        using var file = File.Create(path);
+        encoder.Save(file);
+        return true;
+    }
+
     internal async Task<bool> BenchCapturePreviewAsync(string path)
     {
         if (_htmlPreview is not Microsoft.Web.WebView2.Wpf.WebView2 { CoreWebView2: not null } view)
@@ -3796,6 +3851,7 @@ public partial class MainWindow : Window
         }
         RenderInfo(item);
         RenderPreview(item);
+        PrefetchNeighbouringImages(item);
         ShellLog.Info($"selection changed reason={reason} id={item.Id} kind={item.Kind}");
     }
 
@@ -3878,10 +3934,7 @@ public partial class MainWindow : Window
 
             if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
             {
-                // Decoding a large screenshot on the UI thread froze the palette with the previous
-                // preview still painted. The placeholder masks the decode instead.
-                ShowPlaceholder(item, "Loading preview...");
-                _ = ShowImagePreviewAsync(item, item.AssetPath, token);
+                ShowImagePreview(item, item.AssetPath, token);
                 ShellLog.Info($"preview image id={item.Id} path={item.AssetPath}");
                 return;
             }
@@ -3892,6 +3945,15 @@ public partial class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(path))
                 {
                     ShowPlaceholder(item, "No file selected");
+                    return;
+                }
+
+                // A .png dropped in as a file is the same picture as one that was pasted, and gets
+                // the same treatment: straight to the image, never a loading card.
+                if (PreviewImagePathOf(item) is { } imagePath)
+                {
+                    ShowImagePreview(item, imagePath, token);
+                    ShellLog.Info($"preview file image path={imagePath}");
                     return;
                 }
 
@@ -4062,6 +4124,40 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Shows an image, without ever admitting to loading one.
+    ///
+    /// An already-decoded picture is assigned on the spot, so the next frame is the image and there
+    /// is no intermediate state whatsoever — which, now that previews are cached, is what happens
+    /// every time you come back to one. Only a genuinely new file needs decoding, and that happens
+    /// off the UI thread with the *previous* preview left up until the new one is ready.
+    ///
+    /// What is deliberately gone is the "Loading preview..." card. It put a blown-up row thumbnail
+    /// and a caption on screen for a few tens of milliseconds and then snapped to the real picture,
+    /// which reads far worse than a moment of the previous image: it draws the eye to a wait that
+    /// the swap would otherwise have hidden.
+    /// </summary>
+    private void ShowImagePreview(ClipboardHistoryItem item, string path, int token)
+    {
+        if (TryGetDecodedPreview(path, out var ready))
+        {
+            ApplyImagePreview(ready, path);
+            return;
+        }
+
+        _ = ShowImagePreviewAsync(item, path, token);
+    }
+
+    private void ApplyImagePreview(ImageSource bitmap, string path)
+    {
+        HidePreviews();
+        ImagePreview.Source = bitmap;
+        _currentPreviewImagePath = path;
+        ImagePreview.Visibility = Visibility.Visible;
+        ExpandImageButton.Visibility = Visibility.Visible;
+        BenchMarks.Mark("preview-ready");
+    }
+
     private async Task ShowImagePreviewAsync(ClipboardHistoryItem item, string path, int token)
     {
         try
@@ -4069,12 +4165,7 @@ public partial class MainWindow : Window
             // LoadBitmap freezes what it returns, so decoding off-thread is safe.
             var bitmap = await Task.Run(() => LoadCachedBitmap(path, PreviewImageDecodePixels));
             if (token != _previewToken) return;
-            HidePreviews();
-            ImagePreview.Source = bitmap;
-            _currentPreviewImagePath = path;
-            ImagePreview.Visibility = Visibility.Visible;
-            ExpandImageButton.Visibility = Visibility.Visible;
-            BenchMarks.Mark("preview-ready");
+            ApplyImagePreview(bitmap, path);
         }
         catch (Exception ex)
         {
@@ -4082,6 +4173,86 @@ public partial class MainWindow : Window
             if (token != _previewToken) return;
             ShowPlaceholder(item, "Preview unavailable");
         }
+    }
+
+    /// <summary>
+    /// Decodes the images either side of the selected one, quietly, so stepping through a run of
+    /// screenshots with the arrow keys never waits for a disk read. Costs nothing visible: it runs
+    /// off the UI thread and only fills the cache the preview is about to ask for.
+    /// </summary>
+    private void PrefetchNeighbouringImages(ClipboardHistoryItem selected)
+    {
+        var visible = FilteredItems();
+        var index = -1;
+        for (var i = 0; i < visible.Count; i++)
+        {
+            if (visible[i].Id == selected.Id)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            return;
+        }
+
+        var paths = new List<string>(2);
+        foreach (var offset in new[] { 1, -1 })
+        {
+            var neighbour = index + offset;
+            if (neighbour < 0 || neighbour >= visible.Count)
+            {
+                continue;
+            }
+
+            if (PreviewImagePathOf(visible[neighbour]) is { } path)
+            {
+                paths.Add(path);
+            }
+        }
+
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            foreach (var path in paths)
+            {
+                try
+                {
+                    LoadCachedBitmap(path, PreviewImageDecodePixels);
+                }
+                catch
+                {
+                    // A neighbour that will not decode is the preview's problem when it gets there.
+                }
+            }
+        });
+    }
+
+    /// <summary>The file an item would show in the image pane, or null if it is not an image.</summary>
+    private static string? PreviewImagePathOf(ClipboardHistoryItem item)
+    {
+        if (item.Kind == ClipboardItemKind.Image)
+        {
+            return item.AssetPath is not null && File.Exists(item.AssetPath) ? item.AssetPath : null;
+        }
+
+        if (item.Kind != ClipboardItemKind.Files)
+        {
+            return null;
+        }
+
+        var path = item.FilePaths?.FirstOrDefault();
+        return path is not null &&
+            IsImageFile(Path.GetExtension(path).ToLowerInvariant()) &&
+            File.Exists(path)
+            ? path
+            : null;
     }
 
     private void RenderInfo(ClipboardHistoryItem item)
@@ -8925,15 +9096,23 @@ public partial class MainWindow : Window
         }
 
         var cacheKey = RasterCacheKey("bitmap", path, decodePixels);
-        if (TryGetCachedRaster(cacheKey, out var cached))
+        if (TryGetCachedRaster(cacheKey, decodePixels, out var cached))
         {
             return cached;
         }
 
-        return RememberRaster(cacheKey, LoadBitmap(path, decodePixels));
+        return RememberRaster(cacheKey, decodePixels, LoadBitmap(path, decodePixels));
     }
 
-    private static bool ShouldCacheBitmap(int decodePixels) => decodePixels <= RowIconDecodePixels;
+    // Row icons and preview images are both worth keeping, but not in the same quantity: a 48px row
+    // icon is a few KB and there are hundreds of rows, while a 900px preview is a megabyte or two
+    // and only the handful you have just looked at matter. Previews used not to be cached at all,
+    // which is why every single look at an image decoded it from disk again and needed a "Loading
+    // preview..." card over a blown-up row thumbnail to hide the wait.
+    private static bool ShouldCacheBitmap(int decodePixels) =>
+        decodePixels <= RowIconDecodePixels || decodePixels <= PreviewImageDecodePixels;
+
+    private static bool IsPreviewSized(int decodePixels) => decodePixels > RowIconDecodePixels;
 
     private static string RasterCacheKey(string prefix, string path, int size)
     {
@@ -8950,28 +9129,47 @@ public partial class MainWindow : Window
         }
     }
 
-    private static bool TryGetCachedRaster(string cacheKey, out ImageSource source)
+    private static bool TryGetCachedRaster(string cacheKey, out ImageSource source) =>
+        TryGetCachedRaster(cacheKey, RowIconDecodePixels, out source);
+
+    private static bool TryGetCachedRaster(string cacheKey, int decodePixels, out ImageSource source)
     {
         lock (RasterImageCacheGate)
         {
-            return RasterImageCache.TryGetValue(cacheKey, out source!);
+            var cache = IsPreviewSized(decodePixels) ? PreviewImageCache : RasterImageCache;
+            return cache.TryGetValue(cacheKey, out source!);
         }
     }
 
-    private static ImageSource RememberRaster(string cacheKey, ImageSource source)
+    private static ImageSource RememberRaster(string cacheKey, ImageSource source) =>
+        RememberRaster(cacheKey, RowIconDecodePixels, source);
+
+    private static ImageSource RememberRaster(string cacheKey, int decodePixels, ImageSource source)
     {
         lock (RasterImageCacheGate)
         {
-            if (RasterImageCache.Count >= MaxCachedRasterImages)
+            var preview = IsPreviewSized(decodePixels);
+            var cache = preview ? PreviewImageCache : RasterImageCache;
+            if (cache.Count >= (preview ? MaxCachedPreviewImages : MaxCachedRasterImages))
             {
-                RasterImageCache.Clear();
+                cache.Clear();
             }
 
-            RasterImageCache[cacheKey] = source;
+            cache[cacheKey] = source;
         }
 
         return source;
     }
+
+    /// <summary>
+    /// The decoded preview for a file if one is already in hand, without touching the disk.
+    ///
+    /// This is what lets the pane switch to an image with no intermediate state at all: when the
+    /// answer is yes, the caller assigns it and the next frame is the picture. Only when the answer
+    /// is no does anything asynchronous need to happen.
+    /// </summary>
+    private static bool TryGetDecodedPreview(string path, out ImageSource source) =>
+        TryGetCachedRaster(RasterCacheKey("bitmap", path, PreviewImageDecodePixels), PreviewImageDecodePixels, out source);
 
     private static BitmapImage LoadBitmap(string path, int? decodePixels = null)
     {

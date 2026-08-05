@@ -84,10 +84,19 @@ internal static class OpenBenchHarness
 
         var samples = new List<Sample>();
 
+        var film = JankOptions.Value(args, "--film");
+
         for (var run = 0; run < runs; run++)
         {
             window.BenchResetForRun(clipboardChanged);
+
+            // Filmed on the last run only, so the frames are of a warm open rather than of boot.
+            var filming = film is not null && run == runs - 1
+                ? FilmOpenAsync(window, $"{film}-run{run}", JankOptions.Number(args, "--film-frames", 12))
+                : Task.CompletedTask;
+
             var sample = await MeasureOnceAsync(window, page, run, timeoutMs);
+            await filming;
             samples.Add(sample);
             Report(sample.ToString());
             if (args.Any(a => a.Equals("--stages", StringComparison.OrdinalIgnoreCase)))
@@ -123,6 +132,35 @@ internal static class OpenBenchHarness
 
         Write(output, page, samples);
         ShellLog.Flush();
+    }
+
+    /// <summary>
+    /// Photographs the window every frame or so from the moment the open begins, so what a person
+    /// actually sees during those first two hundred milliseconds can be looked at rather than
+    /// inferred from stage timings. An empty frame that fills in a moment later costs nothing on a
+    /// stopwatch and is the whole complaint.
+    /// </summary>
+    private static async Task FilmOpenAsync(MainWindow window, string prefix, int frames)
+    {
+        for (var frame = 0; frame < frames; frame++)
+        {
+            var at = BenchMarks.Elapsed;
+            try
+            {
+                // The opacity goes in the name because RenderTargetBitmap draws the visual tree
+                // whatever the window's opacity is — it renders content, not what is on the glass.
+                // Without it a frame captured while the window was still transparent looks like
+                // something the user saw, and the whole question here is what the user saw.
+                var visible = window.Opacity >= 1 ? "shown" : "hidden";
+                window.BenchCaptureWindow($"{prefix}-{frame:D2}-{at:F0}ms-{visible}.png");
+            }
+            catch
+            {
+                // A frame that will not render is not worth failing a run over.
+            }
+
+            await Task.Delay(16);
+        }
     }
 
     private static async Task<Sample> MeasureOnceAsync(MainWindow window, string page, int run, int timeoutMs)
