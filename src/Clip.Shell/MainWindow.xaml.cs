@@ -829,6 +829,15 @@ public partial class MainWindow : Window
     /// WebView2 environment is created once for the process, before any window asks for it.
     /// </summary>
     internal static bool MeasuringOffScreen { get; private set; }
+
+    /// <summary>
+    /// Set when a harness intends to photograph the preview pane. Chromium produces no frames for a
+    /// window it thinks nobody can see, so an off-screen capture comes back empty (a 0-byte PNG is
+    /// how this was found) unless occlusion handling is turned off. Kept separate from
+    /// <see cref="MeasuringOffScreen"/> because these flags cost time — an un-throttled browser
+    /// competes for the UI thread — so they belong on a verification run, never a timing one.
+    /// </summary>
+    internal static bool CapturingPreview { get; set; }
     internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
@@ -1208,7 +1217,12 @@ public partial class MainWindow : Window
         // Closing the palette tears down the WebView2, so an HTML, code or media preview is gone
         // by the time it reopens. Without re-rendering, reopening on the same item shows an empty
         // pane until the user selects something else.
-        if (_selected is not null)
+        if (_selected is not null && PreviewAlreadyShowing(_selected))
+        {
+            BenchMarks.Mark("preview-ready");
+            ShellLog.Info($"preview reused id={_selected.Id}");
+        }
+        else if (_selected is not null)
         {
             _ = Dispatcher.BeginInvoke(
                 new Action(() => RenderPreview(_selected)),
@@ -1753,6 +1767,25 @@ public partial class MainWindow : Window
     /// while the warm-up is still running measures contention nobody experiences.
     /// </summary>
     internal bool BenchWarmupComplete => _rows.Count > 0;
+
+    /// <summary>
+    /// Saves a picture of whatever the browser preview pane is currently showing.
+    ///
+    /// Skipping a redundant re-render is only correct if the pane really is still showing the right
+    /// thing, and no timing number can tell you that — a blank pane is very fast. This renders from
+    /// the browser itself rather than the screen, so the check costs nobody their display.
+    /// </summary>
+    internal async Task<bool> BenchCapturePreviewAsync(string path)
+    {
+        if (_htmlPreview is not Microsoft.Web.WebView2.Wpf.WebView2 { CoreWebView2: not null } view)
+        {
+            return false;
+        }
+
+        using var file = File.Create(path);
+        await view.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, file);
+        return true;
+    }
 
     private void MoveOffscreen()
     {
@@ -3766,9 +3799,59 @@ public partial class MainWindow : Window
         ShellLog.Info($"selection changed reason={reason} id={item.Id} kind={item.Kind}");
     }
 
+    /// <summary>The item the preview pane was last asked to show, for skipping redundant repeats.</summary>
+    private string? _previewItemId;
+
+    /// <summary>
+    /// What the previewed file looked like when it was rendered, so a file edited while the palette
+    /// was closed is not shown stale. Null for items with no file behind them.
+    /// </summary>
+    private string? _previewSourceStamp;
+
+    private static string? SourceStampOf(ClipboardHistoryItem item)
+    {
+        var path = item.FilePaths?.FirstOrDefault() ?? item.AssetPath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? $"{path}|{info.LastWriteTimeUtc.Ticks}|{info.Length}" : null;
+        }
+        catch
+        {
+            // Unreadable is a good enough reason to render again rather than trust what is up.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Is the browser pane already showing this item?
+    ///
+    /// Reopening the palette re-rendered the preview unconditionally, on the stated grounds that
+    /// concealing tears the WebView2 down. It does not — it starts a three-minute idle timer, so a
+    /// palette reopened within three minutes still has the page loaded and visible, and navigating
+    /// to it again costs the whole 70–540ms load to arrive at the pixels already on screen. It also
+    /// throws away a video's position.
+    ///
+    /// Only claims the pane is current when the browser is alive AND visible, which means the last
+    /// navigation actually completed and was revealed; a failed or superseded one leaves it hidden
+    /// and this returns false.
+    /// </summary>
+    private bool PreviewAlreadyShowing(ClipboardHistoryItem item) =>
+        _previewItemId == item.Id &&
+        _previewSourceStamp is not null &&
+        _previewSourceStamp == SourceStampOf(item) &&
+        _htmlPreview is Microsoft.Web.WebView2.Wpf.WebView2 { CoreWebView2: not null, Visibility: Visibility.Visible };
+
     private void RenderPreview(ClipboardHistoryItem item)
     {
         var token = ++_previewToken;
+        _previewItemId = item.Id;
+        _previewSourceStamp = SourceStampOf(item);
         HidePreviews();
 
         try
@@ -5830,13 +5913,20 @@ public partial class MainWindow : Window
         // Document picture-in-picture is what lets the mini window carry Clip's own controls
         // instead of the browser's fixed ones, and it is off by default in WebView2.
         // Chromium backgrounds a window it believes nobody can see, so an off-screen harness looks
-        // like it should need the occlusion flags the jank harness passes. It does not: disabling
-        // occlusion left preview timings unchanged (580–1086ms either way) and made the open
-        // measurably worse, because an un-throttled browser then competes for the UI thread. The
-        // preview cost is real, not an artifact of measuring off screen.
+        // like it should always need the occlusion flags the jank harness passes. For timing it does
+        // not: disabling occlusion left preview timings unchanged (580–1086ms either way) and made
+        // the open measurably worse, because an un-throttled browser then competes for the UI
+        // thread. The preview cost is real, not an artifact of measuring off screen. For capturing
+        // a picture of the pane it is required, because a throttled browser has no frame to give.
+        var arguments = "--enable-features=DocumentPictureInPictureAPI";
+        if (CapturingPreview)
+        {
+            arguments += " --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows";
+        }
+
         var options = new CoreWebView2EnvironmentOptions
         {
-            AdditionalBrowserArguments = "--enable-features=DocumentPictureInPictureAPI",
+            AdditionalBrowserArguments = arguments,
         };
 
         return _webView2Environment ??= CoreWebView2Environment.CreateAsync(
@@ -7499,6 +7589,12 @@ public partial class MainWindow : Window
     private void ApplyTheme(ClipThemePreference preference, bool save)
     {
         ClearPrewarmedHostedSettings();
+
+        // The generated preview pages bake the theme's colours in, so a page rendered under the old
+        // theme must not be reused after a switch.
+        _previewItemId = null;
+        _previewSourceStamp = null;
+
         _settings.Theme = preference;
         var useDark = preference switch
         {

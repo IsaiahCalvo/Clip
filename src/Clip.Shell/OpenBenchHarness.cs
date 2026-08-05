@@ -46,6 +46,7 @@ internal static class OpenBenchHarness
     public static async Task RunAsync(MainWindow window, string[] args)
     {
         BenchMarks.Enabled = true;
+        MainWindow.CapturingPreview = JankOptions.Value(args, "--dump-preview") is not null;
 
         var page = JankOptions.Value(args, "--page") ?? "palette";
         var runs = JankOptions.Number(args, "--runs", 5);
@@ -67,8 +68,19 @@ internal static class OpenBenchHarness
             await Task.Delay(50);
         }
 
-        Report($"warm-up settled after {settle.Elapsed.TotalMilliseconds:F0}ms complete={window.BenchWarmupComplete}");
-        await Task.Delay(500);
+        var warmedAt = settle.Elapsed;
+
+        // Wait for the warm-up *and* for the process to be quiet, whichever takes longer. The
+        // warm-up finishing is not the same as boot finishing: JIT, the first collections and the
+        // background history refresh are all still going. Replacing the original flat three-second
+        // wait with "as soon as the rows exist" cut the settle to about a second and made the
+        // browser-backed previews look 40-70% slower than the same build had measured before.
+        while (settle.Elapsed < TimeSpan.FromSeconds(3))
+        {
+            await Task.Delay(50);
+        }
+
+        Report($"warm-up settled after {warmedAt.TotalMilliseconds:F0}ms, measuring at {settle.Elapsed.TotalMilliseconds:F0}ms");
 
         var samples = new List<Sample>();
 
@@ -81,6 +93,21 @@ internal static class OpenBenchHarness
             if (args.Any(a => a.Equals("--stages", StringComparison.OrdinalIgnoreCase)))
             {
                 Report("  stages: " + string.Join("  ", BenchMarks.Taken.Select(s => $"{s.Name}={s.Ms:F1}")));
+            }
+
+            // While the palette is still open — a concealed window has no pane to photograph, which
+            // is why the first attempt produced a 0-byte file and no error.
+            if (run == runs - 1 && JankOptions.Value(args, "--dump-preview") is { } shot)
+            {
+                try
+                {
+                    var captured = await window.BenchCapturePreviewAsync(shot);
+                    Report(captured ? $"preview pane saved to {shot}" : "no browser preview to capture");
+                }
+                catch (Exception ex)
+                {
+                    Report($"preview capture failed: {ex.Message}");
+                }
             }
 
             window.ConcealForOpenTest();
