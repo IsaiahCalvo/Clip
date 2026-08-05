@@ -5,9 +5,36 @@ been updated — see "Open latency" for the one command that does it._
 
 ## Open latency (2026-08-05)
 
-**Cold open is 69–76% faster on every page. Warm open is 6–29% faster. The comparison against
-Raycast could not be taken — the session was locked all night, and that measurement needs real
-keystrokes on an unlocked desktop. The command is written and ready; it takes about a minute.**
+**Clip opens about twice as fast as Raycast. Cold open is 69–76% faster than it was; warm open is
+6–29% faster.**
+
+### Versus Raycast — measured
+
+Pressing the real hotkey for both and watching each window appear, 12 runs each, interleaved:
+
+| | median | p95 |
+|---|---|---|
+| **Clip** | **42.3 ms** | **56.8 ms** |
+| Raycast | 87.5 ms | 149.7 ms |
+
+Identical treatment, and deliberately generous to Raycast: its window is stamped the moment it
+flips from layered alpha 0 to 255 — when it *decides* to show — while Clip must additionally have
+painted. Clip's own harness is stricter again, waiting for the search box to take focus, and still
+lands around 94 ms warm. Clip wins on either reading.
+
+```bash
+pwsh -File tools/Measure-VsRaycast.ps1 -Runs 12
+```
+
+**The locked session did not block this after all.** Last night's writeup said key injection cannot
+work with the lock screen up. Measured, it does: `SendInput` reports 4/4 and Clip's palette opens in
+under 100 ms. The script now presses the key once and checks that something happened, rather than
+inferring from `LogonUI` — assumption replaced with a probe.
+
+Two harness bugs had to be fixed before the numbers meant anything, both worth remembering: both
+hotkeys **toggle**, so pressing while the window is still up closes it and records nothing; and the
+first fix for that re-sent Escape in a tight loop, posting thousands of messages a second into both
+applications and moving the median from 40 ms to 92 ms on its own.
 
 ### The numbers
 
@@ -82,16 +109,21 @@ accept typing.
   (`--open-bench --page=preview-code --runs=5 --stages` splits it):
 
   - **The first browser-backed preview in a process costs ~810ms creating the WebView2**
-    (`code-view-created=221` → `code-webview-ready=1031` on run 0; instant on every run after). That
-    is the first code, HTML, PDF, video or audio preview after launch, and it is **pre-warmable the
-    same way the rows and the focus now are** — but it means a browser process resident from login.
-    That is a memory-versus-speed call, so it is left for Isaiah rather than assumed. **Biggest
-    single remaining win if the memory is acceptable.**
-  - After that, ~300–480ms building the page HTML and ~200–515ms navigating, both with high
-    variance, on a **5.8KB** source file — far too slow for the input size and **not root-caused**.
-    The regex highlighter is already cached per language with `RegexOptions.Compiled`, and
-    counter-intuitively the *first* build is the fast one (23ms), so the cost is not regex
-    construction. Start here.
+    (`code-view-created=221` → `code-webview-ready=1031` on run 0; instant on every run after).
+    Pre-warming it at startup was **built, measured and rejected**: it does cut that first preview
+    from 1210 ms to 457 ms, but an interleaved A/B (`tools/Compare-Variant.ps1`) measured it costing
+    **+23 ms on every open**. A palette pays that dozens of times a day to save one wait once. The
+    tax is in having the browser alive at all, not in when it starts, so the same applies from
+    whenever the first browser-backed preview happens. Re-run the experiment any time — the tool is
+    committed.
+  - After that, ~70–543 ms **navigating**, plus time waiting to resume on a UI thread busy rendering
+    rows. **An earlier claim in this file that the HTML build took 300–480 ms was wrong** — measured
+    directly, building the page takes **1.5–21 ms** and the threadpool hand-off is **0 ms**. The
+    apparent cost was the `await` waiting its turn back on the UI thread. So the lead is WebView2
+    navigation and UI-thread contention, not the highlighter.
+  - Chromium's occlusion throttling was suspected (the harness runs off screen) and **ruled out**:
+    disabling it left preview timings unchanged and made the open worse, because an un-throttled
+    browser competes for the UI thread.
   - Caveat on the number: the harness selects the item *after* the open, so a preview-page run
     renders two previews (the auto-selected first item, then the page's item). A user opening onto
     that item renders once. Treat `preview ready` as an upper bound.
@@ -140,6 +172,22 @@ pwsh -File tools/Measure-OpenLatency.ps1 -Label whatever
 
 Do not rebuild the fixture between an optimization and its re-measurement — that invalidates the
 comparison. Everything runs off screen; nothing takes the display.
+
+**This machine does not hold still, and it will lie to you.** Partway through the night OneDrive and
+Adobe Desktop Service each took a whole core, and an *unchanged* build measured 60% slower than it
+had an hour earlier — which was very nearly written up as a regression caused by a code change. The
+round 4 numbers in `.claudehelper/perf/round4.json` were taken under that load and should not be
+compared against round 3. For anything marginal use:
+
+```bash
+pwsh -File tools/Compare-Variant.ps1 -EnvVar SOME_FLAG -Page palette -Rounds 5
+```
+
+which alternates both arms A B A B within the same few minutes so whatever the machine is doing, it
+does to both. Check `Get-Process | Sort CPU` before trusting any absolute number.
+
+One test (of 874) failed once under that load and has passed every run since; it was not identified.
+If it recurs, it is timing-sensitive rather than a real break.
 
 ### Two traps this work walked into
 
