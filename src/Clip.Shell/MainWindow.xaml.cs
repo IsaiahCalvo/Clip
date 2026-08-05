@@ -6226,7 +6226,9 @@ public partial class MainWindow : Window
     private async Task ShowCodePreviewAsync(string path, int token)
     {
         var htmlPreview = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+        BenchMarks.Mark("code-view-created");
         await EnsureWebViewReadyAsync(htmlPreview);
+        BenchMarks.Mark("code-webview-ready");
         if (token != _previewToken) return;
 
         // Build reads and highlights up to 400k characters — off the UI thread.
@@ -6235,6 +6237,7 @@ public partial class MainWindow : Window
         var muted = BrushHex("Muted");
         var accent = BrushHex("Accent");
         var html = await Task.Run(() => CodePreviewPage.Build(path, surface, text, muted, accent));
+        BenchMarks.Mark("code-html-built");
         if (token != _previewToken) return;
 
         await RevealWhenLoadedAsync(htmlPreview, token, () => htmlPreview.CoreWebView2.NavigateToString(html));

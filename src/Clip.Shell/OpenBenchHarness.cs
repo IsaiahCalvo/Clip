@@ -69,6 +69,10 @@ internal static class OpenBenchHarness
             var sample = await MeasureOnceAsync(window, page, run, timeoutMs);
             samples.Add(sample);
             Report(sample.ToString());
+            if (args.Any(a => a.Equals("--stages", StringComparison.OrdinalIgnoreCase)))
+            {
+                Report("  stages: " + string.Join("  ", BenchMarks.Taken.Select(s => $"{s.Name}={s.Ms:F1}")));
+            }
 
             window.ConcealForOpenTest();
             await Task.Delay(settleMs);

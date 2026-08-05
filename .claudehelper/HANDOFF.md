@@ -69,9 +69,23 @@ accept typing.
   `ConcealPalette` — it exists to avoid a stale black surface (a DWM glitch), so it is not free to
   remove.
 - **Preview-ready for code and HTML is still 680–770ms.** The palette is interactive at ~145ms and
-  the preview fills in after; this is a separate problem from open latency and was not investigated
-  to root cause. It is not the WebView2 being torn down between opens — that already has a 3-minute
-  idle timer. Best remaining lead.
+  the preview fills in after, so this is a separate problem from open latency. Partly diagnosed
+  (`--open-bench --page=preview-code --runs=5 --stages` splits it):
+
+  - **The first browser-backed preview in a process costs ~810ms creating the WebView2**
+    (`code-view-created=221` → `code-webview-ready=1031` on run 0; instant on every run after). That
+    is the first code, HTML, PDF, video or audio preview after launch, and it is **pre-warmable the
+    same way the rows and the focus now are** — but it means a browser process resident from login.
+    That is a memory-versus-speed call, so it is left for Isaiah rather than assumed. **Biggest
+    single remaining win if the memory is acceptable.**
+  - After that, ~300–480ms building the page HTML and ~200–515ms navigating, both with high
+    variance, on a **5.8KB** source file — far too slow for the input size and **not root-caused**.
+    The regex highlighter is already cached per language with `RegexOptions.Compiled`, and
+    counter-intuitively the *first* build is the fast one (23ms), so the cost is not regex
+    construction. Start here.
+  - Caveat on the number: the harness selects the item *after* the open, so a preview-page run
+    renders two previews (the auto-selected first item, then the page's item). A user opening onto
+    that item renders once. Treat `preview ready` as an upper bound.
 - **Two attempts produced no gain and were reverted.** Dropping the first render batch to 8 to match
   the query limit *doubled* the open — date headers consume entries, so it built only 7 rows and the
   list waited for the next batch. Requesting a 1ms timer resolution to sharpen the poll did nothing,
