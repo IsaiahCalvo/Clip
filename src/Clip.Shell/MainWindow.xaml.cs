@@ -1203,7 +1203,11 @@ public partial class MainWindow : Window
         // before it has anything to say.
         if (loadItems && (_itemsDirtySinceRender || _rows.Count == 0))
         {
-            QueueLoadItems(selectFirst: _selected is null, reason: "show-refresh");
+            // Re-pick the top item when nothing was chosen by hand: a clip arriving while the
+            // palette was closed is the reason it is being opened, so that is what should be
+            // selected — not whatever the startup warm-up happened to land on. A selection the
+            // user made themselves is left alone, as it always was.
+            QueueLoadItems(selectFirst: _selected is null || _selectionIsAutomatic, reason: "show-refresh");
         }
         else if (loadItems && _selected is null)
         {
@@ -1765,10 +1769,18 @@ public partial class MainWindow : Window
                     QueueLoadItems(selectFirst: false, reason: "startup-warm");
                     ShellLog.Info($"first paint warmed while hidden elapsedMs={watch.ElapsedMilliseconds} rows={_rows.Count}");
 
-                    // Deliberately not warming the preview browser here. Doing so removes ~750ms
-                    // from the first code/HTML/PDF/video preview, but an interleaved A/B measured
-                    // it costing +23ms on *every* open — a palette pays that dozens of times a day
-                    // to save one wait once. tools/Compare-Variant.ps1 re-runs the experiment.
+                    // Select what the first open will land on and render its preview now, so that
+                    // open finds the pane already showing the right thing and reuses it. Without
+                    // this the first video or code preview of a session costs over a second —
+                    // creating the browser, then navigating, in front of the user.
+                    SelectInitialItemIfNeeded(selectFirst: true, visibleItems: FilteredItems(), defer: false);
+
+                    // And stand the browser up whether or not that first item needed it, so the
+                    // first video, code, HTML or PDF preview of the session does not pay ~810ms to
+                    // create it. This was measured costing ~23ms per open and left out on those
+                    // grounds; instant previews are worth more than that, and the browser ends up
+                    // alive within a few opens anyway the moment any file preview is looked at.
+                    WarmHtmlPreviewInBackground();
                 }
                 catch (Exception ex)
                 {
@@ -1780,12 +1792,45 @@ public partial class MainWindow : Window
             System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
+    /// <summary>Stands the preview browser up so the first browser-backed preview does not have to.</summary>
+    private void WarmHtmlPreviewInBackground()
+    {
+        _ = Dispatcher.BeginInvoke(
+            new Action(async () =>
+            {
+                if (_isClosing || _htmlPreviewWarmed)
+                {
+                    return;
+                }
+
+                _htmlPreviewWarmed = true;
+
+                try
+                {
+                    var watch = Stopwatch.StartNew();
+                    var view = (Microsoft.Web.WebView2.Wpf.WebView2)EnsureHtmlPreview();
+                    await EnsureWebViewReadyAsync(view);
+                    _htmlPreviewWarmReady = true;
+                    ShellLog.Info($"html preview warmed elapsedMs={watch.ElapsedMilliseconds}");
+                }
+                catch (Exception ex)
+                {
+                    // The preview path creates it on demand anyway; a failed warm costs only itself.
+                    ShellLog.Error(ex, "html preview warm failed");
+                }
+            }),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    private bool _htmlPreviewWarmed;
+    private bool _htmlPreviewWarmReady;
+
     /// <summary>
     /// Whether everything the shell warms at startup has finished. A harness has to wait for this
     /// before timing anything: a real user's first open comes minutes after login, so measuring
     /// while the warm-up is still running measures contention nobody experiences.
     /// </summary>
-    internal bool BenchWarmupComplete => _rows.Count > 0;
+    internal bool BenchWarmupComplete => _rows.Count > 0 && _htmlPreviewWarmReady;
 
     /// <summary>
     /// Saves a picture of whatever the browser preview pane is currently showing.
@@ -2927,7 +2972,10 @@ public partial class MainWindow : Window
 
     private void SelectInitialItemIfNeeded(bool selectFirst, IReadOnlyList<ClipboardHistoryItem> visibleItems, bool defer)
     {
-        if (!selectFirst || _selected is not null)
+        // An automatic selection is replaceable; one the user made is not. Before the startup
+        // warm-up existed there was never a selection at this point, so "already selected" was
+        // enough to mean "the user chose it".
+        if (!selectFirst || (_selected is not null && !_selectionIsAutomatic))
         {
             return;
         }
@@ -2937,6 +2985,11 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        // Nobody chose this one; the list did. That matters because the selection is now made
+        // before the palette is ever opened, and an automatic choice must not outrank the newest
+        // clip: copy something, open, and the thing you just copied is what should be highlighted.
+        _selectionIsAutomatic = true;
 
         if (!defer)
         {
@@ -3809,12 +3862,20 @@ public partial class MainWindow : Window
         ShellLog.Info("menu closed");
     }
 
+    /// <summary>Whether the current selection was picked by the list rather than by the user.</summary>
+    private bool _selectionIsAutomatic;
+
     private void SelectItem(ClipboardHistoryItem? item, string reason)
     {
         if (item is null || item.Id == _selected?.Id)
         {
             ShellLog.Info($"selection skipped reason={reason} id={item?.Id ?? "none"}");
             return;
+        }
+
+        if (reason != "initial")
+        {
+            _selectionIsAutomatic = false;
         }
 
         if (_selected is not null && _rows.TryGetValue(_selected.Id, out var oldRow))
