@@ -23,7 +23,12 @@ internal static class Program
 
     private static readonly Lazy<WatcherSettingsProvider> SettingsLazy = new(() => new WatcherSettingsProvider());
     private static readonly Lazy<ClipboardHistoryStore> StoreLazy = new(() => new ClipboardHistoryStore(contentRootPath: Settings.Current.EffectiveClipboardFolderPath(), enableLoadMaintenance: false, retainLoadedItems: false));
-    private static readonly string LogRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip");
+    // CLIP_LOG_ROOT redirects logging so the test suite's deliberate failure cases don't write
+    // "error" lines into the real debug.log (which reads like a production bug in later triage).
+    private static readonly string LogRoot =
+        Environment.GetEnvironmentVariable("CLIP_LOG_ROOT") is { Length: > 0 } logRootOverride
+            ? logRootOverride
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clip");
     private static readonly string ErrorLogPath = Path.Combine(LogRoot, "error.log");
     private static readonly string DebugLogPath = Path.Combine(LogRoot, "debug.log");
     private static readonly string DebugLogTempPath = Path.Combine(LogRoot, "debug.log.tmp");
