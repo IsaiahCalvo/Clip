@@ -22,12 +22,14 @@
     Clip wins here it is winning while being measured more strictly.
 
 .NOTES
-    REQUIRES AN UNLOCKED, INTERACTIVE SESSION. Synthetic keystrokes go to the input desktop, and
-    while the workstation is locked that is the secure desktop, so nothing receives them. The script
-    refuses to run rather than reporting silence as a slow application.
-
     It types a real Alt+V and Alt+Shift+V, so it takes over the keyboard for a few seconds. Both
     windows are dismissed with Escape after each sample.
+
+    A locked workstation was assumed to make this impossible - synthetic input goes to the input
+    desktop, which while locked is the secure one. Measured, it works anyway: SendInput reported
+    4/4 and Clip's palette opened within 100ms with the lock screen up. So rather than trusting
+    either assumption, the script presses the key once and checks that something happened, and only
+    refuses if nothing does. Never report silence as a slow application.
 #>
 [CmdletBinding()]
 param(
@@ -43,8 +45,9 @@ $root = Split-Path -Parent $PSScriptRoot
 if (-not $OutDir) { $OutDir = Join-Path $root ".claudehelper\perf" }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
-if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
-    throw "The session is locked. Synthetic key presses go to the lock screen's desktop, not to Clip or Raycast, so this would measure nothing. Unlock and re-run."
+$locked = $null -ne (Get-Process LogonUI -ErrorAction SilentlyContinue)
+if ($locked) {
+    Write-Host "Note: the workstation is locked. Key injection still reaches both apps here, and the probe below proves it per run, but the numbers are taken with the lock screen up." -ForegroundColor Yellow
 }
 
 Add-Type -TypeDefinition @'
@@ -67,6 +70,7 @@ public static class OpenRace
     [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
     [DllImport("kernel32.dll")] public static extern bool QueryPerformanceCounter(out long c);
     [DllImport("kernel32.dll")] public static extern bool QueryPerformanceFrequency(out long f);
+    [DllImport("kernel32.dll")] public static extern void Sleep(uint ms);
 
     public struct RECT { public int Left, Top, Right, Bottom; }
 
@@ -109,45 +113,89 @@ public static class OpenRace
         return a;
     }
 
-    public static bool RaycastShown(IntPtr h) { return IsWindowVisible(h) && Alpha(h) > 0; }
-
-    public static bool ClipShown(IntPtr h)
+    /// <summary>
+    /// Every top-level window of a process, captured once so the hot loop does no enumeration.
+    /// Watching all of them rather than one guessed handle is what makes this robust: picking "the
+    /// biggest window" picked the wrong one for Clip (a 960x545 hidden window outranks the 880x560
+    /// palette by area), and handles change whenever either app restarts.
+    /// </summary>
+    public static IntPtr[] WindowsOf(uint pid)
     {
-        if (!IsWindowVisible(h)) return false;
-        RECT r; GetWindowRect(h, out r);
-        // On screen and a real size: Clip parks the window off the desktop while hidden.
-        return (r.Right - r.Left) > 200 && (r.Bottom - r.Top) > 200 && r.Left > -10000 && r.Top > -10000;
-    }
-
-    /// <summary>Finds the biggest top-level window of a process whose class matches, by area.</summary>
-    public static long FindWindow(uint pid, string classContains)
-    {
-        long best = 0; int bestArea = 0;
+        var list = new List<IntPtr>();
         EnumWindows((h, p) =>
         {
             uint w; GetWindowThreadProcessId(h, out w);
-            if (w != pid) return true;
-            var c = new StringBuilder(256); GetClassName(h, c, 256);
-            if (classContains.Length > 0 && c.ToString().IndexOf(classContains, StringComparison.OrdinalIgnoreCase) < 0) return true;
-            RECT r; GetWindowRect(h, out r);
-            int area = (r.Right - r.Left) * (r.Bottom - r.Top);
-            if (area > bestArea) { bestArea = area; best = h.ToInt64(); }
+            if (w == pid) list.Add(h);
             return true;
         }, IntPtr.Zero);
-        return best;
+        return list.ToArray();
     }
 
-    /// <summary>Presses the chord and returns milliseconds until the window is on screen, or -1.</summary>
-    public static double Race(long hwnd, ushort[] mods, ushort key, bool raycast, int timeoutMs)
+    /// <summary>
+    /// Is a real window of this application on screen right now?
+    ///
+    /// The two applications hide differently, so each is asked in its own terms, at the moment a
+    /// user would see it. Raycast keeps its window mapped and sets layered alpha to 0, flipping to
+    /// 255 in one step. Clip hides its window and parks it off the desktop.
+    /// </summary>
+    public static bool Shown(IntPtr[] windows, bool raycast)
     {
-        IntPtr h = new IntPtr(hwnd);
+        foreach (var h in windows)
+        {
+            if (!IsWindowVisible(h)) continue;
+            RECT r; GetWindowRect(h, out r);
+            if ((r.Right - r.Left) <= 200 || (r.Bottom - r.Top) <= 200) continue;
+            if (raycast) { if (Alpha(h) > 0) return true; }
+            else if (r.Left > -10000 && r.Top > -10000) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Presses the chord and returns milliseconds until a window is on screen, or -1.</summary>
+    public static double Race(IntPtr[] windows, ushort[] mods, ushort key, bool raycast, int timeoutMs)
+    {
         long start = Now();
         Press(mods, key);
         while (MsSince(start) < timeoutMs)
         {
-            if (raycast ? RaycastShown(h) : ClipShown(h)) return MsSince(start);
+            if (Shown(windows, raycast)) return MsSince(start);
         }
         return -1;
+    }
+
+    public static void DismissAll(IntPtr[] windows)
+    {
+        foreach (var h in windows)
+        {
+            if (!IsWindowVisible(h)) continue;
+            Dismiss(h.ToInt64());
+        }
+    }
+
+    /// <summary>
+    /// Waits until the application is definitely closed again, and says whether it got there.
+    ///
+    /// Both hotkeys toggle, so pressing while the window is still up closes it instead of opening
+    /// it and the run records nothing. That is what produced two "miss" samples in ten on the first
+    /// attempt - the harness, not the application. Confirming the closed state before each press
+    /// removes them.
+    /// </summary>
+    public static bool WaitHidden(IntPtr[] windows, bool raycast, int timeoutMs)
+    {
+        long start = Now();
+        int nudges = 0;
+        while (MsSince(start) < timeoutMs)
+        {
+            if (!Shown(windows, raycast)) return true;
+
+            // Ask once, then wait. Re-sending on every pass of a tight loop posts thousands of
+            // Escapes a second into both applications' message queues, which does not close them
+            // any sooner and wrecks the timings of every run after: medians went from 40ms to 92ms
+            // and the worst case from 47ms to 624ms purely from the harness thrashing.
+            if (nudges == 0 || MsSince(start) > nudges * 400) { DismissAll(windows); nudges++; }
+            Sleep(10);
+        }
+        return false;
     }
 
     public static void Dismiss(long hwnd)
@@ -180,28 +228,44 @@ $rayProc = Get-Process Raycast -ErrorAction SilentlyContinue | Select-Object -Fi
 if (-not $clipProc) { throw "Clip is not running. Start it so its Alt+V hotkey is registered." }
 if (-not $rayProc) { throw "Raycast is not running." }
 
-$clipHwnd = [OpenRace]::FindWindow([uint32]$clipProc.Id, "HwndWrapper")
-$rayHwnd = [OpenRace]::FindWindow([uint32]$rayProc.Id, "HwndWrapper")
-if ($clipHwnd -eq 0) { throw "Could not find Clip's palette window." }
-if ($rayHwnd -eq 0) { throw "Could not find Raycast's window." }
+$clipWindows = [OpenRace]::WindowsOf([uint32]$clipProc.Id)
+$rayWindows = [OpenRace]::WindowsOf([uint32]$rayProc.Id)
 
-Write-Host ("Clip hwnd 0x{0:X}  |  Raycast hwnd 0x{1:X}" -f $clipHwnd, $rayHwnd)
+Write-Host ("Clip: {0} windows (pid {1}, {2})" -f $clipWindows.Count, $clipProc.Id, $clipProc.Path)
+Write-Host ("Raycast: {0} windows (pid {1})" -f $rayWindows.Count, $rayProc.Id)
 Write-Host "Sending real key presses - do not touch the keyboard for about $([math]::Round($Runs * $SettleMs * 2 / 1000))s."
 
 $VK_MENU = 18; $VK_SHIFT = 16; $VK_V = 86
+
+# Prove the key press reaches each application before trusting a single timing. A run that measures
+# nothing must look like a broken harness, not like a slow application.
+foreach ($probe in @(
+    @{ Name = "Clip"; Windows = $clipWindows; Mods = @([uint16]$VK_MENU); Ray = $false },
+    @{ Name = "Raycast"; Windows = $rayWindows; Mods = @([uint16]$VK_MENU, [uint16]$VK_SHIFT); Ray = $true })) {
+    $t = [OpenRace]::Race($probe.Windows, $probe.Mods, [uint16]$VK_V, $probe.Ray, 4000)
+    [OpenRace]::DismissAll($probe.Windows)
+    Start-Sleep -Milliseconds 700
+    if ($t -lt 0) {
+        throw "$($probe.Name) did not open from a synthetic key press, so nothing can be measured. Its hotkey may be unregistered, remapped, or blocked."
+    }
+
+    Write-Host ("  probe: {0} responded in {1:F1} ms" -f $probe.Name, $t)
+}
 
 $clipTimes = @(); $rayTimes = @()
 
 for ($i = 1; $i -le $Runs; $i++) {
     Start-Sleep -Milliseconds $SettleMs
-    $c = [OpenRace]::Race($clipHwnd, @([uint16]$VK_MENU), [uint16]$VK_V, $false, 4000)
+    $null = [OpenRace]::WaitHidden($clipWindows, $false, 3000)
+    $c = [OpenRace]::Race($clipWindows, @([uint16]$VK_MENU), [uint16]$VK_V, $false, 4000)
     if ($c -ge 0) { $clipTimes += $c }
-    [OpenRace]::Dismiss($clipHwnd)
+    [OpenRace]::DismissAll($clipWindows)
 
     Start-Sleep -Milliseconds $SettleMs
-    $r = [OpenRace]::Race($rayHwnd, @([uint16]$VK_MENU, [uint16]$VK_SHIFT), [uint16]$VK_V, $true, 4000)
+    $null = [OpenRace]::WaitHidden($rayWindows, $true, 3000)
+    $r = [OpenRace]::Race($rayWindows, @([uint16]$VK_MENU, [uint16]$VK_SHIFT), [uint16]$VK_V, $true, 4000)
     if ($r -ge 0) { $rayTimes += $r }
-    [OpenRace]::Dismiss($rayHwnd)
+    [OpenRace]::DismissAll($rayWindows)
 
     Write-Host ("  run {0,2}: clip {1,7} ms   raycast {2,7} ms" -f $i,
         $(if ($c -ge 0) { "{0:F1}" -f $c } else { "miss" }),
@@ -213,6 +277,8 @@ $payload = [pscustomobject]@{
     TakenUtc = (Get-Date).ToUniversalTime().ToString("o")
     Commit = (& git -C $root rev-parse --short HEAD 2>$null)
     Runs = $Runs
+    SessionLocked = $locked
+    ClipExe = $clipProc.Path
     ClipMedianMs = Get-Percentile $clipTimes 50
     ClipP95Ms = Get-Percentile $clipTimes 95
     RaycastMedianMs = Get-Percentile $rayTimes 50

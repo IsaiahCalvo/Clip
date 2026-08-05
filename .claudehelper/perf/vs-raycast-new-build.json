@@ -1,0 +1,37 @@
+﻿{
+    "Label":  "vs-raycast-new-build",
+    "TakenUtc":  "2026-08-05T12:07:28.6541097Z",
+    "Commit":  "460ef6c",
+    "Runs":  12,
+    "SessionLocked":  true,
+    "ClipExe":  "C:\\Users\\icalvo\\Documents\\Codex\\Clip\\src\\Clip.Shell\\bin\\Release\\net8.0-windows10.0.19041.0\\Clip.exe",
+    "ClipMedianMs":  40.4,
+    "ClipP95Ms":  62.6,
+    "RaycastMedianMs":  131.2,
+    "RaycastP95Ms":  209.5,
+    "ClipSamples":  [
+                        34.7802,
+                        42.6002,
+                        40.3876,
+                        51.5239,
+                        38.5052,
+                        41.1571,
+                        29.7564,
+                        29.4896,
+                        70.0069
+                    ],
+    "RaycastSamples":  [
+                           135.2797,
+                           54.303,
+                           140.6179,
+                           56.2226,
+                           143.7215,
+                           61.1761,
+                           145.8709,
+                           70.5005,
+                           157.0257,
+                           56.4208,
+                           273.5514,
+                           127.0831
+                       ]
+}

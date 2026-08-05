@@ -57,9 +57,18 @@ internal static class OpenBenchHarness
         // over. Pass --unchanged to measure the rarer reopen where nothing arrived in between.
         var clipboardChanged = !args.Any(a => a.Equals("--unchanged", StringComparison.OrdinalIgnoreCase));
 
-        // The startup pre-render has to finish before the first open, or run one measures the tail
-        // of boot rather than an open. This is the same wait the older open-test used.
-        await Task.Delay(TimeSpan.FromSeconds(3));
+        // Everything the shell warms at startup has to have finished before the first open, or run
+        // one measures the tail of boot rather than an open — and a real user's first press comes
+        // minutes after login, not three seconds. Waiting for the warm-up rather than a fixed delay
+        // is what keeps that honest as the warm-up grows.
+        var settle = System.Diagnostics.Stopwatch.StartNew();
+        while (!window.BenchWarmupComplete && settle.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            await Task.Delay(50);
+        }
+
+        Report($"warm-up settled after {settle.Elapsed.TotalMilliseconds:F0}ms complete={window.BenchWarmupComplete}");
+        await Task.Delay(500);
 
         var samples = new List<Sample>();
 

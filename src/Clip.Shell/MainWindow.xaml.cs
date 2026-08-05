@@ -812,7 +812,23 @@ public partial class MainWindow : Window
     public bool PaletteSessionMode { get; set; }
     public bool PaletteSessionStartHidden { get; set; }
     public bool KeepWarmSession { get; set; }
-    public bool OpenTestOffscreen { get; set; }
+    public bool OpenTestOffscreen
+    {
+        get => _openTestOffscreen;
+        set
+        {
+            _openTestOffscreen = value;
+            MeasuringOffScreen = value;
+        }
+    }
+
+    private bool _openTestOffscreen;
+
+    /// <summary>
+    /// Set while a harness is driving the window off the side of the desktop. Static because the
+    /// WebView2 environment is created once for the process, before any window asks for it.
+    /// </summary>
+    internal static bool MeasuringOffScreen { get; private set; }
     internal ClipUpdateStatus LastUpdateStatus => _lastUpdateStatus;
     internal AppIconPreference AppIconPreference => _settings.AppIcon;
     internal event Action<AppIconPreference>? AppIconChanged;
@@ -1715,6 +1731,11 @@ public partial class MainWindow : Window
                     var watch = Stopwatch.StartNew();
                     QueueLoadItems(selectFirst: false, reason: "startup-warm");
                     ShellLog.Info($"first paint warmed while hidden elapsedMs={watch.ElapsedMilliseconds} rows={_rows.Count}");
+
+                    // Deliberately not warming the preview browser here. Doing so removes ~750ms
+                    // from the first code/HTML/PDF/video preview, but an interleaved A/B measured
+                    // it costing +23ms on *every* open — a palette pays that dozens of times a day
+                    // to save one wait once. tools/Compare-Variant.ps1 re-runs the experiment.
                 }
                 catch (Exception ex)
                 {
@@ -1725,6 +1746,13 @@ public partial class MainWindow : Window
             }),
             System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
+
+    /// <summary>
+    /// Whether everything the shell warms at startup has finished. A harness has to wait for this
+    /// before timing anything: a real user's first open comes minutes after login, so measuring
+    /// while the warm-up is still running measures contention nobody experiences.
+    /// </summary>
+    internal bool BenchWarmupComplete => _rows.Count > 0;
 
     private void MoveOffscreen()
     {
@@ -5801,6 +5829,11 @@ public partial class MainWindow : Window
 
         // Document picture-in-picture is what lets the mini window carry Clip's own controls
         // instead of the browser's fixed ones, and it is off by default in WebView2.
+        // Chromium backgrounds a window it believes nobody can see, so an off-screen harness looks
+        // like it should need the occlusion flags the jank harness passes. It does not: disabling
+        // occlusion left preview timings unchanged (580–1086ms either way) and made the open
+        // measurably worse, because an un-throttled browser then competes for the UI thread. The
+        // preview cost is real, not an artifact of measuring off screen.
         var options = new CoreWebView2EnvironmentOptions
         {
             AdditionalBrowserArguments = "--enable-features=DocumentPictureInPictureAPI",
@@ -6236,7 +6269,13 @@ public partial class MainWindow : Window
         var text = BrushHex("Text");
         var muted = BrushHex("Muted");
         var accent = BrushHex("Accent");
-        var html = await Task.Run(() => CodePreviewPage.Build(path, surface, text, muted, accent));
+        var html = await Task.Run(() =>
+        {
+            BenchMarks.Mark("code-build-started");
+            var built = CodePreviewPage.Build(path, surface, text, muted, accent);
+            BenchMarks.Mark("code-build-done");
+            return built;
+        });
         BenchMarks.Mark("code-html-built");
         if (token != _previewToken) return;
 
