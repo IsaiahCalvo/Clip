@@ -68,6 +68,15 @@ accept typing.
   is reached, ~15ms in the focus call. The `Show()` cost is the deliberate `Hide()` in
   `ConcealPalette` — it exists to avoid a stale black surface (a DWM glitch), so it is not free to
   remove.
+
+  **The ~39ms is reachable but needs eyes on it.** `ActivatePaletteWindow` is dispatched at Input
+  priority, and layout runs at Render, which outranks it — so every open waits for the first
+  screenful to lay out before the window is activated and the search box takes focus. Dispatching it
+  above Render would cut roughly 39ms from both cold and warm. It was **not** done: activation calls
+  `SetForegroundWindow`, and doing that before the first paint risks showing an unpainted window for
+  a frame. That is a visual regression that cannot be judged from a number, and checking it means
+  watching a real open on the real screen — which is not something to do while Isaiah is asleep or
+  working. Worth trying with him watching.
 - **Preview-ready for code and HTML is still 680–770ms.** The palette is interactive at ~145ms and
   the preview fills in after, so this is a separate problem from open latency. Partly diagnosed
   (`--open-bench --page=preview-code --runs=5 --stages` splits it):
