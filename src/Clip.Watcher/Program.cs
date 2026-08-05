@@ -82,6 +82,7 @@ internal static class Program
 
         try
         {
+            MigrateLegacyStartupEntry();
             var startupWatch = Stopwatch.StartNew();
             var settingsPhaseStart = startupWatch.ElapsedMilliseconds;
             var settings = Settings;
@@ -97,6 +98,24 @@ internal static class Program
         finally
         {
             singleInstance.ReleaseMutex();
+        }
+    }
+
+    // Rewrites a legacy "Clip.exe"/"Start-Clip.ps1" HKCU Run value to launch this headless
+    // watcher instead. Runs once per watcher start, exits instantly when there is nothing to
+    // migrate, and must never block startup.
+    private static void MigrateLegacyStartupEntry()
+    {
+        try
+        {
+            if (StartupRegistration.MigrateToLightweightHostIfNeeded())
+            {
+                LogDebug("Legacy startup entry migrated to Clip.Watcher");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError(ex);
         }
     }
 
