@@ -1,7 +1,35 @@
 # Clip — handoff
 
-_Last updated 2026-08-05. **`main` is the trunk.** All work pushed, and **installed** — the copy in
+_Last updated 2026-08-07. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
+
+## Five visual defects fixed (2026-08-07, commit dea8350)
+
+All five reported 2026-08-06, all root-caused, fixed in one commit, 874 tests pass, `--open-test`
+clean, installed and restarted:
+
+- **Video bled through settings.** WebView2 is an HWND with its own airspace — the ZIndex-1000
+  settings overlay never covered it. The browser pane is now collapsed (and its media paused) when
+  hosted settings opens and restored on close. The reveal path (`RevealWhenLoadedAsync`) also
+  refuses to show the browser while `_settingsOverlay` is up, because a theme change inside
+  settings re-renders the preview and would have re-revealed it over the panel.
+- **Settings corners missing their border.** A WPF Border does not clip its child to its rounded
+  corners, so the square header/body painted over the 1px border along the curves. The content
+  grid now carries a static rounded clip (panel is a fixed 720x500 everywhere).
+- **Theme switch swapped list icons for "old" generic glyphs until restart.**
+  `RefreshClipboardManagerIcons` re-rendered every row with `preferRichPreview: false` — the flat
+  vector fallback — while rows are built with rich icons. Now refreshes with the same rich icons.
+  Also `RenderFileSvg`'s raster cache was keyed without the theme color, so a switch kept serving
+  the old theme's rendering; the key now includes `BrushHex("Muted2")`.
+- **Double divider in the context menu for non-text items.** The base section ends with a
+  separator and the Image/Files section began with one; when nothing lands between them they
+  stacked. `ShowStyledMenu` now collapses consecutive (and leading) separators — fixed at the
+  render layer so every menu path is covered.
+- **"File" filter pill clipped + blank row in its dropdown.** The filter row had a fixed
+  `Width="352"` but its content is ~357px, clipping the File pill's right edge — width removed,
+  the panel sizes itself. Extensionless files keyed the dropdown on `""`, rendering a blank row
+  (it sorted between Text and CSV); they now key as `other` / label "Other", and the filter
+  round-trips because both the menu and `RenderItems` go through `FileKindKey`.
 
 ## What a user could see (2026-08-05, second pass)
 
