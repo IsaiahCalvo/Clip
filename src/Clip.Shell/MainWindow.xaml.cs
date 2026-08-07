@@ -3326,6 +3326,7 @@ public partial class MainWindow : Window
         if (_selected is not null)
         {
             HeaderIcon.Source = IconFor(_selected, 96);
+            AttachFavicon(HeaderIcon, _selected);
         }
     }
 
@@ -3338,7 +3339,10 @@ public partial class MainWindow : Window
             {
                 // Rows are built with rich previews (thumbnails, real file icons); refreshing with
                 // the flat vector fallback swapped every icon for the generic glyph until restart.
+                // IconFor gives links their monogram, so the favicon has to be re-attached the same
+                // way row construction does or the refresh wipes it.
                 image.Source = IconFor(imageItem, 96);
+                AttachFavicon(image, imageItem);
             }
 
             RefreshClipboardManagerIcons(child);
@@ -3351,6 +3355,7 @@ public partial class MainWindow : Window
         if (refreshIcon && _selected is not null)
         {
             HeaderIcon.Source = IconFor(_selected, 96);
+            AttachFavicon(HeaderIcon, _selected);
         }
     }
 
@@ -3404,20 +3409,26 @@ public partial class MainWindow : Window
     /// </summary>
     private void AttachFavicon(WpfImage target, ClipboardHistoryItem item)
     {
+        // The tag is cleared on every non-favicon path: the header icon is one shared element, so
+        // a stale host tag would let an in-flight fetch for the previous link paint over whatever
+        // item is selected by the time it resolves.
         if (item.Kind != ClipboardItemKind.Link)
         {
+            target.Tag = null;
             return;
         }
 
         var payload = TextPayload(item);
         if (ClipboardLinkDetector.IsEmail(payload))
         {
+            target.Tag = null;
             return;
         }
 
         var host = FaviconCache.HostOf(payload);
         if (host is null)
         {
+            target.Tag = null;
             return;
         }
 
@@ -3910,6 +3921,7 @@ public partial class MainWindow : Window
         }
 
         HeaderIcon.Source = IconFor(item, 96);
+        AttachFavicon(HeaderIcon, item);
         TitleText.Text = TitleFor(item);
         SubTitleText.Text = HeaderSubtitleFor(item);
         if (item.Kind == ClipboardItemKind.Text)
