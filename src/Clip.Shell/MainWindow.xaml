@@ -315,7 +315,7 @@
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center" Width="352" HorizontalAlignment="Right">
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Right">
                     <Border x:Name="AllFilterShell" CornerRadius="5" Background="{DynamicResource Surface3}" BorderBrush="Transparent" BorderThickness="1">
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="AllButton" Content="All" Style="{StaticResource PillSegmentLeft}" Click="OnAllFilterClick" Foreground="{DynamicResource Text}" Background="Transparent" Padding="0" Width="38"/>

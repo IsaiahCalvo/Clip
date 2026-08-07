@@ -801,6 +801,9 @@ public partial class MainWindow : Window
     private SettingsWindow? _hostedSettings;
     private bool _settingsOverlayKeepPaletteOnClose;
     private Border? _prewarmedSettingsOverlay;
+    // WebView2 is an HWND with its own airspace — no WPF ZIndex can paint over it, so the browser
+    // pane is hidden while the hosted settings overlay is up and restored when it closes.
+    private bool _previewHiddenForSettings;
     private SettingsWindow? _prewarmedSettings;
     private bool _prewarmedSettingsReady;
     private bool _settingsPrewarmQueued;
@@ -3333,7 +3336,9 @@ public partial class MainWindow : Window
             var child = VisualTreeHelper.GetChild(root, i);
             if (child is WpfImage image && FindRowItem(image) is { } imageItem)
             {
-                image.Source = IconFor(imageItem, 96, preferRichPreview: false);
+                // Rows are built with rich previews (thumbnails, real file icons); refreshing with
+                // the flat vector fallback swapped every icon for the generic glyph until restart.
+                image.Source = IconFor(imageItem, 96);
             }
 
             RefreshClipboardManagerIcons(child);
@@ -3678,13 +3683,24 @@ public partial class MainWindow : Window
     {
         ActionMenuHost.Children.Clear();
         ShareSubmenuPopup.IsOpen = false;
+        // Menu builders append separators per section; when a section contributes nothing the
+        // separators land back to back, so consecutive (and leading) ones collapse here.
+        var lastWasSeparator = true;
         foreach (var action in actions)
         {
             if (action.IsSeparator)
             {
+                if (lastWasSeparator)
+                {
+                    continue;
+                }
+
                 ActionMenuHost.Children.Add(new Border { Height = 1, Background = (WpfBrush)FindResource("Line"), Margin = new Thickness(4, 4, 4, 4) });
+                lastWasSeparator = true;
                 continue;
             }
+
+            lastWasSeparator = false;
 
             var row = new Border
             {
@@ -6500,6 +6516,16 @@ public partial class MainWindow : Window
         }
 
         HidePreviews(pauseMedia: false);
+        if (_settingsOverlay is not null)
+        {
+            // The page loaded fine, but revealing the browser now would put its HWND on top of the
+            // settings overlay (e.g. a theme change inside settings re-renders the preview).
+            // CloseHostedSettings restores visibility.
+            _previewHiddenForSettings = true;
+            BenchMarks.Mark("preview-ready");
+            return true;
+        }
+
         view.Visibility = Visibility.Visible;
         BenchMarks.Mark("preview-ready");
         return true;
@@ -7315,6 +7341,13 @@ public partial class MainWindow : Window
         _settingsOverlayKeepPaletteOnClose = showPaletteOnClose;
         _suppressDeactivate = true;
 
+        if (_htmlPreview is { Visibility: Visibility.Visible } preview)
+        {
+            preview.Visibility = Visibility.Collapsed;
+            PauseHtmlPreviewMedia();
+            _previewHiddenForSettings = true;
+        }
+
         if (!ReferenceEquals(overlay.Parent, host))
         {
             host.Children.Add(overlay);
@@ -7378,6 +7411,15 @@ public partial class MainWindow : Window
         if (!hadOverlay)
         {
             return;
+        }
+
+        if (_previewHiddenForSettings)
+        {
+            _previewHiddenForSettings = false;
+            if (_htmlPreview is not null)
+            {
+                _htmlPreview.Visibility = Visibility.Visible;
+            }
         }
 
         _suppressDeactivate = false;
@@ -8875,6 +8917,8 @@ public partial class MainWindow : Window
             ".ppt" or ".pptx" => "powerpoint",
             ".jpg" or ".jpeg" or ".png" or ".gif" or ".bmp" or ".webp" => "image",
             ".txt" or ".log" or ".md" or ".json" or ".xml" or ".css" or ".js" or ".ts" or ".cs" or ".bat" or ".ps1" => "text",
+            // Extensionless files used to key on "", which rendered a blank row in the File menu.
+            "" => "other",
             _ => ext.TrimStart('.'),
         };
     }
@@ -8889,6 +8933,7 @@ public partial class MainWindow : Window
         "html" => "HTML",
         "word" => "Word",
         "powerpoint" => "PowerPoint",
+        "other" => "Other",
         _ => key.ToUpperInvariant(),
     };
 
@@ -9004,7 +9049,9 @@ public partial class MainWindow : Window
     private ImageSource RenderFileSvg(string path, int size)
     {
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
-        var cacheKey = $"file-icon|{ext}|{size}";
+        // Keyed by the theme's icon color: the rasterized SVGs bake it in, and a theme-free key
+        // kept serving the old theme's rendering after a switch.
+        var cacheKey = $"file-icon|{ext}|{size}|{BrushHex("Muted2")}";
         if (TryGetCachedRaster(cacheKey, out var cached))
         {
             return cached;
@@ -10986,6 +11033,10 @@ internal sealed class SettingsWindow : Window
         var shell = new Grid();
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(54) });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        // A Border does not clip its child to its rounded corners, so the square header and body
+        // painted over the 1px border along the curves. The panel is a fixed 720x500 everywhere
+        // (NoResize window, fixed-size host), so a static clip matching the inner rounding holds.
+        shell.Clip = new RectangleGeometry(new Rect(0, 0, 718, 498), 13, 13);
         root.Child = shell;
 
         var header = new Grid { Background = _surface2 };
