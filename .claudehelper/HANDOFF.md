@@ -1,7 +1,48 @@
 # Clip — handoff
 
-_Last updated 2026-08-07. **`main` is the trunk.** All work pushed, and **installed** — the copy in
+_Last updated 2026-08-08. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
+
+## Paste crash fixed (2026-08-08, commit dacfb69)
+
+Clicking a row to paste killed the whole app: `Clipboard.SetDataObject(copy: true)`
+re-renders every format inside `OleFlushClipboard`, and WPF answers any failure there
+with `Environment.FailFast` — uncatchable, process gone (Event Log 11:34, v1.1.10;
+stack: `GetDataIntoOleStructsByTypeMedimHGlobal` → `FailFast`). The text/html/rtf
+branch of `SetClipboard` now renders the bytes itself and hands Windows finished
+HGLOBALs via `Clip.Core/Win32ClipboardWriter` (CF_UNICODETEXT + "HTML Format" UTF-8 +
+"Rich Text Format" ANSI, owner hwnd passed so source attribution still sees Clip).
+If the Win32 write fails after retries it falls back to WPF with `copy: false`, which
+skips the flush. 877 tests pass (3 new for the byte encoders — deliberately not
+touching the real clipboard). Built, pushed, installed, Clip restarted.
+
+**Verify:** copy something formatted from Word/browser, paste it back out of Clip a
+few times — the 1.1.10 build died on exactly that.
+
+### Next steps
+- Image and file paste still go through WPF (`SetImage`/`SetFileDropList`, which also
+  flush). Same FailFast is theoretically reachable there; extend Win32ClipboardWriter
+  if it ever fires.
+
+## Raycast comparison research (2026-08-07, no code changes)
+
+Compared Clip against Raycast's Clipboard History (macOS + Windows beta). Clip is ahead on
+previews, paste verification/per-app overrides, CLI, and licensing. Gaps worth considering,
+roughly by value:
+
+1. **Respect Windows clipboard-exclusion formats** — password managers (1Password, Bitwarden,
+   KeePass) set `ExcludeClipboardContentFromMonitorProcessing` / `CanIncludeInClipboardHistory`
+   on the clipboard. Clip ignores these and records the secret unless the app is manually
+   excluded. Raycast honors the macOS equivalent by default. Small change in the capture path,
+   big privacy win.
+2. Time-based retention option (Clip is count-only, 500) + bulk delete-by-time-window.
+3. Fuzzy search (current search is case-insensitive substring across preview/text/OCR/paths).
+4. Sequential paste (select several, paste in order).
+5. Pause-capture / incognito toggle.
+6. Code signing (already planned).
+
+### Next steps
+- If Isaiah wants any of the above, start with item 1 — it's the only real privacy hole.
 
 ## Five visual defects fixed (2026-08-07, commit dea8350)
 
