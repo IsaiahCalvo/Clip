@@ -5137,11 +5137,23 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private static void SetClipboard(ClipboardHistoryItem item, PasteFormatPreference pasteFormat)
+    private void SetClipboard(ClipboardHistoryItem item, PasteFormatPreference pasteFormat)
     {
         if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link or ClipboardItemKind.Color)
         {
             var payload = ClipboardPasteData.Create(item, pasteFormat);
+
+            // Not WPF's Clipboard here: SetDataObject(copy: true) re-renders every format
+            // inside OleFlushClipboard and answers any failure there with Environment.FailFast,
+            // which killed the app on 2026-08-08. Win32ClipboardWriter hands Windows finished
+            // buffers instead, so there is nothing left to re-render or fail-fast over.
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (Win32ClipboardWriter.TrySetText(hwnd, payload.Text, payload.Html, payload.Rtf))
+            {
+                return;
+            }
+
+            ShellLog.Snapshot("clipboard win32 set failed; falling back to WPF without flush");
             var data = new System.Windows.DataObject();
             data.SetText(payload.Text, System.Windows.TextDataFormat.UnicodeText);
             if (payload.Html is not null)
@@ -5154,7 +5166,9 @@ public partial class MainWindow : Window
                 data.SetText(payload.Rtf, System.Windows.TextDataFormat.Rtf);
             }
 
-            System.Windows.Clipboard.SetDataObject(data, copy: true);
+            // copy: false skips the flush, so the FailFast path cannot run; the data stays
+            // valid because Clip is resident.
+            System.Windows.Clipboard.SetDataObject(data, copy: false);
         }
         else if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
         {
