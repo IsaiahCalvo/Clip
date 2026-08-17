@@ -6293,6 +6293,21 @@ public partial class MainWindow : Window
         var core = view.CoreWebView2 ?? throw new InvalidOperationException("WebView2 initialization completed without a CoreWebView2");
         core.ContainsFullScreenElementChanged += OnWebViewFullScreenChanged;
         core.WebMessageReceived += OnPlayerMessage;
+
+        // Chromium's default scrollbar is the fat stock bar regardless of any WPF styling, so
+        // every page this pane ever loads gets the Raycast pill injected (6px, #717176,
+        // pixel-measured from Raycast 2026-08-17). Covers code, workbook, media, html-file and
+        // rich-text previews in one place; only the built-in PDF viewer draws its own.
+        await core.AddScriptToExecuteOnDocumentCreatedAsync("""
+            (() => {
+                const add = () => {
+                    const s = document.createElement('style');
+                    s.textContent = '::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#717176;border-radius:3px}::-webkit-scrollbar-corner{background:transparent}';
+                    (document.head || document.documentElement).appendChild(s);
+                };
+                if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', add); } else { add(); }
+            })();
+            """);
     }
 
     private MediaPipWindow? _pipWindow;
