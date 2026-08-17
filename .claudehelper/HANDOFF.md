@@ -30,6 +30,22 @@ zero extent change, so selecting another item never flashes it), and fades out 8
 scrolling stops — `OnInfoScrollChanged` in MainWindow.xaml.cs. Not hit-testable. Installed
 and restarted.
 
+### Second follow-up (commit b47e5b0): he then said to open the real Raycast and copy it, so
+that's what happened — with his screen-control permission, Raycast's clipboard window was
+opened on screen (its window hides at layered alpha 0; the computer-use `key` tool could not
+reach it, but `SendInput` Alt+Shift+V from PowerShell works — the repo's Measure-VsRaycast
+trick). Measured: ~4px rounded pill hugging the panel edge, no track, visible only while
+scrolling, fully gone ~1.5s after. Clip's bar is now a 4px full-bleed pill (own template, no
+inner thumb margin, CornerRadius 2) tucked 5px from the window edge, same fade envelope, and
+`RenderInfo` now calls `InfoScroll.ScrollToTop()` so the info section never opens mid-scroll.
+Verified live on screen against the real Raycast. Installed and restarted.
+
+**Litter noticed, not touched:** his real history has two dead pinned items from the 8/5
+bench-fixture leak — `sample-video.mp4` / `sample-audio.wav` pointing into a deleted session
+scratchpad. Every palette open logs a "file preview failed" for the selected one. They are
+his (pinned) data, so they were left alone — unpinning/deleting them from the palette would
+stop the noise.
+
 ## Paste crash fixed (2026-08-08, commit dacfb69)
 
 Clicking a row to paste killed the whole app: `Clipboard.SetDataObject(copy: true)`
