@@ -58,6 +58,14 @@
                 </Track>
             </Grid>
         </ControlTemplate>
+        <!-- No dotted keyboard-focus rectangles anywhere (Raycast shows none). App-level implicit
+             styles reach code-built controls too; BasedOn keeps the theme's template intact. -->
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        </Style>
+        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        </Style>
         <Style TargetType="ScrollBar">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Width" Value="6"/>

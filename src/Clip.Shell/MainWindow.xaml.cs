@@ -5830,7 +5830,7 @@ public partial class MainWindow : Window
             BorderBrush = line,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(7),
-            Margin = new Thickness(16, 8, 16, 7),
+            Margin = new Thickness(16, 8, 16, 8),
             Padding = new Thickness(10, 0, 10, 0),
             Child = search,
         };
@@ -5901,6 +5901,7 @@ public partial class MainWindow : Window
                 Background = background,
                 Foreground = foreground,
                 BorderThickness = new Thickness(0),
+                ItemContainerStyle = PaletteListItemStyle((WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected")),
             };
             appList.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
             appList.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
@@ -9852,6 +9853,36 @@ public partial class MainWindow : Window
             ShellLog.Error(ex, "rounded corners failed");
         }
     }
+
+    // Replaces the stock ListBoxItem template: the default one paints hover/selection with the
+    // Windows system highlight blue, which is the only place the OS palette could still leak in.
+    internal static Style PaletteListItemStyle(WpfBrush hoverFill, WpfBrush selectedFill)
+    {
+        var root = new FrameworkElementFactory(typeof(Border), "Bd");
+        root.SetValue(Border.BackgroundProperty, WpfBrushes.Transparent);
+        root.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
+        root.SetBinding(Border.PaddingProperty, new System.Windows.Data.Binding("Padding")
+        {
+            RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent,
+        });
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        root.AppendChild(presenter);
+
+        var template = new ControlTemplate(typeof(WpfListBoxItem)) { VisualTree = root };
+        var hover = new Trigger { Property = IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(Border.BackgroundProperty, hoverFill, "Bd"));
+        template.Triggers.Add(hover);
+        // Added after hover so selection wins while the pointer is over the selected row.
+        var selected = new Trigger { Property = WpfListBoxItem.IsSelectedProperty, Value = true };
+        selected.Setters.Add(new Setter(Border.BackgroundProperty, selectedFill, "Bd"));
+        template.Triggers.Add(selected);
+
+        var style = new Style(typeof(WpfListBoxItem));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.TemplateProperty, template));
+        style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
+        return style;
+    }
 }
 
 internal sealed class WpfWindowHandle(IntPtr handle) : Forms.IWin32Window
@@ -10024,7 +10055,8 @@ internal sealed class HotkeyHelpWindow : Window
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(8, 3, 8, 3),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
-            Child = new TextBlock { Text = key, Foreground = text, FontSize = 12, FontWeight = FontWeights.SemiBold },
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock { Text = key, Foreground = text, FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center },
         };
         row.Children.Add(box);
         var label = new TextBlock { Text = action, Foreground = muted, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
@@ -10127,7 +10159,7 @@ internal sealed class OpenWithWindow : Window
             BorderBrush = line,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(7),
-            Margin = new Thickness(16, 8, 16, 7),
+            Margin = new Thickness(16, 8, 16, 8),
             Padding = new Thickness(10, 0, 10, 0),
         };
         _search.Background = WpfBrushes.Transparent;
@@ -10147,6 +10179,7 @@ internal sealed class OpenWithWindow : Window
         _apps.MouseDoubleClick += (_, _) => AcceptSelection();
         _apps.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
         _apps.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
+        _apps.ItemContainerStyle = MainWindow.PaletteListItemStyle(_accentSoft, _selected);
         Grid.SetRow(_apps, 2);
         shell.Children.Add(_apps);
 
@@ -10561,7 +10594,7 @@ internal sealed class ExcludedAppPickerWindow : Window
             BorderBrush = line,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(7),
-            Margin = new Thickness(16, 8, 16, 7),
+            Margin = new Thickness(16, 8, 16, 8),
             Padding = new Thickness(10, 0, 10, 0),
         };
         _search.Background = WpfBrushes.Transparent;
@@ -10581,6 +10614,7 @@ internal sealed class ExcludedAppPickerWindow : Window
         _apps.MouseDoubleClick += (_, _) => AcceptSelection();
         _apps.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Auto);
         _apps.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled);
+        _apps.ItemContainerStyle = MainWindow.PaletteListItemStyle(accentSoft, selected);
         Grid.SetRow(_apps, 2);
         shell.Children.Add(_apps);
 
@@ -11923,10 +11957,10 @@ internal sealed class SettingsWindow : Window
             Refresh();
         };
 
+        // No explicit size: the bordered shell below is 142x30 with a 1px border, so a 142x30
+        // child would sit 1px proud on every side and paint over the border and corners.
         var selector = new Grid
         {
-            Width = clearControlWidth,
-            Height = 30,
             Background = WpfBrushes.Transparent,
             ClipToBounds = true,
         };
@@ -12035,6 +12069,7 @@ internal sealed class SettingsWindow : Window
         if (_updateStatus.State == "Update available" && !string.IsNullOrWhiteSpace(_updateStatus.DownloadUrl))
         {
             var update = SecondaryButton($"Update to {_updateStatus.LatestVersion}");
+            update.Width = double.NaN; // long version strings must grow the button, not clip
             update.MinWidth = 140;
             update.Margin = new Thickness(0, 0, 8, 0);
             var capturedStatus = _updateStatus;
@@ -12265,7 +12300,7 @@ internal sealed class SettingsWindow : Window
             Text = current,
             Width = 170,
             Height = 30,
-            Padding = new Thickness(10, 5, 10, 0),
+            Padding = new Thickness(10, 0, 10, 0),
             Background = _surface2,
             Foreground = _text,
             BorderBrush = _line,
@@ -12300,7 +12335,9 @@ internal sealed class SettingsWindow : Window
 
             if (!TryCreateGestureFromKeyEvent(e, requireModifier, out var gesture))
             {
-                input.Text = requireModifier ? "Use Ctrl, Alt, Shift, or Win" : "Invalid shortcut";
+                // Short strings: the app-override variant of this box is 108px wide (86px of
+                // usable text width), which hard-clips anything longer.
+                input.Text = requireModifier ? "Needs modifier" : "Invalid";
                 e.Handled = true;
                 return;
             }
@@ -12594,8 +12631,10 @@ internal sealed class SettingsWindow : Window
 
         ApplyThemeSelection(theme, refreshImmediately: false);
         _paletteOverride = null;
-        RefreshTheme(rebuildPage: false);
-        RefreshVisibleSettingsContentTheme(_content);
+        // Rebuild the page instead of walking and repainting it: the blanket repaint erased
+        // state colors (selected app icon ring, toggle accent, dropdown values) and never
+        // reached popup subtrees. A rebuild reconstructs every row from the fresh palette.
+        RefreshTheme(rebuildPage: true);
         _refreshClipboardManagerTextTheme();
         _themeIcon?.SetInk(_text);
         PendingTheme = null;
@@ -12759,51 +12798,6 @@ internal sealed class SettingsWindow : Window
         }
     }
 
-    private void RefreshVisibleSettingsContentTheme(DependencyObject root)
-    {
-        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-        {
-            var child = VisualTreeHelper.GetChild(root, i);
-            switch (child)
-            {
-                case TextBlock text:
-                    text.Foreground = IsPrimarySettingsText(text) ? _text : _muted;
-                    break;
-                case WpfButton button:
-                    button.Foreground = _text;
-                    if (button.Background != WpfBrushes.Transparent)
-                    {
-                        button.Background = _surface2;
-                    }
-                    if (button.BorderBrush != WpfBrushes.Transparent)
-                    {
-                        button.BorderBrush = _line;
-                    }
-                    break;
-                case Border border:
-                    if (border.BorderThickness != new Thickness(0))
-                    {
-                        border.BorderBrush = _line;
-                    }
-                    break;
-                case WpfImage image when string.Equals(image.Tag as string, DropdownIconTag, StringComparison.Ordinal):
-                    image.Source = DropdownIcon();
-                    break;
-            }
-
-            RefreshVisibleSettingsContentTheme(child);
-        }
-    }
-
-    private static bool IsPrimarySettingsText(TextBlock text)
-    {
-        return text.FontWeight == FontWeights.SemiBold ||
-            text.FontWeight == FontWeights.Bold ||
-            text.FontSize >= 15 ||
-            string.Equals(text.Text, "Theme", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(text.Text, "App icon", StringComparison.OrdinalIgnoreCase);
-    }
-
     private Border ThemeOptionRow(string item, Action<ClipThemePreference> onSelected)
     {
         var row = new Border
@@ -12861,7 +12855,9 @@ internal sealed class SettingsWindow : Window
 
     private FrameworkElement AppIconPicker()
     {
-        var host = new Grid { Width = 74, Height = 30 };
+        // 32, not 30: each icon button is 24px image + 3px padding each side + 1px border each
+        // side = 32 exactly - a 30px host clipped the bottom edge.
+        var host = new Grid { Width = 74, Height = 32 };
         host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
         host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -12881,11 +12877,13 @@ internal sealed class SettingsWindow : Window
         var button = new WpfButton
         {
             Width = 32,
-            Height = 30,
+            Height = 32,
             Padding = new Thickness(3),
             Background = WpfBrushes.Transparent,
             BorderBrush = active ? _selectedBorder : WpfBrushes.Transparent,
-            BorderThickness = new Thickness(active ? 1 : 0),
+            // Thickness stays 1 either way: the hover handler swaps only the brush, and a 0px
+            // border made hover invisible on exactly the button the user is about to click.
+            BorderThickness = new Thickness(1),
             Content = new WpfImage
             {
                 Source = LoadAppIconImage(preference),
@@ -13019,6 +13017,9 @@ internal sealed class SettingsWindow : Window
                 {
                     var isSelected = optionRow.Child is TextBlock text && string.Equals(text.Text, item, StringComparison.OrdinalIgnoreCase);
                     optionRow.Background = WpfBrushes.Transparent;
+                    // The popup closes on this same event, so MouseLeave never fires - without
+                    // this the hovered row keeps its 1px hover outline until the next open.
+                    optionRow.BorderBrush = WpfBrushes.Transparent;
                     if (optionRow.Child is TextBlock optionText)
                     {
                         optionText.Foreground = isSelected ? _accent : _muted;
@@ -13105,7 +13106,8 @@ internal sealed class SettingsWindow : Window
             Foreground = _text,
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 12, 16, 0),
+            Margin = new Thickness(0, 9, 16, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         });
 
         Grid.SetColumn(actions, 1);
