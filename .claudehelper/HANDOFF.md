@@ -40,6 +40,15 @@ inner thumb margin, CornerRadius 2) tucked 5px from the window edge, same fade e
 `RenderInfo` now calls `InfoScroll.ScrollToTop()` so the info section never opens mid-scroll.
 Verified live on screen against the real Raycast. Installed and restarted.
 
+### Third follow-up (commit 48528ee): he called the 4px bar an ugly block vs Raycast's and
+told Claude off for staying on his screen. One full-res `CopyFromScreen` capture of Raycast's
+bar mid-scroll was pixel-scanned — 6px wide, core 113,113,118 (#717176), soft anti-aliased
+pill — and everything after was done off-screen. Root cause of the ugliness: the window's
+`UseLayoutRounding` snapped the small pill to hard whole-pixel edges; the bar template now
+opts out of snapping/rounding, uses #717176 at width 6 / radius 3, and an offscreen
+RenderTargetBitmap reproduces Raycast's exact core pixels. Installed and restarted.
+**Rule reaffirmed: stay off his screen; one capture, then iterate off-screen.**
+
 **Litter noticed, not touched:** his real history has two dead pinned items from the 8/5
 bench-fixture leak — `sample-video.mp4` / `sample-audio.wav` pointing into a deleted session
 scratchpad. Every palette open logs a "file preview failed" for the selected one. They are
