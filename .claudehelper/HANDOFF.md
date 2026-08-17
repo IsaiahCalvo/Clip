@@ -24,9 +24,11 @@ open-with/explorer/copy-path/share/save-as/delete). No change made there.
 section: values reach the same margin on the right as labels do on the left, thin scrollbar
 floats outside the text when it scrolls.
 
-### Next steps
-- If the floating thumb (6px, `Muted3`) reads too heavy against the values, dim it or show
-  it only while scrolling — one style tweak in `ThinOverlayScrollBar`.
+### Follow-up same day (commit b81f323): Isaiah rejected the always-visible thumb ("thick as
+hell"). It now starts at opacity 0, fades in only on a real user scroll (offset change with
+zero extent change, so selecting another item never flashes it), and fades out 800ms after
+scrolling stops — `OnInfoScrollChanged` in MainWindow.xaml.cs. Not hit-testable. Installed
+and restarted.
 
 ## Paste crash fixed (2026-08-08, commit dacfb69)
 
