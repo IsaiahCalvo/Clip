@@ -1,7 +1,32 @@
 # Clip — handoff
 
-_Last updated 2026-08-08. **`main` is the trunk.** All work pushed, and **installed** — the copy in
+_Last updated 2026-08-17. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
+
+## Smaller window + info panel right-margin fix (2026-08-17, commit 2813af0)
+
+Isaiah compared Clip to Raycast: window felt big, and the INFORMATION section had a visibly
+bigger right margin than left. Root cause of the margin: any item with enough info rows to
+scroll (every file item — 9 rows in a 132px viewport) made the ScrollViewer reserve a **17px
+scrollbar gutter that rendered invisibly** (the window's implicit ThinScrollBar style never
+reached inside the ScrollViewer template, so the default-width bar was reserved but drawn
+transparent). Fix: `OverlayScrollViewer` template on `InfoScroll` — the 6px thin bar now
+floats in the 24px outer margin (negative right margin) and content keeps full width, 24/24
+symmetric. Window shrunk 880x560 → 800x520 (Raycast is ~750x475); the hosted settings
+overlay (fixed 720x500) still fits, verified by film. 877 tests pass, `--open-test` clean,
+built, pushed, **installed and restarted**.
+
+His right-click-menu comparison was checked too: Clip's context menu already covers
+everything Raycast's does (paste/copy/plain-paste/rename/pin+reorder/edit/append/open/
+open-with/explorer/copy-path/share/save-as/delete). No change made there.
+
+**Verify:** Alt+V — window is smaller; select a copied *file* and look at the INFORMATION
+section: values reach the same margin on the right as labels do on the left, thin scrollbar
+floats outside the text when it scrolls.
+
+### Next steps
+- If the floating thumb (6px, `Muted3`) reads too heavy against the values, dim it or show
+  it only while scrolling — one style tweak in `ThinOverlayScrollBar`.
 
 ## Paste crash fixed (2026-08-08, commit dacfb69)
 
