@@ -69,15 +69,16 @@
         </Style>
         <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/>
 
-        <!-- Raycast-style overlay thumb: a 4px rounded pill, no track, no inner padding.
-             Measured against the real Raycast clipboard window on 2026-08-17. -->
+        <!-- Raycast's bar, pixel-measured 2026-08-17: 6px pill, #717176, soft anti-aliased
+             rounded caps. No pixel snapping here on purpose - snapping is what made the first
+             attempt render as a hard-edged block. -->
         <Style x:Key="ThinOverlayScrollBar" TargetType="ScrollBar">
-            <Setter Property="Width" Value="4"/>
+            <Setter Property="Width" Value="6"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ScrollBar">
-                        <Grid Background="Transparent" SnapsToDevicePixels="True">
+                        <Grid Background="Transparent" SnapsToDevicePixels="False" UseLayoutRounding="False">
                             <Track x:Name="PART_Track" IsDirectionReversed="True">
                                 <Track.DecreaseRepeatButton>
                                     <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
@@ -86,7 +87,7 @@
                                     <Thumb>
                                         <Thumb.Template>
                                             <ControlTemplate TargetType="Thumb">
-                                                <Border Background="{DynamicResource Muted3}" CornerRadius="2"/>
+                                                <Border Background="#717176" CornerRadius="3" SnapsToDevicePixels="False" UseLayoutRounding="False"/>
                                             </ControlTemplate>
                                         </Thumb.Template>
                                     </Thumb>
@@ -113,8 +114,8 @@
                            Style="{StaticResource ThinOverlayScrollBar}"
                            Orientation="Vertical"
                            HorizontalAlignment="Right"
-                           Width="4"
-                           Margin="0,0,-19,0"
+                           Width="6"
+                           Margin="0,0,-16,0"
                            Opacity="0"
                            IsHitTestVisible="False"
                            Value="{TemplateBinding VerticalOffset}"
