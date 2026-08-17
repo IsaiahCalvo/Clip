@@ -31,9 +31,10 @@
         <SolidColorBrush x:Key="Muted3" Color="#6B656B"/>
         <SolidColorBrush x:Key="Accent" Color="#8FC8D9"/>
         <SolidColorBrush x:Key="TextCursor" Color="#63D8FF"/>
-        <SolidColorBrush x:Key="AccentSoft" Color="#263941"/>
-        <SolidColorBrush x:Key="Selected" Color="#27363B"/>
-        <SolidColorBrush x:Key="SelectedBorder" Color="#56828E"/>
+        <SolidColorBrush x:Key="AccentSoft" Color="#2C2A2C"/>
+        <SolidColorBrush x:Key="Selected" Color="#363336"/>
+        <SolidColorBrush x:Key="SelectedBorder" Color="#4E4A4E"/>
+        <SolidColorBrush x:Key="TextSelection" Color="#325070"/>
         <SolidColorBrush x:Key="Danger" Color="#D56B5D"/>
 
         <!-- Raycast's bar, pixel-measured 2026-08-17: 6px pill, #717176, soft anti-aliased
@@ -118,7 +119,7 @@
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="CaretBrush" Value="{DynamicResource TextCursor}"/>
-            <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource TextSelection}"/>
             <Setter Property="SelectionOpacity" Value="0.7"/>
         </Style>
 
@@ -145,12 +146,10 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoft}"/>
-                                <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource SelectedBorder}"/>
                                 <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
-                                <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource SelectedBorder}"/>
                                 <Setter TargetName="Root" Property="Opacity" Value="0.92"/>
                                 <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
@@ -169,7 +168,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoft}"/>
                                 <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
@@ -192,57 +191,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoft}"/>
                                 <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
                                 <Setter TargetName="Root" Property="Opacity" Value="0.88"/>
-                                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="FilterChevronButton" TargetType="Button" BasedOn="{StaticResource FilterButton}">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Root"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="5"
-                                RenderTransformOrigin="0.5,0.5">
-                            <Border.RenderTransform>
-                                <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/>
-                            </Border.RenderTransform>
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoft}"/>
-                                <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX" To="1.06" Duration="0:0:0.12"/>
-                                            <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY" To="1.06" Duration="0:0:0.12"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX" To="1.0" Duration="0:0:0.12"/>
-                                            <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY" To="1.0" Duration="0:0:0.12"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource Selected}"/>
-                                <Setter TargetName="Root" Property="Opacity" Value="0.92"/>
                                 <Setter Property="Foreground" Value="{DynamicResource Text}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -359,7 +313,7 @@
                 </Border>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Right">
-                    <Border x:Name="AllFilterShell" CornerRadius="5" Background="{DynamicResource Surface3}" BorderBrush="Transparent" BorderThickness="1">
+                    <Border x:Name="AllFilterShell" CornerRadius="5" Background="{DynamicResource Selected}" BorderBrush="{DynamicResource SelectedBorder}" BorderThickness="1">
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="AllButton" Content="All" Style="{StaticResource PillSegmentLeft}" Click="OnAllFilterClick" Foreground="{DynamicResource Text}" Background="Transparent" Padding="0" Width="38"/>
                             <Border Width="1" Background="{DynamicResource Line2}" Opacity="0.55"/>

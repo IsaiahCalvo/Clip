@@ -870,18 +870,6 @@ public partial class MainWindow : Window
         SubTitleText.Foreground = (WpfBrush)FindResource("Muted");
         TitleText.MouseEnter += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Accent");
         TitleText.MouseLeave += (_, _) => TitleText.Foreground = (WpfBrush)FindResource("Text");
-        AllFilterShell.MouseEnter += (_, _) =>
-        {
-            AllFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
-            AllFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
-        };
-        AllFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
-        FilesFilterShell.MouseEnter += (_, _) =>
-        {
-            FilesFilterShell.Background = (WpfBrush)FindResource("AccentSoft");
-            FilesFilterShell.BorderBrush = (WpfBrush)FindResource("SelectedBorder");
-        };
-        FilesFilterShell.MouseLeave += (_, _) => UpdateFilterVisuals();
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
@@ -5248,7 +5236,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("TextCursor"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
+        var editor = new TextEditWindow(TextPayload(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("TextCursor"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"), (WpfBrush)FindResource("TextSelection"))
         {
             Owner = this,
         };
@@ -5327,7 +5315,7 @@ public partial class MainWindow : Window
             FontFamily = new System.Windows.Media.FontFamily("JetBrains Mono, Cascadia Mono, Consolas"),
             FontSize = 13,
             CaretBrush = textCursor,
-            SelectionBrush = accentSoft,
+            SelectionBrush = (WpfBrush)FindResource("TextSelection"),
         };
         TextOptions.SetTextFormattingMode(box, TextFormattingMode.Ideal);
         TextOptions.SetTextRenderingMode(box, TextRenderingMode.Grayscale);
@@ -5434,7 +5422,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"))
+        var editor = new RenameWindow(TitleFor(item), (WpfBrush)FindResource("Bg"), (WpfBrush)FindResource("Text"), (WpfBrush)FindResource("Muted"), (WpfBrush)FindResource("Line"), (WpfBrush)FindResource("Surface"), (WpfBrush)FindResource("AccentSoft"), (WpfBrush)FindResource("Selected"), (WpfBrush)FindResource("SelectedBorder"), (WpfBrush)FindResource("TextSelection"))
         {
             Owner = this,
         };
@@ -5514,7 +5502,7 @@ public partial class MainWindow : Window
             Foreground = foreground,
             BorderThickness = new Thickness(0),
             FontSize = 13,
-            SelectionBrush = accentSoft,
+            SelectionBrush = (WpfBrush)FindResource("TextSelection"),
             MaxLength = 120,
         };
         box.KeyDown += (_, e) =>
@@ -7987,9 +7975,13 @@ public partial class MainWindow : Window
         SetBrush("Muted3", useDark ? "#777777" : "#6A6A6A");
         SetBrush("Accent", useDark ? "#8A9CCC" : "#3B5BDB");
         SetBrush("TextCursor", useDark ? "#63D8FF" : "#005BFF");
-        SetBrush("AccentSoft", useDark ? "#232A45" : "#E1E7FB");
-        SetBrush("Selected", useDark ? "#324068" : "#C9D3F5");
-        SetBrush("SelectedBorder", useDark ? "#6878A8" : "#5C7CFA");
+        // Selection/hover chrome is deliberately neutral (no accent tint): accent-colored fills and
+        // 1px accent borders everywhere read as a "glow". The accent survives only in Accent
+        // (focus ring, toggles), TextCursor, and TextSelection.
+        SetBrush("AccentSoft", useDark ? "#2D2D2D" : "#E7E7E7");
+        SetBrush("Selected", useDark ? "#373737" : "#D9D9D9");
+        SetBrush("SelectedBorder", useDark ? "#525252" : "#ACACAC");
+        SetBrush("TextSelection", useDark ? "#325070" : "#B3CFF0");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
         ApplySystemAccentBrushes(useDark);
         Background = (WpfBrush)FindResource("Bg");
@@ -8422,9 +8414,9 @@ public partial class MainWindow : Window
         return System.Windows.Media.Color.FromRgb(Mix(baseColor.R, overlay.R), Mix(baseColor.G, overlay.G), Mix(baseColor.B, overlay.B));
     }
 
-    // Repaints the selection/accent brushes from the live Windows accent so the highlighted row and
-    // the active filter chip match the user's system accent. No-ops (keeps the themed fallback) when
-    // the accent can't be read.
+    // Repaints only the true accent brushes from the live Windows accent (focus ring, toggles,
+    // text selection). Selection/hover chrome stays neutral on purpose — tinting it by the accent
+    // was the source of the app-wide colored "glow". No-ops when the accent can't be read.
     private void ApplySystemAccentBrushes(bool useDark)
     {
         var accent = GetWindowsAccentColor();
@@ -8434,11 +8426,9 @@ public partial class MainWindow : Window
         }
 
         var ac = accent.Value;
-        var listBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#272727" : "#EDEDED");
+        var surfaceBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#212121" : "#FFFFFF");
         SetBrushColor("Accent", ac);
-        SetBrushColor("SelectedBorder", ac);
-        SetBrushColor("Selected", BlendColors(listBg, ac, useDark ? 0.20 : 0.16));
-        SetBrushColor("AccentSoft", BlendColors(listBg, ac, useDark ? 0.26 : 0.20));
+        SetBrushColor("TextSelection", BlendColors(surfaceBg, ac, useDark ? 0.42 : 0.28));
     }
 
     private string BrushHex(string key)
@@ -8794,12 +8784,11 @@ public partial class MainWindow : Window
         SetFilterVisual(LinksButton, null, _kindFilter == "links");
         SetFilterVisual(ColorButton, null, _kindFilter == "colors");
         SetFilterVisual(FilesButton, FilesFilterShell, _kindFilter == "files");
+        // The split-pill shell paints the selected fill; the halves stay transparent so the pill
+        // always reads as one control (OriginUI-style button-with-dropdown).
         DateDropButton.Foreground = _kindFilter == "all" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        DateDropButton.Background = _kindFilter == "all" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         FileDropButton.Foreground = _kindFilter == "files" ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        FileDropButton.Background = _kindFilter == "files" ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         MediaDropButton.Foreground = IsMediaFilter(_kindFilter) ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        MediaDropButton.Background = IsMediaFilter(_kindFilter) ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         RefreshChromeIconsIfReady();
     }
 
@@ -8809,16 +8798,20 @@ public partial class MainWindow : Window
     private void SetFilterVisual(WpfButton button, Border? shell, bool selected)
     {
         var selectedBorder = (WpfBrush)FindResource("SelectedBorder");
+        var selectedFill = (WpfBrush)FindResource("Selected");
         button.Foreground = selected ? (WpfBrush)FindResource("Text") : (WpfBrush)FindResource("Muted");
-        button.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
         if (shell is not null)
         {
-            shell.Background = selected ? (WpfBrush)FindResource("AccentSoft") : WpfBrushes.Transparent;
+            // Split pill: the shell carries the whole selected look so the button half and the
+            // chevron half can never drift apart visually.
+            shell.Background = selected ? selectedFill : WpfBrushes.Transparent;
             shell.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
+            button.Background = WpfBrushes.Transparent;
             button.BorderBrush = WpfBrushes.Transparent;
         }
         else
         {
+            button.Background = selected ? selectedFill : WpfBrushes.Transparent;
             button.BorderBrush = selected ? selectedBorder : WpfBrushes.Transparent;
         }
     }
@@ -13431,7 +13424,7 @@ internal sealed class RenameWindow : Window
     private readonly WpfTextBox _box = new();
     public string Value => _box.Text;
 
-    public RenameWindow(string value, WpfBrush background, WpfBrush foreground, WpfBrush muted, WpfBrush line, WpfBrush surface, WpfBrush accentSoft, WpfBrush selected, WpfBrush selectedBorder)
+    public RenameWindow(string value, WpfBrush background, WpfBrush foreground, WpfBrush muted, WpfBrush line, WpfBrush surface, WpfBrush accentSoft, WpfBrush selected, WpfBrush selectedBorder, WpfBrush textSelection)
     {
         Title = "Rename";
         Width = 420;
@@ -13452,7 +13445,7 @@ internal sealed class RenameWindow : Window
         _box.Foreground = foreground;
         _box.BorderThickness = new Thickness(0);
         _box.FontSize = 13;
-        _box.SelectionBrush = accentSoft;
+        _box.SelectionBrush = textSelection;
         _box.MaxLength = 120;
         _box.KeyDown += (_, e) =>
         {
@@ -13562,7 +13555,7 @@ internal sealed class TextEditWindow : Window
     private readonly System.Windows.Controls.TextBox _box = new();
     public string Value => _box.Text;
 
-    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush textCursor, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder)
+    public TextEditWindow(string value, System.Windows.Media.Brush background, System.Windows.Media.Brush foreground, System.Windows.Media.Brush line, System.Windows.Media.Brush surface, System.Windows.Media.Brush textCursor, System.Windows.Media.Brush accentSoft, System.Windows.Media.Brush selected, System.Windows.Media.Brush selectedBorder, System.Windows.Media.Brush textSelection)
     {
         Title = "Edit Text";
         Width = 640;
@@ -13584,7 +13577,7 @@ internal sealed class TextEditWindow : Window
         var primaryBackground = accentSoft;
         var primaryBorder = selectedBorder;
         var secondaryBackground = surface;
-        var selectionBrush = accentSoft;
+        var selectionBrush = textSelection;
         var hoverBackground = selected;
 
         _box.Text = value;
