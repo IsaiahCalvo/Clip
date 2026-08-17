@@ -79,12 +79,17 @@
         <ControlTemplate x:Key="OverlayScrollViewer" TargetType="ScrollViewer">
             <Grid>
                 <ScrollContentPresenter CanContentScroll="{TemplateBinding CanContentScroll}"/>
+                <!-- Raycast-style: invisible until the user scrolls, faded back out by
+                     OnInfoScrollChanged once scrolling stops. Not hit-testable so the
+                     hidden bar never eats clicks in the margin. -->
                 <ScrollBar x:Name="PART_VerticalScrollBar"
                            Style="{StaticResource ThinOverlayScrollBar}"
                            Orientation="Vertical"
                            HorizontalAlignment="Right"
                            Width="6"
                            Margin="0,0,-14,0"
+                           Opacity="0"
+                           IsHitTestVisible="False"
                            Value="{TemplateBinding VerticalOffset}"
                            Maximum="{TemplateBinding ScrollableHeight}"
                            ViewportSize="{TemplateBinding ViewportHeight}"
@@ -456,7 +461,7 @@
                             <Grid Margin="0,0,0,6">
                                 <TextBlock Text="INFORMATION" Foreground="{DynamicResource Muted}" FontWeight="SemiBold" FontSize="11"/>
                             </Grid>
-                            <ScrollViewer x:Name="InfoScroll" Grid.Row="1" Template="{StaticResource OverlayScrollViewer}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <ScrollViewer x:Name="InfoScroll" Grid.Row="1" Template="{StaticResource OverlayScrollViewer}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" ScrollChanged="OnInfoScrollChanged">
                                 <StackPanel x:Name="InfoHost"/>
                             </ScrollViewer>
                         </Grid>

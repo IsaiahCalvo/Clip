@@ -4398,6 +4398,40 @@ public partial class MainWindow : Window
         ShellLog.Info($"info rendered id={item.Id} kind={item.Kind} rows={InfoHost.Children.Count}");
     }
 
+    private System.Windows.Threading.DispatcherTimer? _infoBarFadeTimer;
+
+    private void OnInfoScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        // Only a user scroll shows the bar. A content swap (selecting another item) also moves
+        // the offset when the new extent clamps it, but that always comes with an extent change.
+        if (e.VerticalChange == 0 || e.ExtentHeightChange != 0)
+        {
+            return;
+        }
+
+        if (InfoScroll.Template?.FindName("PART_VerticalScrollBar", InfoScroll) is not System.Windows.Controls.Primitives.ScrollBar bar)
+        {
+            return;
+        }
+
+        bar.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
+        if (_infoBarFadeTimer is null)
+        {
+            _infoBarFadeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+            _infoBarFadeTimer.Tick += (_, _) =>
+            {
+                _infoBarFadeTimer.Stop();
+                if (InfoScroll.Template?.FindName("PART_VerticalScrollBar", InfoScroll) is System.Windows.Controls.Primitives.ScrollBar b)
+                {
+                    b.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(250)));
+                }
+            };
+        }
+
+        _infoBarFadeTimer.Stop();
+        _infoBarFadeTimer.Start();
+    }
+
     private void AddInfo(string label, string value, ImageSource? icon = null, bool scrollable = false)
     {
         var row = new Grid { MinHeight = 31 };
