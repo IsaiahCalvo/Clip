@@ -69,9 +69,36 @@
         </Style>
         <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/>
 
-        <!-- Vertical-only variant for overlay use: no Height cap, stretches the track. -->
-        <Style x:Key="ThinOverlayScrollBar" TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}">
-            <Setter Property="Height" Value="Auto"/>
+        <!-- Raycast-style overlay thumb: a 4px rounded pill, no track, no inner padding.
+             Measured against the real Raycast clipboard window on 2026-08-17. -->
+        <Style x:Key="ThinOverlayScrollBar" TargetType="ScrollBar">
+            <Setter Property="Width" Value="4"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent" SnapsToDevicePixels="True">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="{DynamicResource Muted3}" CornerRadius="2"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineDownCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- The scrollbar floats over the content's right edge instead of reserving a gutter
@@ -86,8 +113,8 @@
                            Style="{StaticResource ThinOverlayScrollBar}"
                            Orientation="Vertical"
                            HorizontalAlignment="Right"
-                           Width="6"
-                           Margin="0,0,-14,0"
+                           Width="4"
+                           Margin="0,0,-19,0"
                            Opacity="0"
                            IsHitTestVisible="False"
                            Value="{TemplateBinding VerticalOffset}"

@@ -4347,6 +4347,7 @@ public partial class MainWindow : Window
     private void RenderInfo(ClipboardHistoryItem item)
     {
         InfoHost.Children.Clear();
+        InfoScroll.ScrollToTop();
         AddInfo("Source", SourceDisplayName(item), SourceIcon(item));
         AddInfo("Content type", ContentType(item));
 
