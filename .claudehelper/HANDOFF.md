@@ -63,6 +63,19 @@ clipped by the preview Border's ClipToBounds) with the same fade-on-scroll via t
 `ThinScrollBarStyle`, and its three dialog injections. 877 tests, `--open-test` clean, text
 preview film-verified unchanged, installed (hash-verified) and restarted.
 
+### Fifth follow-up (commit a41012b) — the 17px mechanism, finally. "Still there" after the
+app-level style because the style's Width setter never stood a chance: the stock
+ScrollViewer template sets the bar's width from SystemParameters scrollbar metrics as a
+LOCAL value, and local beats style — so the restyled thumb just stretched into a 17px gray
+block (that WAS the "big blocky thing", including in settings/dialogs where c7680b6's pill
+style made it a filled gray block). Fix: `VerticalScrollBarWidthKey` /
+`HorizontalScrollBarHeightKey` overridden to 6 in App.xaml. Proven with an offscreen
+live-window control test (real Window at Left=-9000 + ContentRendered + RTB + pixel scan —
+note a detached RTB render never draws scrollbars, false negative): before the override the
+test rendered a 17px block, after it a 6px #717176 pill. Also injected ::-webkit-scrollbar
+pill CSS into every WebView2 preview page (c7680b6/a41012b). Installed (hash-verified,
+process 3:43 PM) and restarted.
+
 **Litter noticed, not touched:** his real history has two dead pinned items from the 8/5
 bench-fixture leak — `sample-video.mp4` / `sample-audio.wav` pointing into a deleted session
 scratchpad. Every palette open logs a "file preview failed" for the selected one. They are
