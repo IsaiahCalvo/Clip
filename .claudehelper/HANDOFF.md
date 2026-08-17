@@ -49,6 +49,20 @@ opts out of snapping/rounding, uses #717176 at width 6 / radius 3, and an offscr
 RenderTargetBitmap reproduces Raycast's exact core pixels. Installed and restarted.
 **Rule reaffirmed: stay off his screen; one capture, then iterate off-screen.**
 
+### Fourth follow-up (commit c7680b6) — THE ACTUAL ROOT CAUSE. He said it "still looks the
+same big blocky thing" on the newest build (verified by hash he was running it). The blocky
+bar was never the overlay pill — it was the **stock 17px Windows scrollbar in the text
+preview**: window-level implicit ScrollBar styles and the per-dialog `Resources.Add` copies
+NEVER reach scrollbars inside control templates (TextBox's PART_ContentHost above all), so
+Clip's "thin scrollbar" styling had silently never applied anywhere templated. Fix: Raycast
+pill as the app-level implicit style in App.xaml (app-level DOES penetrate templates);
+TextPreview got an explicit TextBox template whose PART_ContentHost uses
+`OverlayScrollViewerInset` (bar inside the pane edge — the outer-margin variant would be
+clipped by the preview Border's ClipToBounds) with the same fade-on-scroll via the shared
+`OverlayBarFader`; deleted the dead window ThinScrollBar style, the codegen
+`ThinScrollBarStyle`, and its three dialog injections. 877 tests, `--open-test` clean, text
+preview film-verified unchanged, installed (hash-verified) and restarted.
+
 **Litter noticed, not touched:** his real history has two dead pinned items from the 8/5
 bench-fixture leak — `sample-video.mp4` / `sample-audio.wav` pointing into a deleted session
 scratchpad. Every palette open logs a "file preview failed" for the selected one. They are
