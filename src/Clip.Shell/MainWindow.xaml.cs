@@ -7973,17 +7973,17 @@ public partial class MainWindow : Window
         SetBrush("Muted", useDark ? "#989898" : "#646464");
         SetBrush("Muted2", useDark ? "#BBBBBB" : "#474747");
         SetBrush("Muted3", useDark ? "#777777" : "#6A6A6A");
-        SetBrush("Accent", useDark ? "#8A9CCC" : "#3B5BDB");
-        SetBrush("TextCursor", useDark ? "#63D8FF" : "#005BFF");
+        // Raycast palette: fixed brand red (#FF6363) used sparingly, never the Windows accent.
+        SetBrush("Accent", useDark ? "#FF6363" : "#D64545");
+        SetBrush("TextCursor", useDark ? "#FF6363" : "#D64545");
         // Selection/hover chrome is deliberately neutral (no accent tint): accent-colored fills and
         // 1px accent borders everywhere read as a "glow". The accent survives only in Accent
         // (focus ring, toggles), TextCursor, and TextSelection.
         SetBrush("AccentSoft", useDark ? "#2D2D2D" : "#E7E7E7");
         SetBrush("Selected", useDark ? "#373737" : "#D9D9D9");
         SetBrush("SelectedBorder", useDark ? "#525252" : "#ACACAC");
-        SetBrush("TextSelection", useDark ? "#325070" : "#B3CFF0");
+        SetBrush("TextSelection", useDark ? "#414141" : "#C8C8C8");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
-        ApplySystemAccentBrushes(useDark);
         Background = (WpfBrush)FindResource("Bg");
         _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Surface")));
 
@@ -7996,13 +7996,11 @@ public partial class MainWindow : Window
 
         TextPreview.Foreground = (WpfBrush)FindResource("Text");
         TextPreview.CaretBrush = (WpfBrush)FindResource("TextCursor");
-        // The search border is set in code so it can react to focus, so a theme change has to
-        // re-apply it rather than relying on the DynamicResource.
+        // No focus ring on search (Raycast has none): the palette autofocuses its only text
+        // field on open, so a ring announces nothing.
         if (SearchShell is not null)
         {
-            SearchShell.BorderBrush = SearchBox?.IsKeyboardFocusWithin == true
-                ? (WpfBrush)FindResource("Accent")
-                : (WpfBrush)FindResource("Line2");
+            SearchShell.BorderBrush = (WpfBrush)FindResource("Line2");
         }
         if (TitleText is not null) { TitleText.Foreground = (WpfBrush)FindResource("Text"); }
         if (SubTitleText is not null) { SubTitleText.Foreground = (WpfBrush)FindResource("Muted"); }
@@ -8370,67 +8368,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetBrushColor(string key, System.Windows.Media.Color color)
-    {
-        if (Resources[key] is SolidColorBrush brush && !brush.IsFrozen)
-        {
-            brush.Color = color;
-        }
-        else
-        {
-            Resources[key] = new SolidColorBrush(color);
-        }
-    }
-
-    // Reads the user's chosen Windows accent color (HKCU\...\DWM\AccentColor, a DWORD stored as
-    // 0xAABBGGRR). Returns null if unavailable so callers keep their themed fallback accent.
-    internal static System.Windows.Media.Color? GetWindowsAccentColor()
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
-            if (key?.GetValue("AccentColor") is int raw)
-            {
-                var abgr = unchecked((uint)raw);
-                return System.Windows.Media.Color.FromRgb(
-                    (byte)(abgr & 0xFF),
-                    (byte)((abgr >> 8) & 0xFF),
-                    (byte)((abgr >> 16) & 0xFF));
-            }
-        }
-        catch
-        {
-        }
-
-        return null;
-    }
-
-    // Mixes an accent color over a base surface color (overlayAmount 0..1) to build subtle tints
-    // for the selected-row background and active-filter chip.
-    internal static System.Windows.Media.Color BlendColors(System.Windows.Media.Color baseColor, System.Windows.Media.Color overlay, double overlayAmount)
-    {
-        overlayAmount = Math.Clamp(overlayAmount, 0, 1);
-        byte Mix(byte b, byte o) => (byte)Math.Round((b * (1 - overlayAmount)) + (o * overlayAmount));
-        return System.Windows.Media.Color.FromRgb(Mix(baseColor.R, overlay.R), Mix(baseColor.G, overlay.G), Mix(baseColor.B, overlay.B));
-    }
-
-    // Repaints only the true accent brushes from the live Windows accent (focus ring, toggles,
-    // text selection). Selection/hover chrome stays neutral on purpose — tinting it by the accent
-    // was the source of the app-wide colored "glow". No-ops when the accent can't be read.
-    private void ApplySystemAccentBrushes(bool useDark)
-    {
-        var accent = GetWindowsAccentColor();
-        if (accent is null)
-        {
-            return;
-        }
-
-        var ac = accent.Value;
-        var surfaceBg = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(useDark ? "#212121" : "#FFFFFF");
-        SetBrushColor("Accent", ac);
-        SetBrushColor("TextSelection", BlendColors(surfaceBg, ac, useDark ? 0.42 : 0.28));
-    }
-
     private string BrushHex(string key)
     {
         if (Resources[key] is SolidColorBrush brush)
@@ -8565,18 +8502,6 @@ public partial class MainWindow : Window
             SelectItem(visibleItems.FirstOrDefault(), "file-filter");
         }));
         ShowStyledMenu(actions, FilesFilterShell);
-    }
-
-    private void OnSearchFocusChanged(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
-    {
-        if (SearchShell is null)
-        {
-            return;
-        }
-
-        SearchShell.BorderBrush = SearchBox.IsKeyboardFocusWithin
-            ? (WpfBrush)FindResource("Accent")
-            : (WpfBrush)FindResource("Line2");
     }
 
     private void OnChromeMouseDown(object sender, MouseButtonEventArgs e)

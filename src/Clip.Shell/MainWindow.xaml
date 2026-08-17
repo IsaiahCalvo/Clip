@@ -29,12 +29,12 @@
         <SolidColorBrush x:Key="Muted" Color="#8F898F"/>
         <SolidColorBrush x:Key="Muted2" Color="#C7C1C7"/>
         <SolidColorBrush x:Key="Muted3" Color="#6B656B"/>
-        <SolidColorBrush x:Key="Accent" Color="#8FC8D9"/>
-        <SolidColorBrush x:Key="TextCursor" Color="#63D8FF"/>
+        <SolidColorBrush x:Key="Accent" Color="#FF6363"/>
+        <SolidColorBrush x:Key="TextCursor" Color="#FF6363"/>
         <SolidColorBrush x:Key="AccentSoft" Color="#2C2A2C"/>
         <SolidColorBrush x:Key="Selected" Color="#363336"/>
         <SolidColorBrush x:Key="SelectedBorder" Color="#4E4A4E"/>
-        <SolidColorBrush x:Key="TextSelection" Color="#325070"/>
+        <SolidColorBrush x:Key="TextSelection" Color="#414141"/>
         <SolidColorBrush x:Key="Danger" Color="#D56B5D"/>
 
         <!-- Raycast's bar, pixel-measured 2026-08-17: 6px pill, #717176, soft anti-aliased
@@ -305,9 +305,7 @@
                                      Style="{StaticResource CleanTextBox}"
                                      VerticalContentAlignment="Center"
                                      FontSize="13"
-                                     TextChanged="OnSearchChanged"
-                                     GotKeyboardFocus="OnSearchFocusChanged"
-                                     LostKeyboardFocus="OnSearchFocusChanged"/>
+                                     TextChanged="OnSearchChanged"/>
                         </Grid>
                     </Grid>
                 </Border>
