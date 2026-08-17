@@ -4,6 +4,64 @@
              xmlns:local="clr-namespace:Clip.Shell"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
-         
+        <!-- Every scrollbar in the app. Application-level implicit styles reach inside control
+             templates (TextBox/ScrollViewer internals) where window-level ones do not - which is
+             why the old per-window "thin" styles never actually applied and stock Windows bars
+             showed everywhere. Geometry and color pixel-measured from Raycast 2026-08-17:
+             6px #717176 pill, soft edges (no pixel snapping). -->
+        <ControlTemplate x:Key="PillScrollBarVertical" TargetType="ScrollBar">
+            <Grid Background="Transparent" SnapsToDevicePixels="False" UseLayoutRounding="False">
+                <Track x:Name="PART_Track" IsDirectionReversed="True">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb>
+                            <Thumb.Template>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border Background="#717176" CornerRadius="3" SnapsToDevicePixels="False" UseLayoutRounding="False"/>
+                                </ControlTemplate>
+                            </Thumb.Template>
+                        </Thumb>
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Command="ScrollBar.LineDownCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+        <ControlTemplate x:Key="PillScrollBarHorizontal" TargetType="ScrollBar">
+            <Grid Background="Transparent" SnapsToDevicePixels="False" UseLayoutRounding="False">
+                <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Command="ScrollBar.LineLeftCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb>
+                            <Thumb.Template>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border Background="#717176" CornerRadius="3" SnapsToDevicePixels="False" UseLayoutRounding="False"/>
+                                </ControlTemplate>
+                            </Thumb.Template>
+                        </Thumb>
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Command="ScrollBar.LineRightCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Width" Value="6"/>
+            <Setter Property="Template" Value="{StaticResource PillScrollBarVertical}"/>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="Height" Value="6"/>
+                    <Setter Property="Template" Value="{StaticResource PillScrollBarHorizontal}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Application.Resources>
 </Application>

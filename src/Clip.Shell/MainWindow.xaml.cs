@@ -712,7 +712,6 @@ public partial class MainWindow : Window
     // that used to decode from disk every single time.
     private const int MaxCachedPreviewImages = 12;
     private static readonly Dictionary<string, ImageSource> PreviewImageCache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, Style> ThinScrollBarStyleCache = new(StringComparer.OrdinalIgnoreCase);
     private static System.Drawing.Rectangle _cachedMouseScreenWorkingArea;
     private static bool _hasCachedMouseScreenWorkingArea;
 
@@ -858,6 +857,7 @@ public partial class MainWindow : Window
     {
         _store = new ClipboardHistoryStore(contentRootPath: _settings.EffectiveClipboardFolderPath(), enableLoadMaintenance: false);
         InitializeComponent();
+        TextPreview.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(OnTextPreviewScrollChanged));
         RenderOptions.SetClearTypeHint(Shell, ClearTypeHint.Auto);
         FaviconCache.Warm();
         _htmlPreviewIdleTimer.Tick += OnHtmlPreviewIdle;
@@ -4399,38 +4399,60 @@ public partial class MainWindow : Window
         ShellLog.Info($"info rendered id={item.Id} kind={item.Kind} rows={InfoHost.Children.Count}");
     }
 
-    private System.Windows.Threading.DispatcherTimer? _infoBarFadeTimer;
-
-    private void OnInfoScrollChanged(object sender, ScrollChangedEventArgs e)
+    /// <summary>
+    /// Raycast-style reveal for an overlay scrollbar: fade in on a real user scroll, fade back
+    /// out shortly after scrolling stops. One instance per ScrollViewer whose template has a
+    /// PART_VerticalScrollBar starting at opacity 0.
+    /// </summary>
+    private sealed class OverlayBarFader
     {
-        // Only a user scroll shows the bar. A content swap (selecting another item) also moves
-        // the offset when the new extent clamps it, but that always comes with an extent change.
-        if (e.VerticalChange == 0 || e.ExtentHeightChange != 0)
-        {
-            return;
-        }
+        private readonly Func<ScrollViewer?> _viewer;
+        private readonly System.Windows.Threading.DispatcherTimer _timer;
 
-        if (InfoScroll.Template?.FindName("PART_VerticalScrollBar", InfoScroll) is not System.Windows.Controls.Primitives.ScrollBar bar)
+        public OverlayBarFader(Func<ScrollViewer?> viewer)
         {
-            return;
-        }
-
-        bar.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
-        if (_infoBarFadeTimer is null)
-        {
-            _infoBarFadeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
-            _infoBarFadeTimer.Tick += (_, _) =>
+            _viewer = viewer;
+            _timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+            _timer.Tick += (_, _) =>
             {
-                _infoBarFadeTimer.Stop();
-                if (InfoScroll.Template?.FindName("PART_VerticalScrollBar", InfoScroll) is System.Windows.Controls.Primitives.ScrollBar b)
-                {
-                    b.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(250)));
-                }
+                _timer.Stop();
+                Bar()?.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(250)));
             };
         }
 
-        _infoBarFadeTimer.Stop();
-        _infoBarFadeTimer.Start();
+        private System.Windows.Controls.Primitives.ScrollBar? Bar()
+        {
+            var viewer = _viewer();
+            return viewer?.Template?.FindName("PART_VerticalScrollBar", viewer) as System.Windows.Controls.Primitives.ScrollBar;
+        }
+
+        public void OnScroll(ScrollChangedEventArgs e)
+        {
+            // Only a user scroll shows the bar. A content swap also moves the offset when the
+            // new extent clamps it, but that always comes with an extent change.
+            if (e.VerticalChange == 0 || e.ExtentHeightChange != 0)
+            {
+                return;
+            }
+
+            Bar()?.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(80)));
+            _timer.Stop();
+            _timer.Start();
+        }
+    }
+
+    private OverlayBarFader? _infoBarFader;
+    private OverlayBarFader? _textPreviewBarFader;
+
+    private void OnInfoScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        (_infoBarFader ??= new OverlayBarFader(() => InfoScroll)).OnScroll(e);
+    }
+
+    private void OnTextPreviewScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        (_textPreviewBarFader ??= new OverlayBarFader(() =>
+            TextPreview.Template?.FindName("PART_ContentHost", TextPreview) as ScrollViewer)).OnScroll(e);
     }
 
     private void AddInfo(string label, string value, ImageSource? icon = null, bool scrollable = false)
@@ -9372,48 +9394,6 @@ public partial class MainWindow : Window
         }
     }
 
-    internal static Style ThinScrollBarStyle(WpfBrush thumb)
-    {
-        var hex = "#6B656B";
-        if (thumb is SolidColorBrush solid)
-        {
-            hex = $"#{solid.Color.R:X2}{solid.Color.G:X2}{solid.Color.B:X2}";
-        }
-
-        return ThinScrollBarStyleCache.GetOrAdd(hex, static key => (Style)XamlReader.Parse($$"""
-<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{x:Type ScrollBar}" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <Setter Property="Width" Value="6"/>
-  <Setter Property="Height" Value="6"/>
-  <Setter Property="Background" Value="Transparent"/>
-  <Setter Property="Template">
-    <Setter.Value>
-      <ControlTemplate TargetType="{x:Type ScrollBar}">
-        <Grid Background="Transparent" SnapsToDevicePixels="True">
-          <Track x:Name="PART_Track" IsDirectionReversed="True">
-            <Track.DecreaseRepeatButton>
-              <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
-            </Track.DecreaseRepeatButton>
-            <Track.Thumb>
-              <Thumb>
-                <Thumb.Template>
-                  <ControlTemplate TargetType="{x:Type Thumb}">
-                    <Border Background="{{key}}" CornerRadius="3" Margin="1"/>
-                  </ControlTemplate>
-                </Thumb.Template>
-              </Thumb>
-            </Track.Thumb>
-            <Track.IncreaseRepeatButton>
-              <RepeatButton Command="ScrollBar.LineDownCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
-            </Track.IncreaseRepeatButton>
-          </Track>
-        </Grid>
-      </ControlTemplate>
-    </Setter.Value>
-  </Setter>
-</Style>
-"""));
-    }
-
     /// <summary>
     /// Identifies the app an item was copied from.
     ///
@@ -10165,7 +10145,6 @@ internal sealed class OpenWithWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Background = bg;
-        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(muted));
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
         KeyDown += OnKeyDown;
 
@@ -10601,7 +10580,6 @@ internal sealed class ExcludedAppPickerWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         Background = bg;
-        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(muted));
         SourceInitialized += (_, _) => MainWindow.ApplyRoundedWindowCorners(new WindowInteropHelper(this).Handle);
         KeyDown += OnKeyDown;
 
@@ -11064,7 +11042,6 @@ internal sealed class SettingsWindow : Window
         ApplyPalette(_paletteProvider());
         _themeApplyTimer.Tick += (_, _) => ApplyPendingTheme();
 
-        Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), MainWindow.ThinScrollBarStyle(_muted));
         Title = "Clip Settings";
         Width = 720;
         Height = 500;

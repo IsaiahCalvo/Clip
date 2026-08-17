@@ -36,39 +36,6 @@
         <SolidColorBrush x:Key="SelectedBorder" Color="#56828E"/>
         <SolidColorBrush x:Key="Danger" Color="#D56B5D"/>
 
-        <Style x:Key="ThinScrollBar" TargetType="ScrollBar">
-            <Setter Property="Width" Value="6"/>
-            <Setter Property="Height" Value="6"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#5F5A52"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ScrollBar">
-                        <Grid Background="Transparent" SnapsToDevicePixels="True">
-                            <Track x:Name="PART_Track" IsDirectionReversed="True">
-                                <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="ScrollBar.LineUpCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
-                                </Track.DecreaseRepeatButton>
-                                <Track.Thumb>
-                                    <Thumb>
-                                        <Thumb.Template>
-                                            <ControlTemplate TargetType="Thumb">
-                                                <Border Background="{DynamicResource Muted3}" CornerRadius="3" Margin="1"/>
-                                            </ControlTemplate>
-                                        </Thumb.Template>
-                                    </Thumb>
-                                </Track.Thumb>
-                                <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="ScrollBar.LineDownCommand" Background="Transparent" BorderThickness="0" Opacity="0" Focusable="False"/>
-                                </Track.IncreaseRepeatButton>
-                            </Track>
-                        </Grid>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/>
-
         <!-- Raycast's bar, pixel-measured 2026-08-17: 6px pill, #717176, soft anti-aliased
              rounded caps. No pixel snapping here on purpose - snapping is what made the first
              attempt render as a hard-edged block. -->
@@ -116,6 +83,26 @@
                            HorizontalAlignment="Right"
                            Width="6"
                            Margin="0,0,-16,0"
+                           Opacity="0"
+                           IsHitTestVisible="False"
+                           Value="{TemplateBinding VerticalOffset}"
+                           Maximum="{TemplateBinding ScrollableHeight}"
+                           ViewportSize="{TemplateBinding ViewportHeight}"
+                           Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+            </Grid>
+        </ControlTemplate>
+
+        <!-- Same overlay bar, but kept inside the viewer's own bounds - for hosts that clip
+             to their edge (the text preview), where a bar pushed into the outer margin would
+             be cut off. -->
+        <ControlTemplate x:Key="OverlayScrollViewerInset" TargetType="ScrollViewer">
+            <Grid>
+                <ScrollContentPresenter CanContentScroll="{TemplateBinding CanContentScroll}"/>
+                <ScrollBar x:Name="PART_VerticalScrollBar"
+                           Style="{StaticResource ThinOverlayScrollBar}"
+                           Orientation="Vertical"
+                           HorizontalAlignment="Right"
+                           Width="6"
                            Opacity="0"
                            IsHitTestVisible="False"
                            Value="{TemplateBinding VerticalOffset}"
@@ -457,7 +444,16 @@
                                 Padding="0,2,0,0"
                                 ClipToBounds="True">
                             <Grid x:Name="PreviewHost">
-                                <TextBox x:Name="TextPreview" Style="{StaticResource CleanTextBox}" TextWrapping="Wrap" AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" FontSize="13" FontFamily="JetBrains Mono, Cascadia Mono, Consolas"/>
+                                <TextBox x:Name="TextPreview" Style="{StaticResource CleanTextBox}" TextWrapping="Wrap" AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" FontSize="13" FontFamily="JetBrains Mono, Cascadia Mono, Consolas">
+                                    <!-- Explicit template so the overlay pill is guaranteed - implicit
+                                         window styles never reach a TextBox's internal scrollbar, which
+                                         is how the stock 17px Windows bar survived every restyle. -->
+                                    <TextBox.Template>
+                                        <ControlTemplate TargetType="TextBox">
+                                            <ScrollViewer x:Name="PART_ContentHost" Template="{StaticResource OverlayScrollViewerInset}" Background="Transparent"/>
+                                        </ControlTemplate>
+                                    </TextBox.Template>
+                                </TextBox>
                                 <Image x:Name="ImagePreview" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
                                 <Button x:Name="ExpandImageButton"
                                         Style="{StaticResource IconButton}"
