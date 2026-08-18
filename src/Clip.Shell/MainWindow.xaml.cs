@@ -680,6 +680,7 @@ public partial class MainWindow : Window
     private const int WmMouseWheel = 0x020A;
     private const int WmMouseHWheel = 0x020E;
     private const int DwmwaWindowCornerPreference = 33;
+    private const int DwmwaCloak = 13;
     private const int RowIconDecodePixels = 48;
     private const int PreviewImageDecodePixels = 900;
     private const int MaxCachedRasterImages = 256;
@@ -1165,6 +1166,9 @@ public partial class MainWindow : Window
 
         if (!IsVisible)
         {
+            // Cloak before the surface ever exists, so even the first Show() of the session
+            // presents nothing until the reveal below — the OS never gets a blank frame to flash.
+            _windowCloaked = TryCloakPaletteWindow(true);
             Show();
         }
 
@@ -1217,6 +1221,23 @@ public partial class MainWindow : Window
 
         Opacity = 1;
         IsHitTestVisible = true;
+        if (_windowCloaked)
+        {
+            // Uncloak at Loaded priority: that runs right after the render pass for the layout
+            // done above, so the first frame the compositor presents is the finished one —
+            // rows, chrome and position all current. Uncloaking synchronously here would show
+            // the previous session's surface for one frame instead.
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // A conceal can land between the show and this callback (fast escape);
+                // uncloaking then would leave the concealed window in the wrong state.
+                if (_paletteOpen && TryCloakPaletteWindow(false))
+                {
+                    _windowCloaked = false;
+                }
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
         BenchMarks.Mark("shown");
         if (!OpenTestOffscreen && ShouldActivatePaletteWindow(_paletteNoActivate))
         {
@@ -1586,7 +1607,7 @@ public partial class MainWindow : Window
 
     // What the open-latency harness needs to see from outside. It decides what "open" means; this
     // only reports the state, so the rule lives in one place next to the numbers it produces.
-    internal bool BenchWindowShown => IsVisible && Opacity >= 1;
+    internal bool BenchWindowShown => IsVisible && Opacity >= 1 && !_windowCloaked;
 
     internal bool BenchSearchFocused => SearchBox.IsFocused;
 
@@ -1629,13 +1650,28 @@ public partial class MainWindow : Window
         _paletteOpen = false;
         Opacity = 0;
         IsHitTestVisible = false;
+        // Off screen as well as cloaked: cloaking removes the pixels but not the HWND, and an
+        // invisible topmost window parked over the desktop could still swallow hit-testing.
         MoveOffscreen();
-        // Truly hide the window instead of relying on Opacity=0 alone. An AllowsTransparency=False,
-        // topmost, dark-background WPF window left at Opacity=0 can leave a stale BLACK surface on a
-        // secondary monitor (DWM compositing glitch) until something forces a repaint. Hide() drops
-        // the surface entirely; ShowPalette re-shows via its `if (!IsVisible) Show()` path. The window
-        // object + already-arranged visual tree stay in memory, so the re-show is still fast/warm.
-        Hide();
+        if (TryCloakPaletteWindow(true))
+        {
+            _windowCloaked = true;
+            // Hide() used to hand activation back to the previous window as a side effect.
+            // Cloaking keeps the window "visible", so give focus back deliberately — but only
+            // when the palette actually holds it (escape/settings-close); after an outside
+            // click or a no-activate open, focus already sits where it belongs.
+            if (GetForegroundWindow() == new WindowInteropHelper(this).Handle)
+            {
+                RestoreReturnFocus();
+            }
+        }
+        else
+        {
+            // Fallback to the old behavior: truly hide the window. An AllowsTransparency=False,
+            // topmost, dark-background WPF window left at Opacity=0 can leave a stale BLACK surface
+            // on a secondary monitor (DWM compositing glitch) until something forces a repaint.
+            Hide();
+        }
 
         // A video or song must not keep playing out of a hidden window — and when the palette is
         // concealed for picture-in-picture, the palette's copy must stop before the mini window's
@@ -1882,6 +1918,33 @@ public partial class MainWindow : Window
     {
         Left = SystemParameters.VirtualScreenLeft - Math.Max(ActualWidth, Width) - 100;
         Top = SystemParameters.VirtualScreenTop - Math.Max(ActualHeight, Height) - 100;
+    }
+
+    // DWM cloaking is what makes the palette open like Raycast: the window keeps WS_VISIBLE, so
+    // WPF keeps its D3D surface alive and rendered while concealed, and the compositor simply
+    // stops presenting it. Uncloaking presents the already-finished frame in one compositor
+    // flip — no blank surface, no hydration. Hide() (the old way) drops the surface, so every
+    // re-show flashed an empty window while WPF re-rendered from scratch.
+    private bool _windowCloaked;
+
+    private bool TryCloakPaletteWindow(bool cloak)
+    {
+        try
+        {
+            var hwnd = new WindowInteropHelper(this).EnsureHandle();
+            if (hwnd == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var value = cloak ? 1 : 0;
+            return DwmSetWindowAttribute(hwnd, DwmwaCloak, ref value, sizeof(int)) == 0;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "cloak toggle failed");
+            return false;
+        }
     }
 
     public void WriteDebugSnapshot(string reason = "hotkey")
@@ -6790,7 +6853,8 @@ public partial class MainWindow : Window
     private void OnHtmlPreviewIdle(object? sender, EventArgs e)
     {
         _htmlPreviewIdleTimer.Stop();
-        if (!IsVisible)
+        // Cloaked windows stay IsVisible, so "palette concealed" is _paletteOpen now, not IsVisible.
+        if (!_paletteOpen)
         {
             DisposeHtmlPreview();
             ShellLog.Info("html preview released after idle");
