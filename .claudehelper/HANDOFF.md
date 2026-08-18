@@ -3,6 +3,58 @@
 _Last updated 2026-08-17. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
 
+## Split-pill unification + accent glow retired (2026-08-17, commit faf44f3)
+
+Isaiah flagged two things: the Media split pill missed the border/fill that wraps All and
+File when active (root cause: All/File had hand-attached shell MouseEnter glow handlers that
+Media never got), and the app-wide blue "glow" looked immature. Root cause of the glow:
+`ApplySystemAccentBrushes` poured the full-strength Windows accent into
+`Selected`/`SelectedBorder`/`AccentSoft`, so every selected row, hover fill, and 1px border
+in the app was accent-colored. Design reference he supplied: OriginUI's button-with-dropdown
+(21st.dev) — one rounded container, flat halves, 1px seam, neutral fills.
+
+Fix: shell `Border` now carries the whole selected look for every split pill (halves stay
+transparent, painted only by `SetFilterVisual` — they cannot drift apart);
+Selected/SelectedBorder/AccentSoft are now fixed neutrals in both themes; the Windows accent
+survives only in `Accent` (search focus ring, toggles), `TextCursor`, and a new
+`TextSelection` brush that all four text editors use (a neutral selection highlight would
+have been invisible). Dead `FilterChevronButton` style deleted. Net −53 lines.
+
+Verified off-screen by rendering the real MainWindow.xaml resources through a scratch
+RenderTargetBitmap harness (no window shown): all three split pills identical per state,
+dark + light. 877 tests pass. Pushed, installed (hash-verified all four exes), restarted.
+
+**Verify:** Alt+V — active filter pill is neutral gray with a single border around BOTH the
+label and the chevron, identical for All/Media/File; selected list row no longer has the
+blue ring; text selection in previews/editors is still clearly visible.
+
+### Follow-up (commit 1a59fc2): Raycast palette adopted. He asked to tone the focus ring and
+cyan caret too and "match Raycast and their color palette". Accent + TextCursor are now
+fixed Raycast red (#FF6363 dark / #D64545 light); ALL Windows-accent plumbing is deleted
+(GetWindowsAccentColor/BlendColors/SetBrushColor/ApplySystemAccentBrushes) — the palette no
+longer follows the system accent at all. Search box has NO focus ring anymore (border always
+Line2; OnSearchFocusChanged deleted) since the palette autofocuses its only text field.
+TextSelection is plain neutral (#414141/#C8C8C8). Red now appears in: caret, title hover,
+settings toggles ON, active option labels. 877 tests pass, off-screen render verified,
+pushed, installed (hash-verified), restarted.
+
+### Follow-up (commit a28841d): settings UI audit. He flagged the app-icon picker clipping
+(30px host for 32px of content) and off-center hotkey text (Padding 10,5,10,0). A sub-agent
+audit of all five procedural windows found 16 defects; 14 fixed: dotted focus rectangles
+killed app-wide (App.xaml implicit Button/TextBox styles, FocusVisualStyle=null with
+BasedOn); theme change now REBUILDS the settings page (RefreshTheme(rebuildPage:true))
+instead of the blanket repaint walker that erased state colors and missed popups — walker
+deleted; OS highlight blue removed from all three app-picker ListBoxes via shared
+MainWindow.PaletteListItemStyle; clear-history segment 1px overpaint, update-button clip,
+hotkey error text clip ("Needs modifier"/"Invalid"), hotkey-help chip centering,
+ActionOverDetailRow label alignment, app-icon hover on inactive button, sticky dropdown
+hover outline, asymmetric search margins. Deliberately skipped: white toggle knob
+(intentional convention), icon-warm hex literals. 877 tests pass, pushed, installed,
+restarted.
+
+**Next steps:** broader UI pass continues if he flags more. No release cut yet — hold until
+the UI pass settles, then ship one release.
+
 ## Smaller window + info panel right-margin fix (2026-08-17, commit 2813af0)
 
 Isaiah compared Clip to Raycast: window felt big, and the INFORMATION section had a visibly

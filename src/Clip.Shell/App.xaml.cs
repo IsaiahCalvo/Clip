@@ -76,6 +76,17 @@ public partial class App : System.Windows.Application
         _singleInstanceMutex = new Mutex(true, Clip.Watcher.Program.RichPaletteSingleInstanceMutexName, out _ownsSingleInstanceMutex);
         if (!_ownsSingleInstanceMutex)
         {
+            // The autostart task refires every 30 minutes as a watchdog (something on this
+            // machine hard-kills Clip without a trace). When Clip is already running, that
+            // fire must exit without side effects - signaling would pop the palette open on
+            // whoever is mid-keystroke every half hour.
+            if (e.Args.Contains("--ensure-running", StringComparer.OrdinalIgnoreCase))
+            {
+                ShellLog.Info("ensure-running: already running; duplicate exiting quietly");
+                Shutdown();
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(trayAction))
             {
                 TrayActionRequest.Save(trayAction);

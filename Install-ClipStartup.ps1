@@ -44,12 +44,17 @@ if (-not (Test-Path $icon)) {
 # (they often don't launch promptly, or at all, after a reboot), so use a logon task instead.
 # Remove any legacy Run-key entry so the two mechanisms can't both fire and double-launch.
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Clip" -ErrorAction SilentlyContinue
-$autoAction    = New-ScheduledTaskAction -Execute $hostExe -WorkingDirectory $installDir
+# --ensure-running makes a duplicate launch exit quietly instead of popping the palette,
+# so the watchdog trigger below can refire while Clip is already up without side effects.
+$autoAction    = New-ScheduledTaskAction -Execute $hostExe -Argument "--ensure-running" -WorkingDirectory $installDir
 $autoTrigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $autoTrigger.Delay = "PT3S"
+# Watchdog: something on this machine (EDR, most likely) can hard-kill Clip without any trace.
+# Refiring every 30 minutes relaunches it; when it is already running the fire is a no-op.
+$watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
 $autoSettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 $autoPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName "Clip Autostart" -Action $autoAction -Trigger $autoTrigger -Settings $autoSettings -Principal $autoPrincipal -Force | Out-Null
+Register-ScheduledTask -TaskName "Clip Autostart" -Action $autoAction -Trigger @($autoTrigger, $watchdogTrigger) -Settings $autoSettings -Principal $autoPrincipal -Force | Out-Null
 
 $oldTaskName = "Clip Clipboard Watcher"
 if (Get-ScheduledTask -TaskName $oldTaskName -ErrorAction SilentlyContinue) {
