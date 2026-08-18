@@ -5450,6 +5450,9 @@ public partial class MainWindow : Window
 
         panel.Child = grid;
         overlay.Child = panel;
+        // RootGrid children default to row 0 — the 53px search strip — and ClipToBounds
+        // would slice the modal to a sliver. Span every row like the settings overlay does.
+        Grid.SetRowSpan(overlay, 3);
         System.Windows.Controls.Panel.SetZIndex(overlay, 900);
         root.Children.Add(overlay);
         _inlineModalOverlay = overlay;
@@ -5636,6 +5639,7 @@ public partial class MainWindow : Window
 
         panel.Child = grid;
         overlay.Child = panel;
+        Grid.SetRowSpan(overlay, 3);
         System.Windows.Controls.Panel.SetZIndex(overlay, 900);
         root.Children.Add(overlay);
         _inlineModalOverlay = overlay;
@@ -5931,6 +5935,7 @@ public partial class MainWindow : Window
 
         panel.Child = shell;
         overlay.Child = panel;
+        Grid.SetRowSpan(overlay, 3);
         System.Windows.Controls.Panel.SetZIndex(overlay, 900);
         root.Children.Add(overlay);
         _inlineModalOverlay = overlay;
