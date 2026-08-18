@@ -3,6 +3,24 @@
 _Last updated 2026-08-18. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
 
+## Inline modals clipped to the search row (2026-08-18, commit 8228b8f)
+
+Isaiah: "hit Edit and the text editor doesn't open properly." Log showed
+`edit-text rendered hosted=True` firing repeatedly seconds apart — he kept pressing Edit
+because nothing usable appeared. Root cause: the Edit Text / Rename / Open With inline
+overlays are added to `RootGrid` (3 rows: 53px search, star list, 34px footer) with **no
+`Grid.SetRowSpan`**, so they arrange into row 0 — the 53px search strip — and the overlay's
+`ClipToBounds` slices the 420px modal to a sliver. The hosted settings overlay already did
+it right (`SetRowSpan`). These overlays were born broken in the Command Palette parity
+build-out (f0c4639); before that, the fallback `TextEditWindow` dialog path ran instead.
+
+Fix: `Grid.SetRowSpan(overlay, 3)` at all three insertion sites (MainWindow.xaml.cs, next
+to each `SetZIndex(overlay, 900)`). 877 tests pass, published, installed (Clip.dll
+hash-verified), restarted via "Clip Autostart".
+
+**Verify:** Alt+V, pick a text item, hit Edit — full 640x420 editor centered over a dimmed
+palette. Same for Rename and Open With.
+
 ## Instant open via DWM cloaking (2026-08-18, commit 4cc4e69)
 
 Isaiah: hotkey open shows "the frame of the app, then it hydrates" — wants Raycast-instant.
