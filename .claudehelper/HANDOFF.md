@@ -1,7 +1,37 @@
 # Clip — handoff
 
-_Last updated 2026-08-17. **`main` is the trunk.** All work pushed, and **installed** — the copy in
+_Last updated 2026-08-18. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
+
+## Instant open via DWM cloaking (2026-08-18, commit 4cc4e69)
+
+Isaiah: hotkey open shows "the frame of the app, then it hydrates" — wants Raycast-instant.
+Root cause: `ConcealPalette()` called `Hide()`, which drops the WPF D3D surface, so every
+re-show presented the bare HWND first and painted rows/preview after. The existing
+`Opacity=0` pre-render trick was a no-op because the window is `AllowsTransparency=False`
+(WPF ignores Window.Opacity without a layered window).
+
+Fix (MainWindow.xaml.cs): conceal now **DWM-cloaks** the window (`DWMWA_CLOAK`, attr 13 —
+`DwmSetWindowAttribute` was already imported). The window keeps WS_VISIBLE so WPF keeps its
+surface alive and rendered; the compositor just stops presenting it. `ShowPalette` does
+position/rows/layout while cloaked, then uncloaks at `DispatcherPriority.Loaded` (right
+after the render pass) so the first presented frame is the finished one. Details:
+- Focus: `Hide()` used to hand activation back as a side effect; conceal now calls
+  `RestoreReturnFocus()` explicitly, only when the palette is the foreground window.
+- `Hide()` kept as fallback if the cloak call fails (also covers the old secondary-monitor
+  stale-black-surface DWM glitch note, which the cloak path makes moot).
+- Window still moves off-screen while cloaked (cloak removes pixels, not the HWND — belt
+  against an invisible topmost window swallowing hit-tests).
+- `BenchWindowShown` now requires `!_windowCloaked`; WebView2 idle release keys off
+  `_paletteOpen` (a cloaked window stays `IsVisible`).
+- Deferred uncloak is guarded by `_paletteOpen` (fast-escape race).
+
+Verified off-screen (`--open-bench --runs 5 --stages`): 5/5 clean, warm opens laid out by
+~25ms, cond-shown median 78ms including the post-render reveal. 877 tests pass. Pushed,
+installed (Clip.dll hash-verified), restarted via the "Clip Autostart" task.
+
+**Verify:** Alt+V repeatedly — the palette should appear as one finished frame (no empty
+frame, no list filling in after). Escape must return focus to the previous app.
 
 ## Split-pill unification + accent glow retired (2026-08-17, commit faf44f3)
 
