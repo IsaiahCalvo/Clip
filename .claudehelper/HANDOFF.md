@@ -128,6 +128,26 @@ test rendered a 17px block, after it a 6px #717176 pill. Also injected ::-webkit
 pill CSS into every WebView2 preview page (c7680b6/a41012b). Installed (hash-verified,
 process 3:43 PM) and restarted.
 
+## Silent death + watchdog (2026-08-18, commit 285fda9)
+
+Isaiah found Clip not running on 8/18. Forensics: no reboot (up since 8/13), no logoff, no
+WER crash report, and no "app exit" line in shell.log (a clean exit always writes one, then
+flushes) — so the process was hard-killed externally sometime after 5:34 PM on 8/17. Prime
+suspect is SentinelOne/Capture Client, which this machine's memory shows killing unsigned
+binaries without a trace (see the Codex diagnosis). The "Clip Autostart" logon task existed
+and was healthy — it just never fired because there was no logon.
+
+Fix: the task now has a second trigger repeating every 30 minutes, and its action passes
+`--ensure-running`. In App.xaml.cs the duplicate-instance path exits BEFORE
+TrySignalRichPalette when that flag is present, so a watchdog fire while Clip is up is a
+silent no-op (verified live: duplicate exited, process count stayed 1, no "palette shown"
+logged). Install-ClipStartup.ps1 creates both triggers + the flag for future installs.
+
+Durable fix if the EDR keeps killing it: sign the binary or add an exclusion for
+`%APPDATA%\Programs\Clip\Clip.exe` in the Capture Client console (needs IT/console access).
+Note the duplicate instance cannot write shell.log (the main instance holds it), so
+ensure-running fires leave no log line — absence of log there is normal.
+
 **Litter noticed, not touched:** his real history has two dead pinned items from the 8/5
 bench-fixture leak — `sample-video.mp4` / `sample-audio.wav` pointing into a deleted session
 scratchpad. Every palette open logs a "file preview failed" for the selected one. They are
