@@ -128,6 +128,27 @@ test rendered a 17px block, after it a 6px #717176 pill. Also injected ::-webkit
 pill CSS into every WebView2 preview page (c7680b6/a41012b). Installed (hash-verified,
 process 3:43 PM) and restarted.
 
+## Second death + instrumentation (2026-08-18 ~2:20 PM)
+
+Clip died AGAIN within ~13 minutes of the 2:02 PM restart. CORRECTION to the forensics
+below: "no app-exit log line" proved nothing — ShellLog drops all Info lines unless trace is
+on (`--debug-log` / `CLIP_SHELL_TRACE=1`); only Error/Snapshot lines always write. So
+neither death is actually diagnosed yet. What IS ruled out: reboot/logoff (none), WER crash
+(none), and palette-session self-exit (only applies with `--palette-session`/harness flags,
+never to resident launches). SentinelOne is confirmed present (`C:\ProgramData\Sentinel`)
+and remains suspect #1.
+
+Instrumentation now armed for the next death:
+- `setx CLIP_SHELL_TRACE 1` (user env) — every future Clip instance writes full logs.
+- `%LOCALAPPDATA%\Clip\death-watch.ps1` runs hidden (mutex "Clip-death-watch", survives via
+  nothing — relaunch manually after reboot if needed) and appends exact death timestamps to
+  `%LOCALAPPDATA%\Clip\death-watch.log`.
+- Watchdog verified END-TO-END live: fire-while-running = silent no-op (count stayed 1, no
+  palette pop); kill-then-fire = revived in seconds. Worst case Clip is down 30 minutes.
+
+Next session: read death-watch.log + shell.log tail around the death time. If deaths line
+up with SentinelOne activity, the fix is an EDR exclusion or code-signing, not more code.
+
 ## Silent death + watchdog (2026-08-18, commit 285fda9)
 
 Isaiah found Clip not running on 8/18. Forensics: no reboot (up since 8/13), no logoff, no
