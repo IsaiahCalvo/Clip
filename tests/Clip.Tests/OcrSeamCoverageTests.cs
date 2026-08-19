@@ -22,7 +22,7 @@ public sealed class OcrSeamCoverageTests : IDisposable
     {
         try
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
         catch
         {

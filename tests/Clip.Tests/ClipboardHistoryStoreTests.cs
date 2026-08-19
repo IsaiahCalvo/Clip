@@ -427,7 +427,7 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
         Assert.False(Directory.Exists(previous));
         Assert.Equal(Path.Combine(root, "Clipboard History", "history.json"), store.HistoryFilePath);
         Assert.True(File.Exists(store.HistoryFilePath));
-        Directory.Delete(root, recursive: true);
+        TestTemp.Delete(root);
     }
 
     [Fact]
@@ -444,7 +444,7 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
 
         Assert.True(Directory.Exists(pdf));
         Assert.False(Directory.Exists(excel));
-        Directory.Delete(root, recursive: true);
+        TestTemp.Delete(root);
     }
 
     [Fact]
@@ -767,7 +767,7 @@ public sealed class ClipboardHistoryStoreTests : IDisposable
     {
         if (Directory.Exists(_root))
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
     }
 

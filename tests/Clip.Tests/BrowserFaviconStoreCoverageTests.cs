@@ -19,7 +19,7 @@ public sealed class BrowserFaviconStoreCoverageTests : IDisposable
         SqliteConnection.ClearAllPools();
         try
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
         catch
         {

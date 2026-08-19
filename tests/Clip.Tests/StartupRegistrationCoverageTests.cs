@@ -111,7 +111,7 @@ public sealed class StartupRegistrationCoverageTests : IDisposable
 
         try
         {
-            Directory.Delete(_tempRoot, recursive: true);
+            TestTemp.Delete(_tempRoot);
         }
         catch
         {

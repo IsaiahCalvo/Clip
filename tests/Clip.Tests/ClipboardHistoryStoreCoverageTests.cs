@@ -1094,7 +1094,7 @@ public sealed class ClipboardHistoryStoreCoverageTests : IDisposable
         {
             if (Directory.Exists(_root))
             {
-                Directory.Delete(_root, recursive: true);
+                TestTemp.Delete(_root);
             }
         }
         catch (IOException)

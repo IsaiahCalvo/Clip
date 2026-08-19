@@ -20,7 +20,7 @@ public sealed class CoreSeamCoverageTests : IDisposable
     {
         try
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
         catch
         {

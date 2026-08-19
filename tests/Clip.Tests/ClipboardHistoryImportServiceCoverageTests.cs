@@ -180,7 +180,7 @@ public sealed class ClipboardHistoryImportServiceCoverageTests : IDisposable
     {
         if (Directory.Exists(_root))
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
     }
 

@@ -88,7 +88,7 @@ public sealed class ClipboardSharePayloadCoverageTests : IDisposable
     {
         if (Directory.Exists(_root))
         {
-            Directory.Delete(_root, recursive: true);
+            TestTemp.Delete(_root);
         }
     }
 }
