@@ -908,3 +908,31 @@ preview pane rendered. No layout change was needed: the pane's TextBox already w
 2. Watch for the "could not paste here" toast. Frequent → revisit uiAccess packaging.
 3. Note: two tests flaked once on a full run (reflection stack, teardown file locks — the known
    issue from the earlier handoff) and passed on rerun. If that recurs, chase the teardown locks.
+
+---
+
+## 2026-08-19 (cont.) — correction: elevated pasting IS solvable without uiAccess
+
+The earlier entry said uiAccess was the only route. That was wrong. UIPI blocks a **lower**-
+integrity process from sending input to a **higher**-integrity window; equal-to-equal is fine. So
+Clip running elevated pastes into elevated apps without any certificate or install relocation.
+
+`Install-ClipStartup.ps1 -Elevated` (d4645df) registers the existing autostart task with
+`-RunLevel Highest` instead of `Limited`, which starts Clip elevated at logon with **no UAC
+prompt**. Opt-in, not default, because:
+- Drag and drop from Explorer into Clip stops working — UIPI blocks that direction too.
+- Anything Clip opens or launches inherits administrator.
+
+Three ways to cross the line, in order of cost: run Clip elevated (one flag, real downsides) →
+uiAccess helper (signing cert + Program Files install, no downsides) → UAC-bypass techniques
+(malware territory, AV-flagged, breaks on patches — not on the table).
+
+Toast rewritten to name the cause and both exits; it wraps at 420px and holds for six seconds
+(`ShowToast` now takes an optional duration; default stays 2.4s).
+
+### Next steps
+
+1. If Isaiah wants elevated pasting: run in an admin shell —
+   `powershell -ExecutionPolicy Bypass -File .\Install-ClipStartup.ps1 -Elevated`, then log out
+   and back in. Reverting is the same command without `-Elevated`.
+2. If he takes it, watch for the drag-and-drop regression; that is the one that will bite first.
