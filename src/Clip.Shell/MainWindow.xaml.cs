@@ -1792,10 +1792,19 @@ public partial class MainWindow : Window
         // possible check here and hand the real work to the dispatcher, or the pointer stutters.
         if (code >= 0 && IsButtonDownMessage((int)wParam))
         {
-            var hookPoint = Marshal.PtrToStructure<MouseLowLevelHookStruct>(lParam).Point;
-            _ = Dispatcher.BeginInvoke(
-                new Action(() => HideIfMousePressedOutsidePalette(hookPoint.X, hookPoint.Y)),
-                System.Windows.Threading.DispatcherPriority.Input);
+            // Read the cursor with GetCursorPos rather than trusting MSLLHOOKSTRUCT.pt. The hook
+            // struct's point arrives in a different DPI space than GetWindowRect reports for our
+            // own window: measured on the 150%-scaled second monitor, a click at 1044,-996 landed
+            // in the struct as 696,-664 — exactly divided by the scale factor, so it tested as
+            // outside a window spanning 851..2051. GetCursorPos answers in the same space as
+            // GetWindowRect because both are this process's, so the two never disagree. It is read
+            // here, not after the dispatcher hop, so the cursor is still where it was clicked.
+            if (GetCursorPos(out var cursor))
+            {
+                _ = Dispatcher.BeginInvoke(
+                    new Action(() => HideIfMousePressedOutsidePalette(cursor.X, cursor.Y)),
+                    System.Windows.Threading.DispatcherPriority.Input);
+            }
         }
 
         return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
@@ -1853,16 +1862,6 @@ public partial class MainWindow : Window
     private const int WmXButtonDown = 0x020B;
 
     private delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MouseLowLevelHookStruct
-    {
-        public NativePoint Point;
-        public uint MouseData;
-        public uint Flags;
-        public uint Time;
-        public IntPtr ExtraInfo;
-    }
 
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnhookWindowsHookEx(IntPtr hhk);
