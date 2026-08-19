@@ -777,3 +777,42 @@ attach case without putting a window on screen.
   conflict-free; the ownership branch's stale base meant git happily produced a tree that did not
   compile, and the failure was the only thing standing between that and Word and Excel silently
   keeping the ungated COM path.
+
+---
+
+## 2026-08-19 — Clicking a row dismissed the palette (second monitor only)
+
+**Symptom Isaiah reported:** clicking a clipboard item closed Clip. Happened "when Chrome is open"
+— really it was "when the palette opened on the monitor Chrome was on."
+
+**Root cause:** `HideIfMousePressedOutsidePalette(int, int)` converted the click's screen point
+with `PointFromScreen` and tested it against `Rect(0, 0, ActualWidth, ActualHeight)`. That
+transform uses the DPI WPF believes the window is on, but `PositionOnMouseScreen` places the
+window with raw Win32 pixels. On a differently-scaled second monitor the converted point landed
+outside the window's own rect, so every click — including one on a row — read as outside.
+
+Not caused by the WH_MOUSE_LL hook in f4e95c0; the hook only made the pre-existing bad hit test
+fire on every click instead of occasionally.
+
+**Evidence:** `%LOCALAPPDATA%\Clip\shell.log`, 11:04. Three opens at `851,-1236` (second screen),
+each `selection changed reason=click` followed within 100ms by `palette concealed
+reason=outside-click`. The same click at `360,174` on the primary worked and reached
+`double-click-paste`.
+
+**Fix:** 76f33fd — test the click against `GetWindowRect` in raw screen pixels, the space the
+mouse hook already reports. The outside-click log line now carries the point and the rect.
+Shipped as v1.1.12, installed over `%APPDATA%\Programs\Clip`.
+
+**Not changed (already correct):** the clipboard fallback Isaiah asked for exists —
+`PasteSelected` calls `SetClipboard` before it ever sends Ctrl+V, so a paste that lands nowhere
+still leaves the item on the clipboard for a manual paste.
+
+### Next steps
+
+1. Isaiah verifies: open Clip over Chrome on the second monitor, single-click a row (should stay
+   open and show context), double-click (should paste behind).
+2. If a click still dismisses, read the new log line — it prints the click point and the window
+   rect, so a remaining mismatch is visible without a repro.
+3. Audit the rest of `MainWindow.xaml.cs` for other `PointFromScreen` uses that mix with Win32
+   screen coordinates. `MousePointInExpandedViewport` is the obvious next suspect for the expanded
+   image view on a second monitor.
