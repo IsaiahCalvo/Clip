@@ -1,3 +1,18 @@
+﻿# -Elevated registers the autostart task to run Clip with highest privileges.
+#
+# Windows blocks a medium-integrity process from sending synthetic input to a higher-integrity
+# window (UIPI), which is why pasting into an app started as administrator silently does nothing.
+# Running Clip elevated puts it on the same side of that line, so those pastes work. A scheduled
+# task with RunLevel Highest launches elevated without a UAC prompt at every logon.
+#
+# The cost is real, so this is opt-in:
+#   * Drag and drop from Explorer into Clip stops working - UIPI blocks that direction too.
+#   * Anything Clip opens or launches inherits administrator.
+#   * Registering the task needs an elevated shell once.
+# Prefer this over the uiAccess route only because uiAccess needs a signing certificate and the
+# install moved into Program Files. See .claudehelper/HANDOFF.md.
+param([switch]$Elevated)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -53,7 +68,11 @@ $autoTrigger.Delay = "PT3S"
 # Refiring every 30 minutes relaunches it; when it is already running the fire is a no-op.
 $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
 $autoSettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-$autoPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$runLevel      = if ($Elevated) { "Highest" } else { "Limited" }
+$autoPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel $runLevel
+if ($Elevated) {
+    Write-Output "Autostart registered elevated. Drag and drop into Clip will stop working, and anything Clip launches inherits administrator."
+}
 Register-ScheduledTask -TaskName "Clip Autostart" -Action $autoAction -Trigger @($autoTrigger, $watchdogTrigger) -Settings $autoSettings -Principal $autoPrincipal -Force | Out-Null
 
 $oldTaskName = "Clip Clipboard Watcher"

@@ -725,7 +725,8 @@ public partial class MainWindow : Window
     private readonly List<Task> _clipboardPersistTasks = [];
     private readonly ClipUpdateService _updates = new();
     private readonly Dictionary<string, Border> _rows = new(StringComparer.OrdinalIgnoreCase);
-    private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
+    private static readonly TimeSpan DefaultToastDuration = TimeSpan.FromSeconds(2.4);
+    private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = DefaultToastDuration };
     private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly System.Windows.Threading.DispatcherTimer _outsideClickTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private IntPtr _mouseHook = IntPtr.Zero;
@@ -4845,7 +4846,7 @@ public partial class MainWindow : Window
             // clipboard is already set above, so a manual Ctrl+V still works; say so rather than
             // let this look like it worked. This is the one silent failure Clip can predict.
             ShellLog.Info($"paste blocked by integrity id={selected.Id} target={TargetIntegrityLevel(_returnFocusHwnd)} own={OwnIntegrityLevel()}");
-            NotifyPasteFailed();
+            NotifyPasteBlockedByElevation();
             return;
         }
 
@@ -5375,6 +5376,20 @@ public partial class MainWindow : Window
     {
         const string message = "Clip could not paste here. Press Ctrl+V manually.";
         ShowToast(message);
+        UserNotificationRequested?.Invoke(message);
+    }
+
+    /// <summary>
+    /// The elevated-target message. It has to leave the user knowing three things: which app is
+    /// at fault, that this is Windows' rule and not a Clip bug, and that they have two ways out —
+    /// paste it themselves, or stop running that app as administrator. Both words are deliberate:
+    /// "administrator" is what they typed to get here, "elevated" is what they will read
+    /// everywhere else.
+    /// </summary>
+    private void NotifyPasteBlockedByElevation()
+    {
+        const string message = "That app is running as administrator. Windows will not let Clip paste into elevated apps \u2014 press Ctrl+V to paste it yourself, or run the app without administrator.";
+        ShowToast(message, TimeSpan.FromSeconds(6));
         UserNotificationRequested?.Invoke(message);
     }
 
@@ -9112,11 +9127,18 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private void ShowToast(string message)
+    private void ShowToast(string message) => ShowToast(message, null);
+
+    /// <summary>
+    /// 2.4 seconds suits "Copied" and is not enough for a sentence that asks the user to do
+    /// something, so a message that explains itself can ask for longer.
+    /// </summary>
+    private void ShowToast(string message, TimeSpan? duration)
     {
         ToastText.Text = message;
         Toast.Visibility = Visibility.Visible;
         _toastTimer.Stop();
+        _toastTimer.Interval = duration ?? DefaultToastDuration;
         _toastTimer.Start();
     }
 
