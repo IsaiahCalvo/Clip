@@ -3,6 +3,43 @@
 _Last updated 2026-08-18. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
 
+## Pasting a big photo killed Clip outright (2026-08-18, commit 1ea8427)
+
+Isaiah: "tried pasting a big photo, tried to paste in Visio, it's frozen and I can't dismiss
+it." Not a hang — the process was already dead. **There was nothing in ShellLog because
+`Environment.FailFast` leaves nothing.** The stack only exists in the Windows Application
+event log (Ids 1000 / 1001 / 1025, `Get-WinEvent -FilterHashtable @{LogName='Application'}`):
+
+    Clip.exe 1.1.10 / PresentationCore.dll / exception 0x80131623
+    System.Environment.FailFast("Unrecoverable system error.")
+      System.Windows.DataObject.GetDataIntoOleStructsByTypeMedimHGlobal
+      MS.Win32.UnsafeNativeMethods.OleFlushClipboard
+      Clip.Shell.MainWindow.SetClipboard
+
+Root cause: WPF's `Clipboard.SetImage` (and `SetFileDropList`) go through `DataObject` with
+`copy: true`, which renders every format into an HGLOBAL and answers **any** failure with
+`Environment.FailFast`. That is uncatchable — no exception, no dialog, no log, just a stale
+window on screen that reads as frozen.
+
+This is the *same* landmine that killed Clip on 2026-08-08. That fix (`Win32ClipboardWriter`)
+only rerouted the **text** branch of `SetClipboard`; Image and Files were left on WPF.
+
+Fix: extend `Win32ClipboardWriter` with `TrySetImage` (CF_DIBV5 + CF_DIB, both built here as
+finished byte buffers, bottom-up, with a 512 MB pixel ceiling) and `TrySetFileDrop`
+(CF_HDROP), and route both branches of `MainWindow.SetClipboard` through it. Failure is now a
+`false` return → `ShellLog.Snapshot` + a toast ("That image is too big for the clipboard").
+881 tests pass (4 new: DIB header/flip, DIBV5 masks/intent, HDROP layout, size refusal).
+Published, installed, running.
+
+**Verify:** Alt+V, pick the big photo, Enter — it pastes, or you get a toast. Either way Clip
+is still alive afterwards. Note `Clipboard.SetDataObject(copy: false)` is *not* a fix for
+images: the delayed-render path lands in the same `GetDataIntoOleStructs` FailFast when the
+consumer asks for the bitmap.
+
+**Note:** the working tree still carries an uncommitted experiment in `MainWindow.xaml` —
+`TextSelection` brush `#414141` → `#FF6363` with `SelectionOpacity` `0.7` → `0.4`. It shipped
+into the installed build with this publish. Keep or revert deliberately.
+
 ## Inline modals clipped to the search row (2026-08-18, commit 8228b8f)
 
 Isaiah: "hit Edit and the text editor doesn't open properly." Log showed
