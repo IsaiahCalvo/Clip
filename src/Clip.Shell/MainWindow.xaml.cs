@@ -4816,6 +4816,38 @@ public partial class MainWindow : Window
             ? ClipboardPasteData.Create(selected, pasteFormat)
             : null;
         SetClipboard(selected, pasteFormat);
+
+        // Check this before concealing. Windows drops injected input aimed at a higher-integrity
+        // window (UIPI) silently - no error, no failed return, the keystroke simply never arrives.
+        // The clipboard is set above and crosses integrity levels fine, so a manual Ctrl+V works.
+        //
+        // The toast lives inside the palette, so raising it after ConcealPalette drew it onto a
+        // window at Opacity 0 - which is why this never appeared on screen despite the gate firing
+        // correctly every time. The tray balloon behind UserNotificationRequested is no fallback
+        // either; Windows 11 suppresses NotifyIcon balloons. Keep the palette up instead: the
+        // paste did not happen, so there is nothing to get out of the way for, and Escape then
+        // Ctrl+V finishes the job.
+        if (TargetRejectsSyntheticInput(_returnFocusHwnd))
+        {
+            ShellLog.Info($"paste blocked by integrity id={selected.Id} target={TargetIntegrityLevel(_returnFocusHwnd)} own={OwnIntegrityLevel()}");
+
+            // Hand the keystroke to the elevated helper, which is allowed to make it. Nothing is
+            // concealed yet: the palette is topmost but unfocused once RestoreReturnFocus runs, so
+            // the keystroke still lands in the target, and if this does not work out the toast has
+            // a visible window to appear on. Hiding first is what made the warning invisible.
+            if (ElevatedPasteHelper.TryPaste(RestoreReturnFocus))
+            {
+                ShellLog.Info($"paste selected id={selected.Id} keys=^v action={ClipAppOverride.ActionPaste} via=elevated-helper");
+                ConcealPalette("paste");
+                return;
+            }
+
+            // Missing, declined, or no answer. The clipboard is set either way, so leave the
+            // palette up with the message and let the user finish it with Ctrl+V.
+            NotifyPasteBlockedByElevation();
+            return;
+        }
+
         ConcealPalette("paste");
         RestoreReturnFocus();
 
@@ -4837,17 +4869,6 @@ public partial class MainWindow : Window
         {
             pasteKeys = "^v";
             suspendHotkeys = false;
-        }
-
-        if (TargetRejectsSyntheticInput(_returnFocusHwnd))
-        {
-            // Windows drops injected input aimed at a higher-integrity window (UIPI), and it does
-            // so silently — no error, no failed return, the keystroke simply never arrives. The
-            // clipboard is already set above, so a manual Ctrl+V still works; say so rather than
-            // let this look like it worked. This is the one silent failure Clip can predict.
-            ShellLog.Info($"paste blocked by integrity id={selected.Id} target={TargetIntegrityLevel(_returnFocusHwnd)} own={OwnIntegrityLevel()}");
-            NotifyPasteBlockedByElevation();
-            return;
         }
 
         if (TryPasteDirectlyIntoExplorerSearch(selected, payload?.Text))
