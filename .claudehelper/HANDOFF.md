@@ -832,3 +832,44 @@ Fixed in 57855ee by calling `GetCursorPos` inside the hook proc and ignoring the
 
 **Standing rule for this codebase:** never mix a system-level coordinate source with a
 process-level one. It looks fine on the primary monitor and breaks only on the second.
+
+---
+
+## 2026-08-19 — Paste missing some input fields (Google Earth search in Chrome)
+
+**Why Clip could not see the problem:** every attempt logged `paste verify skipped ...
+verified=True`. That is what `VerifyPasteOrRetry` returns when `CanVerifyPasteTarget` finds nothing
+readable — so a completely blind paste was being reported as confirmed. Now logs
+`paste verify unavailable`.
+
+**Reference: how Raycast does it.** Read statically from
+`C:\Program Files\WindowsApps\Raycast.Raycast_2.0.3.0_x64__qypenmj9wpt2a\Raycast\Raycast.UIAccess.exe`
+(embedded manifest + literal strings). Full notes in memory: `raycast-windows-paste-mechanics.md`.
+
+**Adopted (dce371a):**
+1. `ForceActivateWindow` — Raycast's ladder (already-foreground → SetForegroundWindow →
+   AttachThreadInput) with a `GetForegroundWindow` poll between rungs, capped at 100ms each.
+   `SetForegroundWindow`'s bool return is worthless; Clip trusted it and typed immediately.
+2. Scan codes in `KEYBDINPUT.wScan` via `MapVirtualKey`. Was 0. Raw-input consumers (3D/canvas
+   apps, some browser-hosted editors) read the scan code and ignore a zero.
+3. `ReleaseStuckModifiers` before the chord — Alt from Alt+V turns Ctrl+V into Ctrl+Alt+V.
+
+**Not adopted:** Raycast's helper carries `uiAccess="true"`, which exempts it from UIPI and makes
+SetForegroundWindow always win. Requires an Authenticode-signed binary in a secure path; Clip
+installs to `%APPDATA%\Programs\Clip`. Packaging change, not a code change.
+
+**Pre-existing brittleness worth revisiting:** `CouldNeedNoActivatePalette` /
+`IsGoogleEarthSearchElement` are a hardcoded allowlist — window title must contain "Google Earth",
+process must be chrome/msedge, and the focused UIA element name must match one of four strings
+(including Flutter's `flt-text-editing` / `transparentTextEditing`). The log shows `noActivate`
+flipping between True and False across consecutive opens on the same page, which is exactly the
+"some input fields" flakiness. The no-activate palette is the right idea; the gate on it is not.
+
+### Next steps
+
+1. Isaiah verifies Google Earth search in Chrome. New log lines to read: `force activate failed
+   target=... actual=...`, `released stuck modifiers ...`, `paste verify unavailable`.
+2. If it still misses, the log now says which rung failed. If `force activate failed` appears,
+   uiAccess/packaging is the real answer. If activation succeeded and the paste still did not
+   land, the field is being torn down on blur — widen the no-activate path rather than the
+   allowlist.
