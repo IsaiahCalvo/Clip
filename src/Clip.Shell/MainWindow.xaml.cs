@@ -4838,6 +4838,17 @@ public partial class MainWindow : Window
             suspendHotkeys = false;
         }
 
+        if (TargetRejectsSyntheticInput(_returnFocusHwnd))
+        {
+            // Windows drops injected input aimed at a higher-integrity window (UIPI), and it does
+            // so silently — no error, no failed return, the keystroke simply never arrives. The
+            // clipboard is already set above, so a manual Ctrl+V still works; say so rather than
+            // let this look like it worked. This is the one silent failure Clip can predict.
+            ShellLog.Info($"paste blocked by integrity id={selected.Id} target={TargetIntegrityLevel(_returnFocusHwnd)} own={OwnIntegrityLevel()}");
+            NotifyPasteFailed();
+            return;
+        }
+
         if (TryPasteDirectlyIntoExplorerSearch(selected, payload?.Text))
         {
             ShellLog.Info($"paste selected id={selected.Id} keys=uia-explorer-search action={actionKey} override={overrideHotkey ?? "none"}");
@@ -5263,6 +5274,101 @@ public partial class MainWindow : Window
                 },
             },
         };
+    }
+
+    /// <summary>
+    /// True when the paste target runs at a higher Windows integrity level than Clip — an app
+    /// started as administrator, typically. UIPI drops synthetic keystrokes crossing that boundary
+    /// without reporting anything, so SendInput returns success and nothing is pasted.
+    ///
+    /// Raycast solves this by shipping a helper manifested with uiAccess="true", which is exempt
+    /// from UIPI. That needs an Authenticode-signed binary in a secure path (Program Files), and
+    /// Clip installs under %APPDATA%, so it is a packaging decision rather than a code one. Until
+    /// the log shows this actually happening, saying so plainly is the honest behaviour.
+    /// </summary>
+    private static bool TargetRejectsSyntheticInput(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var target = TargetIntegrityLevel(hwnd);
+        var own = OwnIntegrityLevel();
+        return target > 0 && own > 0 && target > own;
+    }
+
+    private static uint OwnIntegrityLevel() => IntegrityLevelOfProcess(GetCurrentProcess());
+
+    private static uint TargetIntegrityLevel(IntPtr hwnd)
+    {
+        if (GetWindowThreadProcessId(hwnd, out var pid) == 0 || pid == 0)
+        {
+            return 0;
+        }
+
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (handle == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return IntegrityLevelOfProcess(handle);
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    /// <summary>
+    /// Reads the token's integrity level RID. 0 means "could not tell", which every caller treats
+    /// as "assume it is fine" — a check that cannot answer must not start blocking pastes.
+    /// </summary>
+    internal static uint IntegrityLevelOfProcess(IntPtr process)
+    {
+        if (!OpenProcessToken(process, TokenQuery, out var token) || token == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        var buffer = IntPtr.Zero;
+        try
+        {
+            GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out var size);
+            if (size == 0)
+            {
+                return 0;
+            }
+
+            buffer = Marshal.AllocHGlobal((int)size);
+            if (!GetTokenInformation(token, TokenIntegrityLevel, buffer, size, out _))
+            {
+                return 0;
+            }
+
+            // TOKEN_MANDATORY_LABEL is a SID_AND_ATTRIBUTES; the level lives in the SID's last
+            // subauthority (0x1000 low, 0x2000 medium, 0x3000 high, 0x4000 system).
+            var sid = Marshal.ReadIntPtr(buffer);
+            var count = Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+            return count == 0 ? 0 : (uint)Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)(count - 1)));
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "integrity level read failed");
+            return 0;
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            CloseHandle(token);
+        }
     }
 
     private void NotifyPasteFailed()
@@ -10090,6 +10196,9 @@ public partial class MainWindow : Window
     private const ushort VirtualKeyLeftWindows = 0x5B;
     private const ushort VirtualKeyRightWindows = 0x5C;
     private const uint MapVirtualKeyToScanCode = 0;
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const uint TokenQuery = 0x0008;
+    private const int TokenIntegrityLevel = 25;
     private const ushort VirtualKeyEnter = 0x0D;
     private const ushort VirtualKeyV = 0x56;
     private static readonly IntPtr HwndTopmost = new(-1);
@@ -10132,6 +10241,13 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, uint length, out uint returnLength);
+    [DllImport("advapi32.dll")] private static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
+    [DllImport("advapi32.dll")] private static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
     [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
