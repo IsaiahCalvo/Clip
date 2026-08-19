@@ -4921,7 +4921,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var foregroundSet = SetForegroundWindow(_returnFocusHwnd);
+        var foregroundSet = ForceActivateWindow(_returnFocusHwnd);
         var focusSet = false;
         if (_returnFocusChildHwnd != IntPtr.Zero && IsWindow(_returnFocusChildHwnd))
         {
@@ -5001,7 +5001,9 @@ public partial class MainWindow : Window
     {
         if (!CanVerifyPasteTarget(_returnFocusElement, expectedText))
         {
-            ShellLog.Info($"paste verify skipped id={item.Id} element={_returnFocusElementSummary}");
+            // Nothing readable to check against, so this is "not disproven", not "worked". Saying
+            // verified=True here made every blind paste look confirmed in the log.
+            ShellLog.Info($"paste verify unavailable id={item.Id} element={_returnFocusElementSummary}");
             return true;
         }
 
@@ -5095,6 +5097,96 @@ public partial class MainWindow : Window
         return false;
     }
 
+    /// <summary>
+    /// Puts <paramref name="hwnd"/> in the foreground and confirms it actually got there.
+    ///
+    /// SetForegroundWindow returns true in cases where the foreground did not change - Windows
+    /// applies a foreground lock, and a process that did not receive the last input often loses.
+    /// The old code trusted that return value and typed Ctrl+V immediately, so the keystroke could
+    /// land in whatever still held focus, or nowhere. Raycast's helper does not trust it either:
+    /// its log strings spell out the same ladder (already-foreground, SetForegroundWindow,
+    /// AttachThreadInput) with a GetForegroundWindow check between the rungs.
+    /// </summary>
+    private static bool ForceActivateWindow(IntPtr hwnd)
+    {
+        if (GetForegroundWindow() == hwnd)
+        {
+            return true;
+        }
+
+        SetForegroundWindow(hwnd);
+        if (WaitForForeground(hwnd))
+        {
+            return true;
+        }
+
+        // Borrowing the target's input queue makes us "the foreground thread" for the length of
+        // the attach, which is what gets past the foreground lock.
+        var targetThread = GetWindowThreadProcessId(hwnd, out _);
+        var currentThread = GetCurrentThreadId();
+        var attached = targetThread != 0 && targetThread != currentThread && AttachThreadInput(currentThread, targetThread, true);
+        try
+        {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentThread, targetThread, false);
+            }
+        }
+
+        if (WaitForForeground(hwnd))
+        {
+            return true;
+        }
+
+        var actual = GetForegroundWindow();
+        ShellLog.Info($"force activate failed target={hwnd} '{SafeLogValue(WindowTitle(hwnd))}' actual={actual} '{SafeLogValue(WindowTitle(actual))}'");
+        return false;
+    }
+
+    private static bool WaitForForeground(IntPtr hwnd)
+    {
+        // Activation is asynchronous: SetForegroundWindow posts, it does not switch. Poll briefly
+        // rather than sleeping a flat guess, so a fast app costs nothing and a slow one still wins.
+        for (var i = 0; i < 10; i++)
+        {
+            if (GetForegroundWindow() == hwnd)
+            {
+                return true;
+            }
+
+            Thread.Sleep(10);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Releases any modifier the system still believes is held before a synthetic chord goes out.
+    ///
+    /// The palette opens on Alt+V. If Alt is still down when Ctrl+V is injected the target sees
+    /// Ctrl+Alt+V, which most apps ignore - a silent no-paste that looks exactly like "it pasted
+    /// into the wrong place". Raycast reads GetAsyncKeyState for the same reason (its binary even
+    /// carries a "Reset stuck Caps Lock toggle" path).
+    /// </summary>
+    private static void ReleaseStuckModifiers()
+    {
+        ushort[] modifiers = { VirtualKeyMenu, VirtualKeyShift, VirtualKeyLeftWindows, VirtualKeyRightWindows };
+        var stuck = modifiers.Where(k => (GetAsyncKeyState(k) & 0x8000) != 0).ToArray();
+        if (stuck.Length == 0)
+        {
+            return;
+        }
+
+        var inputs = stuck.Select(k => KeyboardInput(k, true)).ToArray();
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+        ShellLog.Info($"released stuck modifiers {string.Join(",", stuck.Select(k => k.ToString("X2")))}");
+    }
+
     private void SendPasteKeys(string pasteKeys, bool suspendHotkeys)
     {
         if (pasteKeys == "^v")
@@ -5123,6 +5215,7 @@ public partial class MainWindow : Window
 
     private static void SendCtrlV()
     {
+        ReleaseStuckModifiers();
         var inputs = new[]
         {
             KeyboardInput(VirtualKeyControl, false),
@@ -5161,6 +5254,11 @@ public partial class MainWindow : Window
                 Keyboard = new KeyboardInputData
                 {
                     VirtualKey = virtualKey,
+                    // Carry the hardware scan code, not just the virtual key. Windows leaves Scan
+                    // at 0 for anything that only fills the VK, but apps that consume raw input -
+                    // 3D and canvas apps, and some browser-hosted editors - read the scan code and
+                    // treat a zero as no key at all. Raycast maps the same way (MapVirtualKeyExW).
+                    Scan = (ushort)MapVirtualKey(virtualKey, MapVirtualKeyToScanCode),
                     Flags = keyUp ? KeyEventKeyUp : 0,
                 },
             },
@@ -9987,6 +10085,11 @@ public partial class MainWindow : Window
     private const uint MonitorDefaultToNearest = 0x00000002;
     private const uint KeyEventKeyUp = 0x0002;
     private const ushort VirtualKeyControl = 0x11;
+    private const ushort VirtualKeyMenu = 0x12;
+    private const ushort VirtualKeyShift = 0x10;
+    private const ushort VirtualKeyLeftWindows = 0x5B;
+    private const ushort VirtualKeyRightWindows = 0x5C;
+    private const uint MapVirtualKeyToScanCode = 0;
     private const ushort VirtualKeyEnter = 0x0D;
     private const ushort VirtualKeyV = 0x56;
     private static readonly IntPtr HwndTopmost = new(-1);
@@ -10029,6 +10132,9 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+    [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
     [DllImport("user32.dll")] private static extern IntPtr GetClipboardOwner();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
