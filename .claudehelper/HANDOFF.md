@@ -32,12 +32,22 @@ still open — Windows holds a handle briefly after the last writer closes (Defe
 All 36 teardowns now go through `tests/Clip.Tests/TestTemp.cs`, which retries 5x/50ms then gives
 up quietly. Nothing to do with the product; it was just failing tests that had passed.
 
+## The account rename left the updater pointing at a name we no longer own (2026-08-18, released v1.1.11)
+
+The GitHub account was renamed IsaiahCalvo -> Kal-Voe. GitHub keeps a redirect from the old name,
+so everything kept working and nothing looked broken — but that redirect only holds while nobody
+else registers the old name. `ClipUpdateService.DefaultLatestReleaseUrl` was hardcoded to
+`api.github.com/repos/IsaiahCalvo/Clip/releases/latest`, so if someone claimed that name and made
+a repo called Clip, every installed copy would start reading their releases and offering their
+installer as an update. Repointed the updater, the installer homepage and the README download
+links at Kal-Voe, and shipped it as v1.1.11 so installed copies stop relying on the redirect.
+
 ## Next steps
 
 - Verify in real use that one click outside now dismisses the palette (nothing automated covers
   this — it needs a real desktop click, and the offscreen test mode short-circuits the handler).
-- v1.1.10 is live on GitHub (Kal-Voe/Clip) with installer + both zips. The local csproj default
-  is bumped to 1.1.11 so a local build still outranks it.
+- v1.1.11 is live on GitHub (Kal-Voe/Clip) with installer + both zips. The local csproj default
+  is bumped to 1.1.12 so a local build still outranks it.
 - The git remote was redirecting; `origin` now points at `https://github.com/Kal-Voe/Clip.git`.
 
 ## Pasting a big photo killed Clip outright (2026-08-18, commit 1ea8427)
