@@ -4168,7 +4168,7 @@ public partial class MainWindow : Window
 
             if (item.Kind is ClipboardItemKind.Text or ClipboardItemKind.Link)
             {
-                TextPreview.Text = TextFilePreviewReader.Format(TextPayload(item), TextPreviewCharacterLimit);
+                TextPreview.Text = TextFilePreviewReader.Format(FullTextPayload(item), TextPreviewCharacterLimit);
                 TextPreview.Foreground = (WpfBrush)FindResource("Text");
                 TextPreview.Visibility = Visibility.Visible;
                 BenchMarks.Mark("preview-ready");
@@ -9270,6 +9270,19 @@ public partial class MainWindow : Window
 
         return copied.ToString("M/d/yy");
     }
+
+    /// <summary>
+    /// The whole text, not the row summary.
+    ///
+    /// Long items are stored in an asset file with only a truncated <c>Text</c> on the row, and
+    /// list loads do not hydrate it — so <see cref="TextPayload"/> fell through to
+    /// <c>item.Preview</c>, which is one line capped at 120 characters with a literal "..." on the
+    /// end. That is what the preview pane was showing, ellipsis and all, under a pane with room
+    /// for far more. The pane's TextBox already wraps and scrolls; it was only ever given the
+    /// summary. Same hydration the paste path does through ClipboardItemForPasteFormat.
+    /// </summary>
+    private string FullTextPayload(ClipboardHistoryItem item) =>
+        TextPayload(NeedsFullText(item) ? _store.GetItem(item.Id) ?? item : item);
 
     private static string TextPayload(ClipboardHistoryItem item) => item.Text ?? item.Preview ?? string.Empty;
     private static bool TryNormalizeColorText(string? text, string? source, out string hex)
