@@ -936,3 +936,48 @@ Toast rewritten to name the cause and both exits; it wraps at 420px and holds fo
    `powershell -ExecutionPolicy Bypass -File .\Install-ClipStartup.ps1 -Elevated`, then log out
    and back in. Reverting is the same command without `-Elevated`.
 2. If he takes it, watch for the drag-and-drop regression; that is the one that will bite first.
+
+---
+
+## 2026-08-19 (cont.) — elevated paste helper, and why the toast was never seen
+
+**The toast bug.** The integrity gate was correct all along — the log shows
+`paste blocked by integrity target=12288 own=8192` (high vs medium) on every attempt. The message
+was invisible because `NotifyPasteBlockedByElevation` ran ~37ms *after* `ConcealPalette("paste")`,
+and the toast is a child of the palette window, so it was drawn at Opacity 0.
+`UserNotificationRequested` (tray balloon via `_tray.ShowBalloonTip`) is not a fallback either —
+Windows 11 suppresses NotifyIcon balloons. **Rule: nothing in the paste path may raise a toast
+after the palette is concealed.** Note `ConcealPalette` also cloaks the window and parks it off
+screen, so "just show it again" is not a two-line undo — restructure to not hide instead.
+
+**Clip.Elevated.exe (108b888).** New project, manifested `requireAdministrator`, launched by
+`ElevatedPasteHelper` through the `runas` verb on demand. One UAC prompt, then resident. Clip
+itself stays medium-integrity, so drag-and-drop from Explorer keeps working and nothing Clip
+launches inherits admin — the two costs of the `-Elevated` autostart flag, avoided.
+
+Deliberate constraints on the helper, worth preserving:
+- One command, `paste`, **no arguments**. It cannot be told which keys to send or which window to
+  target. Worst case for someone who reaches the pipe is a Ctrl+V into whatever had focus. Do not
+  add a general "send these keys" command, however convenient it looks.
+- Pipe ACL'd to the owning user's SID only.
+- Exits after 8 idle hours rather than sitting elevated indefinitely.
+- `LaunchTimeout` is 10s and runs on the UI thread; it covers only post-approval startup, since
+  `Process.Start` blocks on the elevation decision itself. Do not raise it — a long value here
+  reads as a frozen palette.
+
+Focus is restored **twice**: before the first attempt, and again after the UAC prompt, which takes
+foreground and does not reliably hand it back.
+
+**Not verified on hardware.** The manifest was confirmed embedded by reading RT_MANIFEST out of
+the built exe, the wiring compiles and 884 tests pass, but the UAC path itself is untested —
+testing it means raising a prompt on Isaiah's screen, which is off limits.
+
+### Next steps
+
+1. Isaiah pastes into an app running as administrator. Expect one UAC prompt, then the paste
+   lands. New log lines: `paste selected ... via=elevated-helper`, or
+   `elevated paste helper declined at the UAC prompt` / `never started listening`.
+2. If declined, the palette should now stay up with the toast visible — that is the fix for the
+   invisible-message bug, and it is worth confirming separately.
+3. `-Elevated` on `Install-ClipStartup.ps1` is now the fallback rather than the recommendation;
+   the helper avoids both of its downsides.
