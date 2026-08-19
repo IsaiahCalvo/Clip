@@ -981,3 +981,34 @@ testing it means raising a prompt on Isaiah's screen, which is off limits.
    invisible-message bug, and it is worth confirming separately.
 3. `-Elevated` on `Install-ClipStartup.ps1` is now the fallback rather than the recommendation;
    the helper avoids both of its downsides.
+
+---
+
+## 2026-08-19 (cont.) — helper removed; the toast is the shipped answer
+
+Isaiah accepted the UAC prompt and the paste still did not land. Removed at 47e5510, at his call.
+Files gone: `src/Clip.Elevated/`, `src/Clip.Shell/ElevatedPasteHelper.cs`, the solution entry, the
+publish step, and the installed `Clip.Elevated.*`.
+
+**Why it failed — do not rebuild it without solving this.** The log showed no
+`via=elevated-helper`, no decline, and no "never started listening", which leaves only the one
+unlogged path: `TrySendPaste` returning false *after* the pipe existed. That is the mandatory
+integrity label. A named pipe created by a high-integrity process carries a high label with
+no-write-up, so a medium-integrity client can see the pipe and cannot write to it; the write threw
+UnauthorizedAccessException and was swallowed as "not listening yet".
+
+Fixing it means the elevated server attaching a SACL with a **low** mandatory label so
+lower-integrity clients can write — i.e. deliberately opening an elevated process to
+medium-integrity input. That is the exact surface the one-command-no-arguments design existed to
+contain, and it buys a single keystroke. Judged not worth it.
+
+**Shipped behaviour:** integrity check runs before the palette is concealed, the palette stays up,
+the toast reads "Clip cannot paste into elevated (administrator) run apps — press Ctrl+V". The
+clipboard is set before any of it, so the manual paste always works.
+`Install-ClipStartup.ps1 -Elevated` remains for anyone who would rather run Clip elevated.
+
+### Next steps
+
+Nothing outstanding on this thread. If elevated pasting comes back as a priority, the two live
+options are the SACL fix above (cheap, widens an elevated attack surface) or a signed uiAccess
+helper (clean, needs a certificate and a Program Files install).
