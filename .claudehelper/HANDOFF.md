@@ -816,3 +816,19 @@ still leaves the item on the clipboard for a manual paste.
 3. Audit the rest of `MainWindow.xaml.cs` for other `PointFromScreen` uses that mix with Win32
    screen coordinates. `MousePointInExpandedViewport` is the obvious next suspect for the expanded
    image view on a second monitor.
+
+### Correction (same day) — the first fix was not enough
+
+76f33fd swapped `PointFromScreen` for `GetWindowRect` and the dismissal continued. The real
+mismatch was the *click* point, not the window rect. `GetProcessDpiAwareness(Clip.exe)` returns
+**1 (system-aware, not per-monitor)**, so Windows virtualizes coordinates on any monitor whose
+scale differs from the primary's — his primary is 150%, the second screen 100%. Every
+process-level API (`GetWindowRect`, `GetCursorPos`, `GetMonitorInfo`, WPF DIP transforms) answers
+in that virtualized space; a `WH_MOUSE_LL` hook's `MSLLHOOKSTRUCT.pt` does not, it is raw physical
+pixels. The log line proved it: `outside click at 696,-664 rect=851,-1236,2051,-456`, and
+696 x 1.5 = 1044, on a row.
+
+Fixed in 57855ee by calling `GetCursorPos` inside the hook proc and ignoring the struct's point.
+
+**Standing rule for this codebase:** never mix a system-level coordinate source with a
+process-level one. It looks fine on the primary monitor and breaks only on the second.
