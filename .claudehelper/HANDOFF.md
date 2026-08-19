@@ -3,6 +3,43 @@
 _Last updated 2026-08-18. **`main` is the trunk.** All work pushed, and **installed** — the copy in
 `%APPDATA%\Programs\Clip` is this build._
 
+## Clicking off the palette took two clicks (2026-08-18, commit f4e95c0, released v1.1.10)
+
+Isaiah: "clicking off of Clip does not dismiss it on the first try." Outside-click dismissal
+was a `DispatcherTimer` ticking every 50ms into `HideIfMousePressedOutsidePalette`, which read
+`Forms.Control.MouseButtons` — a snapshot of what is *physically held right now*. A normal
+click is held for less than a tick on a fast hand, and the timer runs at background priority so
+it slips much further whenever the palette is building a preview. The press simply fell between
+ticks; the second click happened to land on one.
+
+Fix: a `WH_MOUSE_LL` low-level mouse hook, installed in `StartOutsideClickWatch` when the
+palette opens and removed in `StopOutsideClickWatch` from `ConcealPalette`. The hook sees every
+button-down regardless of duration. The hook proc itself does nothing but a message-id check and
+a `Dispatcher.BeginInvoke` — a low-level hook runs on every mouse message for the whole desktop,
+so any real work there stutters the pointer everywhere. The old poll remains as a fallback if
+`SetWindowsHookEx` ever fails.
+
+Note the palette still deliberately ignores `Deactivated` (RDP/RustDesk can't hold foreground —
+see the comment in `OnDeactivated`). The hook is what makes outside-click work without it.
+
+Also committed the XAML `TextSelection` brush (#FF6363) that had been left uncommitted — the
+runtime `SetBrush` pass already painted it, so this is the "edit both" half that was missing.
+
+## CI flake: teardown file locks (2026-08-18, commit cee9994)
+
+A release-gating CI run failed on `Dispose` deleting the temp folder while a sidecar json was
+still open — Windows holds a handle briefly after the last writer closes (Defender/indexer).
+All 36 teardowns now go through `tests/Clip.Tests/TestTemp.cs`, which retries 5x/50ms then gives
+up quietly. Nothing to do with the product; it was just failing tests that had passed.
+
+## Next steps
+
+- Verify in real use that one click outside now dismisses the palette (nothing automated covers
+  this — it needs a real desktop click, and the offscreen test mode short-circuits the handler).
+- v1.1.10 is live on GitHub (Kal-Voe/Clip) with installer + both zips. The local csproj default
+  is bumped to 1.1.11 so a local build still outranks it.
+- The git remote was redirecting; `origin` now points at `https://github.com/Kal-Voe/Clip.git`.
+
 ## Pasting a big photo killed Clip outright (2026-08-18, commit 1ea8427)
 
 Isaiah: "tried pasting a big photo, tried to paste in Visio, it's frozen and I can't dismiss
