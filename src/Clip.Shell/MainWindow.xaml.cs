@@ -728,6 +728,8 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(2.4) };
     private readonly System.Windows.Threading.DispatcherTimer _hotkeyRetryTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly System.Windows.Threading.DispatcherTimer _outsideClickTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    private IntPtr _mouseHook = IntPtr.Zero;
+    private LowLevelMouseProc? _mouseHookProc;
     private readonly System.Windows.Threading.DispatcherTimer _clipboardSettleTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
     private readonly System.Windows.Threading.DispatcherTimer _startupUpdateCheckTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly System.Windows.Threading.DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(4) };
@@ -1260,7 +1262,7 @@ public partial class MainWindow : Window
                 System.Windows.Threading.DispatcherPriority.Input);
         }
 
-        _outsideClickTimer.Start();
+        StartOutsideClickWatch();
 
         // Closing the palette tears down the WebView2, so an HTML, code or media preview is gone
         // by the time it reopens. Without re-rendering, reopening on the same item shows an empty
@@ -1646,7 +1648,7 @@ public partial class MainWindow : Window
 
     private void ConcealPalette(string reason)
     {
-        _outsideClickTimer.Stop();
+        StopOutsideClickWatch();
         _paletteOpen = false;
         Opacity = 0;
         IsHitTestVisible = false;
@@ -1736,11 +1738,88 @@ public partial class MainWindow : Window
         _ = Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current.Shutdown()), System.Windows.Threading.DispatcherPriority.Background);
     }
 
+    /// <summary>
+    /// Watches for the click that dismisses the palette.
+    ///
+    /// This used to poll <see cref="Forms.Control.MouseButtons"/> every 50ms, which only sees a
+    /// button that happens to be physically held at the moment of a tick. A normal click is held
+    /// for well under that on a fast hand, and the dispatcher timer slips further whenever the
+    /// palette is busy building previews — so the first click outside was regularly missed and it
+    /// took a second one to dismiss. A low-level mouse hook gets every button-down, so one click
+    /// is always enough. The timer stays as a fallback if the hook cannot be installed.
+    /// </summary>
+    private void StartOutsideClickWatch()
+    {
+        if (_mouseHook != IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            _mouseHookProc = OnLowLevelMouse;
+            _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookProc, GetModuleHandle(null), 0);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Error(ex, "outside-click hook install failed");
+            _mouseHook = IntPtr.Zero;
+        }
+
+        if (_mouseHook == IntPtr.Zero)
+        {
+            _mouseHookProc = null;
+            ShellLog.Info("outside-click hook unavailable, polling instead");
+            _outsideClickTimer.Start();
+        }
+    }
+
+    private void StopOutsideClickWatch()
+    {
+        _outsideClickTimer.Stop();
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+
+        _mouseHookProc = null;
+    }
+
+    private IntPtr OnLowLevelMouse(int code, IntPtr wParam, IntPtr lParam)
+    {
+        // A low-level hook runs on every mouse message for the whole desktop: do the cheapest
+        // possible check here and hand the real work to the dispatcher, or the pointer stutters.
+        if (code >= 0 && IsButtonDownMessage((int)wParam))
+        {
+            var hookPoint = Marshal.PtrToStructure<MouseLowLevelHookStruct>(lParam).Point;
+            _ = Dispatcher.BeginInvoke(
+                new Action(() => HideIfMousePressedOutsidePalette(hookPoint.X, hookPoint.Y)),
+                System.Windows.Threading.DispatcherPriority.Input);
+        }
+
+        return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+    }
+
+    private static bool IsButtonDownMessage(int message) =>
+        message is WmLButtonDown or WmRButtonDown or WmMButtonDown or WmXButtonDown;
+
     private void HideIfMousePressedOutsidePalette()
+    {
+        if (Forms.Control.MouseButtons == Forms.MouseButtons.None)
+        {
+            return;
+        }
+
+        var mouse = Forms.Control.MousePosition;
+        HideIfMousePressedOutsidePalette(mouse.X, mouse.Y);
+    }
+
+    private void HideIfMousePressedOutsidePalette(int screenX, int screenY)
     {
         if (Opacity <= 0 || !IsHitTestVisible)
         {
-            _outsideClickTimer.Stop();
+            StopOutsideClickWatch();
             return;
         }
 
@@ -1749,13 +1828,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (Forms.Control.MouseButtons == Forms.MouseButtons.None)
-        {
-            return;
-        }
-
-        var mouse = Forms.Control.MousePosition;
-        var point = PointFromScreen(new System.Windows.Point(mouse.X, mouse.Y));
+        var point = PointFromScreen(new System.Windows.Point(screenX, screenY));
         var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
         if (!bounds.Contains(point))
         {
@@ -1763,6 +1836,29 @@ public partial class MainWindow : Window
             ShellLog.Info("palette hidden on outside click");
         }
     }
+
+    private const int WhMouseLowLevel = 14;
+    private const int WmLButtonDown = 0x0201;
+    private const int WmRButtonDown = 0x0204;
+    private const int WmMButtonDown = 0x0207;
+    private const int WmXButtonDown = 0x020B;
+
+    private delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseLowLevelHookStruct
+    {
+        public NativePoint Point;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hhk, int code, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
     /// <summary>
     /// Renders the rows the first open will show, while the window is still hidden.

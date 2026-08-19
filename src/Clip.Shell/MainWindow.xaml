@@ -34,7 +34,7 @@
         <SolidColorBrush x:Key="AccentSoft" Color="#2C2A2C"/>
         <SolidColorBrush x:Key="Selected" Color="#363336"/>
         <SolidColorBrush x:Key="SelectedBorder" Color="#4E4A4E"/>
-        <SolidColorBrush x:Key="TextSelection" Color="#414141"/>
+        <SolidColorBrush x:Key="TextSelection" Color="#FF6363"/>
         <SolidColorBrush x:Key="Danger" Color="#D56B5D"/>
 
         <!-- Raycast's bar, pixel-measured 2026-08-17: 6px pill, #717176, soft anti-aliased
@@ -120,7 +120,7 @@
             <Setter Property="FontFamily" Value="Inter, Segoe UI Variable Text, Segoe UI"/>
             <Setter Property="CaretBrush" Value="{DynamicResource TextCursor}"/>
             <Setter Property="SelectionBrush" Value="{DynamicResource TextSelection}"/>
-            <Setter Property="SelectionOpacity" Value="0.7"/>
+            <Setter Property="SelectionOpacity" Value="0.4"/>
         </Style>
 
         <Style x:Key="FilterButton" TargetType="Button">

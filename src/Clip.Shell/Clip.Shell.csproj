@@ -25,7 +25,7 @@
     <!-- Release builds get their version from the CI tag. This default has to stay ahead of the
          newest published release, otherwise a locally-built install reports itself as outdated
          and the updater offers to replace it with an older public build. -->
-    <Version>1.1.9</Version>
+    <Version>1.1.11</Version>
     <AssemblyName>Clip</AssemblyName>
     <AssemblyTitle>Clip</AssemblyTitle>
     <Product>Clip</Product>
