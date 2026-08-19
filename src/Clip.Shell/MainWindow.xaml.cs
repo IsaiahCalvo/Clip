@@ -4831,19 +4831,10 @@ public partial class MainWindow : Window
         {
             ShellLog.Info($"paste blocked by integrity id={selected.Id} target={TargetIntegrityLevel(_returnFocusHwnd)} own={OwnIntegrityLevel()}");
 
-            // Hand the keystroke to the elevated helper, which is allowed to make it. Nothing is
-            // concealed yet: the palette is topmost but unfocused once RestoreReturnFocus runs, so
-            // the keystroke still lands in the target, and if this does not work out the toast has
-            // a visible window to appear on. Hiding first is what made the warning invisible.
-            if (ElevatedPasteHelper.TryPaste(RestoreReturnFocus))
-            {
-                ShellLog.Info($"paste selected id={selected.Id} keys=^v action={ClipAppOverride.ActionPaste} via=elevated-helper");
-                ConcealPalette("paste");
-                return;
-            }
-
-            // Missing, declined, or no answer. The clipboard is set either way, so leave the
-            // palette up with the message and let the user finish it with Ctrl+V.
+            // Nothing is concealed yet, deliberately: the toast is a child of the palette window,
+            // so raising it after ConcealPalette draws it at Opacity 0 and nothing appears. The
+            // clipboard is already set and crosses integrity levels fine, so leave the palette up
+            // with the message and let the user finish it with Ctrl+V.
             NotifyPasteBlockedByElevation();
             return;
         }

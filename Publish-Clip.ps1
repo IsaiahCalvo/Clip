@@ -136,33 +136,6 @@ Get-ChildItem -LiteralPath $windowsHistoryPublishDir -File -ErrorAction Silently
 
 Remove-Item -LiteralPath $windowsHistoryPublishDir -Recurse -Force
 
-# Clip.Elevated is the companion that presses Ctrl+V into apps running as administrator; its
-# manifest is requireAdministrator, so Clip launches it through the runas verb on demand. Published
-# the same way as the windows-history helper: only its own files are copied in, so it shares the
-# runtime already sitting next to Clip.exe rather than shipping a second copy.
-$elevatedPublishDir = Join-Path $publishRoot "_elevated"
-if (Test-Path $elevatedPublishDir) {
-    Remove-Item -LiteralPath $elevatedPublishDir -Recurse -Force
-}
-
-dotnet publish (Join-Path $root "src\Clip.Elevated\Clip.Elevated.csproj") `
-    -c $Configuration `
-    -r $Runtime `
-    --self-contained $selfContained `
-    -p:PublishSingleFile=false `
-    -p:PublishReadyToRun=false `
-    -p:Version=$Version `
-    -p:AssemblyVersion=$Version `
-    -p:FileVersion=$Version `
-    -p:InformationalVersion=$Version `
-    -o $elevatedPublishDir
-
-Get-ChildItem -LiteralPath $elevatedPublishDir -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "Clip.Elevated.*" } |
-    Copy-Item -Destination $publishDir -Force
-
-Remove-Item -LiteralPath $elevatedPublishDir -Recurse -Force
-
 $launcherPublishDir = Join-Path $publishRoot "_launcher"
 if (Test-Path $launcherPublishDir) {
     Remove-Item -LiteralPath $launcherPublishDir -Recurse -Force
