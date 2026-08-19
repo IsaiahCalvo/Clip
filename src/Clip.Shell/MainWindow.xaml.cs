@@ -5280,13 +5280,54 @@ public partial class MainWindow : Window
         }
         else if (item.Kind == ClipboardItemKind.Image && item.AssetPath is not null && File.Exists(item.AssetPath))
         {
-            System.Windows.Clipboard.SetImage(LoadBitmap(item.AssetPath));
+            // Same reason as the text path above: WPF's Clipboard.SetImage renders the bitmap
+            // inside DataObject and answers a failure with Environment.FailFast, which killed
+            // Clip on a large photo (2026-08-18). Win32ClipboardWriter hands Windows finished
+            // DIB buffers, so an image we cannot fit comes back as false and gets a toast.
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (!TrySetClipboardImage(hwnd, item.AssetPath))
+            {
+                ShellLog.Snapshot($"clipboard image set failed path={item.AssetPath}");
+                ShowToast("That image is too big for the clipboard");
+            }
         }
         else if (item.Kind == ClipboardItemKind.Files)
         {
-            var files = new StringCollection();
-            files.AddRange(item.FilePaths.ToArray());
-            System.Windows.Clipboard.SetFileDropList(files);
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (!Win32ClipboardWriter.TrySetFileDrop(hwnd, item.FilePaths))
+            {
+                ShellLog.Snapshot("clipboard file-drop set failed");
+                ShowToast("Could not copy those files");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decodes the asset to Bgra32 and hands the pixels to <see cref="Win32ClipboardWriter"/>.
+    /// Everything that can go wrong with a huge photo — decode OOM, an oversize pixel buffer,
+    /// a failed GlobalAlloc — comes back as false so the caller can say so and stay alive.
+    /// </summary>
+    private static bool TrySetClipboardImage(IntPtr hwnd, string path)
+    {
+        try
+        {
+            var bitmap = LoadBitmap(path);
+            if ((long)bitmap.PixelWidth * bitmap.PixelHeight * 4 > Win32ClipboardWriter.MaxImageBytes)
+            {
+                return false;
+            }
+
+            var source = bitmap.Format == PixelFormats.Bgra32
+                ? (BitmapSource)bitmap
+                : new FormatConvertedBitmap(bitmap, PixelFormats.Bgra32, null, 0);
+            var stride = source.PixelWidth * 4;
+            var pixels = new byte[(long)stride * source.PixelHeight];
+            source.CopyPixels(pixels, stride, 0);
+            return Win32ClipboardWriter.TrySetImage(hwnd, source.PixelWidth, source.PixelHeight, pixels);
+        }
+        catch (Exception ex) when (ex is OutOfMemoryException or OverflowException or NotSupportedException or IOException or ArgumentException)
+        {
+            return false;
         }
     }
 
@@ -8052,7 +8093,7 @@ public partial class MainWindow : Window
         SetBrush("AccentSoft", useDark ? "#2D2D2D" : "#E7E7E7");
         SetBrush("Selected", useDark ? "#373737" : "#D9D9D9");
         SetBrush("SelectedBorder", useDark ? "#525252" : "#ACACAC");
-        SetBrush("TextSelection", useDark ? "#414141" : "#C8C8C8");
+        SetBrush("TextSelection", useDark ? "#FF6363" : "#D64545");
         SetBrush("Danger", useDark ? "#D56B5D" : "#B94A3D");
         Background = (WpfBrush)FindResource("Bg");
         _setHtmlPreviewBackground?.Invoke(ToDrawingColor((SolidColorBrush)FindResource("Surface")));
