@@ -22,7 +22,7 @@ internal sealed record ClipUpdateStatus(
 
 internal sealed class ClipUpdateService
 {
-    public const string DefaultLatestReleaseUrl = "https://api.github.com/repos/IsaiahCalvo/Clip/releases/latest";
+    public const string DefaultLatestReleaseUrl = "https://api.github.com/repos/Kal-Voe/Clip/releases/latest";
 
     private readonly HttpClient _http;
     private readonly string _latestReleaseUrl;

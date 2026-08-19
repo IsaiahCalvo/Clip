@@ -9,7 +9,7 @@
   #define MyAppVersion "1.0.0"
 #endif
 #define MyAppPublisher "Isaiah Calvo"
-#define MyAppURL "https://github.com/IsaiahCalvo/Clip"
+#define MyAppURL "https://github.com/Kal-Voe/Clip"
 #define MyAppExeName "Clip.exe"
 #define MyAppLauncherExeName "Clip.Launcher.exe"
 

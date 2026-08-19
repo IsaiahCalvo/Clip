@@ -42,7 +42,7 @@ internal static class FaviconCache
         };
 
         var client = new HttpClient(handler) { Timeout = Timeout };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Clip/1.0 (+https://github.com/IsaiahCalvo/Clip)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Clip/1.0 (+https://github.com/Kal-Voe/Clip)");
         return client;
     });
 

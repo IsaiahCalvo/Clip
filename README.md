@@ -1,7 +1,7 @@
 # Clip
 
-[![Latest release](https://img.shields.io/github/v/release/IsaiahCalvo/Clip?label=release)](https://github.com/IsaiahCalvo/Clip/releases/latest)
-[![License](https://img.shields.io/github/license/IsaiahCalvo/Clip)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Kal-Voe/Clip?label=release)](https://github.com/Kal-Voe/Clip/releases/latest)
+[![License](https://img.shields.io/github/license/Kal-Voe/Clip)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-blue)](#requirements)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)](#run-from-source)
 
@@ -11,9 +11,9 @@ It runs locally, opens with `Alt+V`, and keeps clipboard history on your own dev
 
 ## Download
 
-[![Download Clip for Windows](https://img.shields.io/badge/⬇_Download-Clip_for_Windows-2ea44f?style=for-the-badge)](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-Setup.exe)
+[![Download Clip for Windows](https://img.shields.io/badge/⬇_Download-Clip_for_Windows-2ea44f?style=for-the-badge)](https://github.com/Kal-Voe/Clip/releases/latest/download/Clip-Setup.exe)
 
-**[Click here to download the latest Clip installer.](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-Setup.exe)** Then open the downloaded `Clip-Setup.exe` and follow the prompts — that's it. The button always downloads the newest version.
+**[Click here to download the latest Clip installer.](https://github.com/Kal-Voe/Clip/releases/latest/download/Clip-Setup.exe)** Then open the downloaded `Clip-Setup.exe` and follow the prompts — that's it. The button always downloads the newest version.
 
 The installer:
 
@@ -22,9 +22,9 @@ The installer:
 - Registers Clip in Add/Remove Programs.
 - Starts Clip with `Alt+V`.
 
-Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64.zip)**, unzip it anywhere, and run `Start-Clip.ps1` or `Clip.exe --palette-session`.
+Prefer a portable copy with no installer? **[Download Clip-win-x64.zip](https://github.com/Kal-Voe/Clip/releases/latest/download/Clip-win-x64.zip)**, unzip it anywhere, and run `Start-Clip.ps1` or `Clip.exe --palette-session`.
 
-Already have the .NET 8 Desktop Runtime? **[Download Clip-win-x64-framework-dependent.zip](https://github.com/IsaiahCalvo/Clip/releases/latest/download/Clip-win-x64-framework-dependent.zip)** for the smaller portable build.
+Already have the .NET 8 Desktop Runtime? **[Download Clip-win-x64-framework-dependent.zip](https://github.com/Kal-Voe/Clip/releases/latest/download/Clip-win-x64-framework-dependent.zip)** for the smaller portable build.
 
 ### SmartScreen
 
@@ -49,7 +49,7 @@ If you trust the source, click **More info**, then **Run anyway**. The full sour
 
 Clip is an individual-maintained open-source project.
 
-- Releases are published on GitHub: <https://github.com/IsaiahCalvo/Clip/releases>
+- Releases are published on GitHub: <https://github.com/Kal-Voe/Clip/releases>
 - Builds are produced with GitHub Actions.
 - Tests live in `tests\Clip.Tests`.
 - Privacy details live in `PRIVACY.md`.
