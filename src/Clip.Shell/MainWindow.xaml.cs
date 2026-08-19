@@ -1828,12 +1828,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        var point = PointFromScreen(new System.Windows.Point(screenX, screenY));
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        if (!bounds.Contains(point))
+        // Compare the click against the window's Win32 rect, in raw screen pixels, the same
+        // space the mouse hook reports. PointFromScreen would convert with the DPI of the monitor
+        // WPF still thinks the window lives on, so on a differently-scaled second monitor a click
+        // on a row landed outside Rect(0,0,ActualWidth,ActualHeight) and dismissed the palette.
+        // Same trap PositionOnMouseScreen already avoids: stay in one coordinate space.
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+        {
+            return;
+        }
+
+        if (screenX < rect.Left || screenX >= rect.Right || screenY < rect.Top || screenY >= rect.Bottom)
         {
             ConcealPalette("outside-click");
-            ShellLog.Info("palette hidden on outside click");
+            ShellLog.Info($"palette hidden on outside click at {screenX},{screenY} rect={rect.Left},{rect.Top},{rect.Right},{rect.Bottom}");
         }
     }
 
