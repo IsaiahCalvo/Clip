@@ -5380,16 +5380,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The elevated-target message. It has to leave the user knowing three things: which app is
-    /// at fault, that this is Windows' rule and not a Clip bug, and that they have two ways out —
-    /// paste it themselves, or stop running that app as administrator. Both words are deliberate:
-    /// "administrator" is what they typed to get here, "elevated" is what they will read
-    /// everywhere else.
+    /// The elevated-target message. Both words are deliberate: "elevated" is what the user will
+    /// read everywhere else, "administrator" is what they typed to get there. Nothing was blocked
+    /// on the way in - the clipboard crosses integrity levels fine, and the text is already on it
+    /// by the time this runs. The only thing UIPI stopped is Clip pressing the key, which is
+    /// exactly why the user pressing it themselves works.
     /// </summary>
     private void NotifyPasteBlockedByElevation()
     {
-        const string message = "That app is running as administrator. Windows will not let Clip paste into elevated apps \u2014 press Ctrl+V to paste it yourself, or run the app without administrator.";
-        ShowToast(message, TimeSpan.FromSeconds(6));
+        const string message = "Clip cannot paste into elevated (administrator) run apps \u2014 press Ctrl+V";
+        ShowToast(message, TimeSpan.FromSeconds(4));
         UserNotificationRequested?.Invoke(message);
     }
 
