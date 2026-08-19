@@ -873,3 +873,38 @@ flipping between True and False across consecutive opens on the same page, which
    uiAccess/packaging is the real answer. If activation succeeded and the paste still did not
    land, the field is being torn down on blur — widen the no-activate path rather than the
    allowlist.
+
+---
+
+## 2026-08-19 (cont.) — uiAccess verdict, and two more fixes
+
+**Should Clip adopt uiAccess? Not yet — and now there is a detector for when it should.**
+It buys exactly one thing: pasting into windows at a higher integrity level (apps run as
+administrator), where UIPI silently drops injected keys. Costs are an Authenticode signing
+certificate and moving the install from `%APPDATA%\Programs\Clip` into Program Files, which means
+an admin installer and a reworked updater. The log has never recorded a single foreground
+failure, so it is unjustified today. `TargetRejectsSyntheticInput` (7ff03d4) now compares token
+integrity levels before pasting and shows the "press Ctrl+V manually" toast instead of failing
+silently. **If Isaiah starts seeing that toast often, that is the evidence that justifies uiAccess.**
+
+**On verification generally:** `NotifyPasteFailed` had one caller — the branch that runs after
+verification proves a paste failed. Verification needs a UIA element with a readable value, which
+canvas/Flutter fields do not expose, so almost everything failed silently. Pastes into those
+fields are genuinely unverifiable; Raycast does not verify them either (its "set and verify"
+string is about the clipboard write, which Clip's `Win32ClipboardWriter` path already checks and
+toasts on). The honest improvement was not more verification but not claiming success — done in
+dce371a (`paste verify unavailable`) and 7ff03d4 (predict the one failure we can).
+
+**Preview truncation (67025df).** Long items keep their text in an asset file with only a
+truncated `Text` on the row; list loads do not hydrate it, so `TextPayload` fell through to
+`item.Preview` — one line, 120 characters, literal "..." appended. That string was what the
+preview pane rendered. No layout change was needed: the pane's TextBox already wraps, already has
+`VerticalScrollBarVisibility="Auto"`, and sits in a bounded row. `FullTextPayload` hydrates via
+`_store.GetItem` first, mirroring `ClipboardItemForPasteFormat`.
+
+### Next steps
+
+1. Isaiah verifies a long copied item now fills the preview pane and scrolls.
+2. Watch for the "could not paste here" toast. Frequent → revisit uiAccess packaging.
+3. Note: two tests flaked once on a full run (reflection stack, teardown file locks — the known
+   issue from the earlier handoff) and passed on rerun. If that recurs, chase the teardown locks.
