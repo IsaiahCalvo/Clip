@@ -47,6 +47,9 @@ public partial class App : System.Windows.Application
                 PaletteSessionMode = true,
                 PaletteSessionStartHidden = true,
                 OpenTestOffscreen = true,
+                // So --debug-search can be used to check what the palette does with a query typed
+                // into one open and still there (or not) on the next.
+                DebugInitialSearch = DebugSearchText(e.Args),
             };
             _window.InitializeShell();
             // Like the jank harness: a throw inside the run must exit nonzero, not hang off screen.

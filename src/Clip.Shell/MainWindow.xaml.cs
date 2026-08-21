@@ -1647,9 +1647,44 @@ public partial class MainWindow : Window
 
     internal bool BenchSettingsOpen => _settingsOverlay is not null;
 
+    /// <summary>
+    /// Puts the list back to the state a fresh open should have: no leftover search text, the
+    /// list scrolled to the top, and the top item selected again.
+    ///
+    /// This happens on conceal rather than on show because <see cref="ShowPalette"/> has ~20
+    /// callers, many of which are a re-show inside one flow (returning from settings, from
+    /// picture-in-picture, from an inline editor) rather than the user opening the palette.
+    /// Concealing is the one thing that always separates one visit from the next.
+    /// </summary>
+    private void ResetPaletteViewForNextOpen()
+    {
+        if (!string.IsNullOrEmpty(SearchBox.Text))
+        {
+            SearchBox.Text = string.Empty;
+            SearchBox.CaretIndex = 0;
+            // OnSearchChanged just restarted the debounce; the reload on the next open covers it.
+            _searchTimer.Stop();
+            // The rows still hold the filtered set, so the next open has to re-query.
+            _itemsDirtySinceRender = true;
+        }
+
+        // Re-pick the top item on the next open. Without this the list shows the top while the
+        // selection (and preview) sit on whatever row was picked last time, possibly far below.
+        // A hand-picked row also has to mark the rows dirty, or ShowPalette skips the reload —
+        // and the reload is what re-selects.
+        if (!_selectionIsAutomatic)
+        {
+            _itemsDirtySinceRender = true;
+            _selectionIsAutomatic = true;
+        }
+
+        ListScroll.ScrollToTop();
+    }
+
     private void ConcealPalette(string reason)
     {
         StopOutsideClickWatch();
+        ResetPaletteViewForNextOpen();
         _paletteOpen = false;
         Opacity = 0;
         IsHitTestVisible = false;
@@ -6548,6 +6583,15 @@ public partial class MainWindow : Window
     private void ShareWithBlip(ClipboardHistoryItem item)
     {
         item = FullTextItem(item);
+        if (BlipShareLaunchPlan.IsRunningWithBrokenHandoff())
+        {
+            // Launching would only produce Blip's own "SingleInstance failure" dialog, which says
+            // nothing a user can act on. See BlipShareLaunchPlan.IsRunningWithBrokenHandoff.
+            ShellLog.Info($"blip share blocked id={item.Id} socket={BlipShareLaunchPlan.HandoffSocketPath()} missing=True");
+            ShowToast("Blip can't receive shares until it's restarted.");
+            return;
+        }
+
         try
         {
             var payload = ClipboardSharePayload.Create(item);

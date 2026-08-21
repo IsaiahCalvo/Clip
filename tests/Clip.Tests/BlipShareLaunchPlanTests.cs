@@ -47,4 +47,22 @@ public sealed class BlipShareLaunchPlanTests
         }
     }
 
+    [Fact]
+    public void HandoffIsBrokenWhenBlipRunsWithoutItsSocket()
+    {
+        Assert.True(BlipShareLaunchPlan.IsRunningWithBrokenHandoff(true, @"C:\Temp\net.blip.desktop\ui.sock", _ => false));
+    }
+
+    [Fact]
+    public void HandoffIsFineWhenTheSocketIsThereOrBlipIsNotRunning()
+    {
+        Assert.False(BlipShareLaunchPlan.IsRunningWithBrokenHandoff(true, @"C:\Temp\net.blip.desktop\ui.sock", _ => true));
+        Assert.False(BlipShareLaunchPlan.IsRunningWithBrokenHandoff(false, @"C:\Temp\net.blip.desktop\ui.sock", _ => false));
+    }
+
+    [Fact]
+    public void HandoffSocketPathSitsUnderTheUserTempFolder()
+    {
+        Assert.Equal(Path.Combine(Path.GetTempPath(), "net.blip.desktop", "ui.sock"), BlipShareLaunchPlan.HandoffSocketPath());
+    }
 }
