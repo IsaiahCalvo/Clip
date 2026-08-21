@@ -1103,3 +1103,22 @@ UriFormatException as a code bug — check `windir` first.**
    the detection path is what to look at (`blip share blocked ... missing=True` in shell.log).
 3. If temp cleanup keeps eating Blip's socket, the durable fix is on Blip's side (a socket path
    outside `%TEMP%`) — worth reporting upstream rather than working around further in Clip.
+
+### Released as v1.1.13 (same day)
+
+Cut a release for the 18 commits that had piled up since v1.1.12. The first release build **failed**,
+on `PasteIntegrityGateTests.ReadsMediumIntegrityForThisProcess`: it hardcoded `0x2000` (medium
+integrity), which is true on a dev desktop and false on a GitHub Actions runner, which is elevated
+and therefore high (`0x3000`). The test was added during the elevated-paste work *after* v1.1.12, so
+it had never been through a release build. Fixed at 8ebebef by deriving the expected level from
+`WindowsPrincipal.IsInRole(Administrator)`; the assertion that matters — non-zero, meaning the SID
+walk still works — is unchanged. Tag was force-moved onto the fix (no release had been published
+against the old one).
+
+**Lesson: a test that asserts something about its own host will pass locally forever and only fail
+in a release build.** If a new test reads process/session/desktop state, ask what CI's answer is.
+
+v1.1.13 is live at https://github.com/Kal-Voe/Clip/releases/tag/v1.1.13 with the installer and both
+zips, marked Latest. `%APPDATA%\Programs\Clip` was reinstalled from the **released** zip rather than
+the local publish, so the running copy is byte-identical to what is downloadable (all five exes
+hash-verified, version 1.1.13+8ebebef).
