@@ -1012,3 +1012,94 @@ clipboard is set before any of it, so the manual paste always works.
 Nothing outstanding on this thread. If elevated pasting comes back as a priority, the two live
 options are the SACL fix above (cheap, widens an elevated attack surface) or a signed uiAccess
 helper (clean, needs a certificate and a Program Files install).
+
+---
+
+## 2026-08-21 — Fresh palette on every open, and why Blip sharing died
+
+**Isaiah reported three things:** the palette reopens scrolled to wherever it was left, the search
+box keeps its old query, and sharing to Blip throws a Java error dialog.
+
+### Search text and scroll offset (commit 3b066cb)
+
+Neither was ever reset. `SearchBox.Text` is written in exactly one place
+(`ScheduleDebugInitialSearch`) and cleared in none; `ListScroll` is only touched by the mouse-wheel
+handler. So a query typed at 11:02 was still filtering the list at 14:40, and the list opened
+mid-scroll.
+
+Fixed in `ResetPaletteViewForNextOpen`, called from **`ConcealPalette`, not `ShowPalette`**. That
+choice matters: `ShowPalette` has ~20 callers and most are a re-show inside one flow (back from the
+settings overlay, from picture-in-picture, from the inline editors, after a paste). Concealing is
+the one event that always separates one visit from the next.
+
+Three parts, each with a reason:
+
+- Clearing the text restarts the debounce via `OnSearchChanged`, so `_searchTimer.Stop()` follows it
+  and `_itemsDirtySinceRender = true` makes the next open re-query — the rows still hold the
+  filtered set.
+- A **hand-picked** row also has to mark the rows dirty. `ShowPalette` only reloads when dirty, and
+  the reload is what re-selects the top item; without this the list showed the top while the
+  selection and preview sat on a row far below.
+- An automatic selection with no search costs nothing: `--open-test` still reports `dirty=False` on
+  both opens, so the warm-open fast path is untouched.
+
+**Verified off screen.** `--open-test` now honours `--debug-search` (the open-test branch in
+App.xaml.cs returns before the normal arg wiring, so the flag never reached it):
+
+```bash
+Clip.exe --open-test --debug-search=zzznotfoundzzz
+```
+
+Cold open applies the query → `render items reason=search rows=0/0`. Conceal. Warm open →
+`render items reason=show-refresh rows=8/8` then `background-full-refresh rows=11/500`. The query is
+gone and the full history is back.
+
+### Blip sharing (same commit)
+
+**Not Clip's arguments.** `--file` is correct — `LaunchArgs` in
+`app/desktopApp-desktop-1.1.15.0.jar` is a Clikt command taking `--background`, `--peer`, `--file`
+(multiple) and `--render-api`.
+
+**Root cause is in Blip, and it is a landmine worth knowing about.** Blip is single-instance via
+`com.github.iamcalledrob.singleinstance`. A second `blip.exe` hands its arguments to the running one
+over a unix-domain socket at `%TEMP%\net.blip.desktop\ui.sock` and exits. The `.lock` file beside it
+is held open for the life of the primary instance, so it survives; **the socket file is not, and
+Windows temp cleanup deleted it out from under a Blip that had been up since 08-13.** From then on
+every launch — Clip, Explorer, Start menu — found the lock (so it concluded it must be the second
+instance), failed to connect to a socket that was gone, and died with
+
+    java.lang.Exception: SingleInstance failure (...\net.blip.desktop\ui.sock)
+    MainKt.exitOrReceiveFutureArguments(main.kt:200)
+
+Proven by experiment, not inference: before, `ui.sock` was absent and `blip.exe --file X` left a
+windowless zombie process; after killing Blip and relaunching it, `ui.sock` reappeared and **the
+identical launch line opened Blip's share sheet with the file attached**. Blip on this machine was
+restarted during the session, so sharing works right now.
+
+Clip cannot repair another app's socket, so it detects the state instead:
+`BlipShareLaunchPlan.IsRunningWithBrokenHandoff()` — Blip process running **and** the socket file
+missing — and `ShareWithBlip` toasts "Blip can't receive shares until it's restarted." rather than
+launching into a Java dialog that tells the user nothing. Checked before the payload is created, so
+no temp share file is left behind.
+
+887 tests pass (3 new, on the pure `IsRunningWithBrokenHandoff` overload). Published, installed over
+`%APPDATA%\Programs\Clip` (all four exes hash-verified), restarted via the "Clip Autostart" task.
+Pushed to `main`. No release cut.
+
+### Trap: `windir` can be empty in an agent shell
+
+Four `DomainMonogram` tests and `--open-test` itself failed with
+`MS.Internal.FontCache.Util..cctor` → `UriFormatException`. Nothing to do with the app: WPF builds
+the font-cache path from `%windir%`, and this session's shell had `windir` empty while `SystemRoot`
+was set. Set `$env:windir = 'C:\Windows'` and all 887 tests pass. **Do not chase a WPF font-cache
+UriFormatException as a code bug — check `windir` first.**
+
+### Next steps
+
+1. Isaiah verifies: Alt+V twice in a row — list starts at the top, search box empty, top item
+   selected. Type a query, Escape, reopen — query gone.
+2. Isaiah verifies Share → Blip. If the SingleInstance dialog ever appears again, the socket vanished
+   a second time and the answer is to restart Blip. If the dialog appears *instead of* Clip's toast,
+   the detection path is what to look at (`blip share blocked ... missing=True` in shell.log).
+3. If temp cleanup keeps eating Blip's socket, the durable fix is on Blip's side (a socket path
+   outside `%TEMP%`) — worth reporting upstream rather than working around further in Clip.
